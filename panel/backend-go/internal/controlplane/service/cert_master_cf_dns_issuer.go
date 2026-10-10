@@ -27,18 +27,18 @@ type masterACMEEngine interface {
 type masterACMESolver = acmeflow.ChallengeSolver
 
 type masterCFDNSManagedCertificateIssuer struct {
-	directoryURL          string
-	email                 string
-	cfZoneToken           string
-	dataDir               string
-	engine                masterACMEEngine
-	openState             func(string) (masterACMEStateStore, error)
-	newSolver             func(masterACMEStateStore, string, string) (masterACMESolver, error)
-	resolveToken          func(context.Context, string) (string, error)
-	records               managedDNSRecordProvider
-	propagation           pluginDNSPropagation
-	skipWithoutCredential bool
-	now                   func() time.Time
+	directoryURL      string
+	email             string
+	cfZoneToken       string
+	dataDir           string
+	engine            masterACMEEngine
+	openState         func(string) (masterACMEStateStore, error)
+	newSolver         func(masterACMEStateStore, string, string) (masterACMESolver, error)
+	resolveToken      func(context.Context, string) (string, error)
+	records           managedDNSRecordProvider
+	propagation       pluginDNSPropagation
+	cloudflareEnabled bool
+	now               func() time.Time
 }
 
 func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
@@ -195,10 +195,7 @@ func (i *masterCFDNSManagedCertificateIssuer) solverFor(ctx context.Context, dom
 	if i.records != nil {
 		credential, err := i.records.ResolveCredential(ctx, domain)
 		if err != nil {
-			if i.skipWithoutCredential && (errors.Is(err, errDNSCredentialUnavailable) || errors.Is(err, pluginhost.ErrDNSTokenNotMapped)) {
-				return nil, errRenewalDNSNotConfigured
-			}
-			return nil, err
+			return nil, readableManagedDNSError(err)
 		}
 		if pluginhost.IsDomesticDNSProvider(credential.Provider) {
 			if credential.Token != "" {
@@ -217,11 +214,11 @@ func (i *masterCFDNSManagedCertificateIssuer) solverFor(ctx context.Context, dom
 				})
 			}, nil
 		}
+		if !i.cloudflareEnabled {
+			return nil, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+		}
 		token := strings.TrimSpace(credential.Token)
 		if token == "" {
-			if i.skipWithoutCredential {
-				return nil, errRenewalDNSNotConfigured
-			}
 			return nil, fmt.Errorf("Cloudflare domain %s has no available token", strings.TrimSpace(domain))
 		}
 		return func(state masterACMEStateStore) (masterACMESolver, error) {
@@ -260,6 +257,13 @@ func (i *masterCFDNSManagedCertificateIssuer) challengePropagation() (pluginDNSP
 		return nil, err
 	}
 	return cloudflare.NewPropagation(cloudflare.PropagationConfig{Resolver: resolver})
+}
+
+func readableManagedDNSError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return domesticProviderError(err)
 }
 
 func annotateDomesticDNSError(normalized, cause error) error {

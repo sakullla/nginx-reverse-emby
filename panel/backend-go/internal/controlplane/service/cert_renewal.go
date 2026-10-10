@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -56,9 +57,6 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 		}
 
 		_, renewErr := s.renewSingleCertificate(ctx, issuer, cert, rows, index, &maxRevision)
-		if errors.Is(renewErr, errRenewalDNSNotConfigured) {
-			continue
-		}
 		if renewErr != nil {
 			if ctx.Err() != nil {
 				return errors.Join(append(renewalErrors, renewErr)...)
@@ -138,12 +136,18 @@ func (s *certificateService) renewSingleCertificate(
 		*maxRevision = currentMax
 	}
 
+	if skip, skipErr := s.cloudflareRenewalDisabled(ctx, issuer, cert); skipErr != nil {
+		return false, skipErr
+	} else if skip {
+		// Without ACME_DNS_PROVIDER=cf the renewal loop still runs for domestic
+		// mappings. An active Cloudflare certificate stays unchanged, matching
+		// the loop that previously did not start.
+		return false, nil
+	}
+
 	result, err := s.runManagedCertificateACMEOperation(ctx, cert.Domain, func(operationCtx context.Context) (managedCertificateRenewalResult, error) {
 		return issuer.Renew(operationCtx, cert)
 	})
-	if errors.Is(err, errRenewalDNSNotConfigured) {
-		return false, errRenewalDNSNotConfigured
-	}
 	if err != nil {
 		if _, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index); saveErr != nil {
 			return false, saveErr
@@ -175,6 +179,27 @@ func (s *certificateService) renewSingleCertificate(
 		*maxRevision = next.Revision
 	}
 	return result.Changed && persisted, nil
+}
+
+// cloudflareRenewalDisabled reports a Cloudflare credential that must not be
+// renewed while ACME_DNS_PROVIDER=cf is off. Resolution failures return false
+// so Renew can persist them.
+func (s *certificateService) cloudflareRenewalDisabled(ctx context.Context, issuer managedCertificateRenewalIssuer, cert ManagedCertificate) (bool, error) {
+	typed, ok := issuer.(*masterCFDNSManagedCertificateIssuer)
+	if !ok || typed == nil || typed.records == nil || typed.cloudflareEnabled {
+		return false, nil
+	}
+	credential, err := typed.records.ResolveCredential(ctx, cert.Domain)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, nil
+	}
+	if pluginhost.IsDomesticDNSProvider(credential.Provider) || strings.TrimSpace(credential.Token) == "" {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *certificateService) persistManagedCertificateRenewalResult(

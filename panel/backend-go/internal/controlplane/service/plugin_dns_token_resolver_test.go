@@ -111,9 +111,34 @@ func TestManagedCertificateIssuerModeFollowsDomesticMapping(t *testing.T) {
 	if err != nil || domestic != "master_cf_dns" {
 		t.Fatalf("domestic mode=%q err=%v", domestic, err)
 	}
+	for _, provider := range []string{pluginhost.DNSProviderAliyun, pluginhost.DNSProviderDNSPodCom, pluginhost.DNSProviderTencentDNS} {
+		mode, err := managedCertificateIssuerModeForDomain(false, func(context.Context, string) (DNSCredential, error) {
+			return DNSCredential{Provider: provider, Mapped: true}, nil
+		}, t.Context(), "www.example.cn", false)
+		if err != nil || mode != "master_cf_dns" {
+			t.Fatalf("%s mode=%q err=%v", provider, mode, err)
+		}
+	}
+	if _, err := managedCertificateIssuerModeForDomain(true, func(context.Context, string) (DNSCredential, error) {
+		return DNSCredential{Provider: pluginhost.DNSProviderAliyun, Token: "must-not-leak", Mapped: true}, nil
+	}, t.Context(), "www.example.cn", false); err == nil || strings.Contains(err.Error(), "must-not-leak") {
+		t.Fatalf("domestic token err=%v", err)
+	}
+	cloudflareOff, err := managedCertificateIssuerModeForDomain(true, func(context.Context, string) (DNSCredential, error) {
+		return DNSCredential{Provider: pluginhost.DNSProviderCloudflare, Token: "env-token"}, nil
+	}, t.Context(), "www.example.com", false)
+	if err != nil || cloudflareOff != "local_http01" {
+		t.Fatalf("cloudflare without switch mode=%q err=%v", cloudflareOff, err)
+	}
+	cloudflareOn, err := managedCertificateIssuerModeForDomain(true, func(context.Context, string) (DNSCredential, error) {
+		return DNSCredential{Provider: pluginhost.DNSProviderCloudflare, Token: "env-token", Mapped: true}, nil
+	}, t.Context(), "www.example.com", true)
+	if err != nil || cloudflareOn != "master_cf_dns" {
+		t.Fatalf("cloudflare with switch mode=%q err=%v", cloudflareOn, err)
+	}
 	http01, err := managedCertificateIssuerModeForDomain(true, func(context.Context, string) (DNSCredential, error) {
 		return DNSCredential{}, fmt.Errorf("%w: missing.example", errDNSCredentialUnavailable)
-	}, t.Context(), "missing.example", false)
+	}, t.Context(), "missing.example", true)
 	if err != nil || http01 != "local_http01" {
 		t.Fatalf("unmapped mode=%q err=%v", http01, err)
 	}

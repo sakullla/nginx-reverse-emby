@@ -457,6 +457,10 @@ func TestOwnerDDNSCloudflareMappingStillUsesCloudflareClient(t *testing.T) {
 	TestDDNSCloudflareMappingStillUsesCloudflareClient(t)
 }
 
+func TestOwnerManagedCertificateIssuerModeKeepsCloudflareBehindProviderSwitch(t *testing.T) {
+	TestManagedCertificateIssuerModeFollowsDomesticMapping(t)
+}
+
 func TestDDNSMappedUnavailableDoesNotUseEnvToken(t *testing.T) {
 	errCredentialUnavailable := errors.New("mapped credential unavailable")
 	raw, _ := json.Marshal(storage.DDNSConfig{

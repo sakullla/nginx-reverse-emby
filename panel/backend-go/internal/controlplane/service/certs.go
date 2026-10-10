@@ -272,7 +272,7 @@ func newCertificateServiceWithManagedDNS(cfg config.Config, store storage.Store,
 	}
 	if typed, ok := issuer.(*masterCFDNSManagedCertificateIssuer); ok && typed != nil {
 		typed.records = provider
-		typed.skipWithoutCredential = provider != nil && !cfg.ManagedDNSCertificatesEnabled && !cfg.ManagedCloudflareDNSReady()
+		typed.cloudflareEnabled = cfg.ManagedDNSCertificatesEnabled
 	}
 	return newCertificateServiceWithRenewal(cfg, store, issuer)
 }
@@ -1522,9 +1522,6 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		issueResult, err := s.runManagedCertificateACMEOperation(ctx, current.Domain, func(operationCtx context.Context) (managedCertificateRenewalResult, error) {
 			return issuer.Issue(operationCtx, current)
 		})
-		if errors.Is(err, errRenewalDNSNotConfigured) {
-			return current, nil
-		}
 		if err != nil {
 			// Re-read before recording failure — the ACME order may have taken long
 			// enough that the certificate was concurrently deleted or edited. Using the
@@ -2181,7 +2178,13 @@ func (s *certificateService) assertManagedDNSSubmissionAllowed(ctx context.Conte
 			}
 			return err
 		}
-		if pluginhost.IsDomesticDNSProvider(credential.Provider) || strings.TrimSpace(credential.Token) != "" {
+		if pluginhost.IsDomesticDNSProvider(credential.Provider) {
+			if strings.TrimSpace(credential.Token) != "" {
+				return errors.New("domestic DNS provider returned a token")
+			}
+			return nil
+		}
+		if issuer.cloudflareEnabled && strings.TrimSpace(credential.Token) != "" {
 			return nil
 		}
 		return fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)

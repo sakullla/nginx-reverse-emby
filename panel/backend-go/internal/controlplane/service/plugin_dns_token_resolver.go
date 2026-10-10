@@ -35,7 +35,6 @@ type managedDNSRecordProvider interface {
 }
 
 var errDNSCredentialUnavailable = errors.New("dns credential is unavailable")
-var errRenewalDNSNotConfigured = errors.New("managed DNS credential is not configured")
 
 // PluginDNSTokenResolver gives an active dns.provider mapping precedence over
 // the environment token. Only a missing provider/mapping may use the fallback;

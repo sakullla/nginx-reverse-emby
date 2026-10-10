@@ -1423,7 +1423,12 @@ func managedCertificateIssuerModeForDomain(
 			if !errors.Is(err, errDNSCredentialUnavailable) && !errors.Is(err, pluginhost.ErrDNSTokenNotMapped) {
 				return "", err
 			}
-		} else if pluginhost.IsDomesticDNSProvider(credential.Provider) || strings.TrimSpace(credential.Token) != "" {
+		} else if pluginhost.IsDomesticDNSProvider(credential.Provider) {
+			if strings.TrimSpace(credential.Token) != "" {
+				return "", errors.New("domestic DNS provider returned a token")
+			}
+			return "master_cf_dns", nil
+		} else if globalDNSReady && strings.TrimSpace(credential.Token) != "" {
 			return "master_cf_dns", nil
 		}
 		if localACME {
