@@ -108,6 +108,15 @@ ssh -L 8080:127.0.0.1:8080 root@<服务器 IP>
 3. VPS 能否访问后端（上面的 `curl -I`）
 4. 规则是否选了 `local` 并且已启用
 
+也可在运行规则的节点上进行只读连通性检查（不修改配置、不下载视频）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/check-proxy.sh -o check-proxy.sh
+sh check-proxy.sh --upstream https://origin.example.net --frontend https://emby.example.com
+```
+
+请替换为自己的服务首页地址，不要带 token、用户名密码或签名参数。工具只验证当前机器的直连 HEAD 响应，不代表客户端播放正常，也不模拟 Relay 或出口代理。媒体服务请继续完成 [Emby / Jellyfin 播放验收](https://sakullla.github.io/nginx-reverse-emby/guides/emby-jellyfin)。
+
 更多见 [故障排查](https://sakullla.github.io/nginx-reverse-emby/operations/troubleshooting)。
 
 > 💡 节点上如果已安装加速源等插件，后端里可直接选「插件提供商」，不必手填插件端口。第一次上手建议先用普通后端地址把链路跑通。图文步骤见 [快速开始](https://sakullla.github.io/nginx-reverse-emby/getting-started/quickstart)。

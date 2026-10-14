@@ -1,23 +1,32 @@
-# 快速开始
+---
+description: 在 Linux VPS 上部署 NRE，创建第一条 HTTP/HTTPS 反向代理规则，并检查后端与入口连通性。
+---
 
-这篇文章带你用最短时间跑通第一个反向代理。假设你有一台 VPS，想把 Emby / Jellyfin / 网站通过自己的域名让别人访问。
+# 快速开始：跑通第一条反代
 
-## 你需要准备什么
+目标是让浏览器通过你的域名打开后端服务。单机使用只需要内置的 `local` 节点；先完成这一条链路，再配置多节点、Relay 或插件。
 
-1. 一台装了 Docker 和 Docker Compose 的 VPS
-2. 一个域名（比如 `app.example.com`），把它的 DNS 解析到 VPS 的 IP
-3. 后端服务的地址（比如 `https://origin.example.net` 或 `http://192.168.1.100:8096`）
-4. 一个你自己设置的访问令牌（后面称为 `API_TOKEN`）
+如果主要用来播放媒体，可以配合 [Emby / Jellyfin 反代指南](../guides/emby-jellyfin.md) 验证登录、播放和拖动进度。
 
-先确认 VPS 能访问后端：
+## 准备三个东西
+
+| 准备项 | 示例与要求 |
+| --- | --- |
+| Linux VPS | 可运行 Docker，能够访问后端；安装脚本可按需安装 Docker / Compose |
+| 业务入口域名 | `app.example.com`，DNS 指向 VPS；放行 TCP 80 / 443，确认没有其它服务占用 |
+| 后端地址 | `https://origin.example.net` 或 VPS **确实能访问到的** `http://192.168.1.100:8096` |
+
+家里的 `192.168.x.x` 地址通常不能从公网 VPS 直接访问。需要先打通网络，或按 [Relay 指南](../guides/relay.md) 接入内网节点。
+
+在 VPS 上先检查后端：
 
 ```bash
-curl -I https://origin.example.net
+curl -I --connect-timeout 5 --max-time 10 https://origin.example.net
 ```
 
-如果这一步不通，后面的代理也一定不通。先把网络搞通再继续。
+收到 HTTP 响应后再继续。`401/403` 表示服务限制访问；`405` 可能只是服务不支持 HEAD，需用浏览器验证。解析失败、连接失败或超时则先排查后端网络。
 
-## 第一步：下载并启动
+## 第一步：部署并登录
 
 在 VPS 上执行：
 
@@ -25,103 +34,67 @@ curl -I https://origin.example.net
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
 ```
 
-脚本会自动创建目录、生成随机 token 并启动服务。交互时填域名（可回车跳过）和可选 Cloudflare Token 即可；输出里的 `Panel token` 就是登录用的访问令牌。登录后即可直接使用面板。
+脚本会创建目录、生成随机 token 并启动服务。提示填写的域名是 **面板域名**（例如 `panel.example.com`），业务入口域名在下一步添加，两者请使用不同域名。
 
-也可以手动部署：
+- 有面板域名：先将 DNS 指向 VPS，填入域名；Cloudflare Token 可选，跳过时使用 HTTP-01 验证。
+- 暂时没有面板域名：可回车跳过，按脚本输出的临时访问方式登录，之后再为面板配置 HTTPS。
 
-```bash
-mkdir -p nginx-reverse-emby && cd nginx-reverse-emby
-curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docker-compose.yaml
-mkdir -p data
-```
-
-编辑 `docker-compose.yaml`，设置访问令牌：
-
-```yaml
-environment:
-  API_TOKEN: 改成你自己的访问令牌
-  MASTER_REGISTER_TOKEN: 改成另一个访问令牌
-  PANEL_VAULT_MASTER_KEY: 改成 openssl rand -hex 32 的输出
-  PANEL_VAULT_KEY_ID: primary
-  NRE_TIMEZONE: Asia/Shanghai
-```
-
-- `API_TOKEN`：登录面板用的访问令牌，使用 32 位以上随机字符串。
-- `MASTER_REGISTER_TOKEN`：远程 Agent 注册用的独立令牌；仓库附带的 Compose 即使只运行本机节点也要求设置，不能与 `API_TOKEN` 相同。
-- `PANEL_VAULT_MASTER_KEY`：通用 secret vault 的 32-byte envelope key；若把 token/key 放在 `.env`，请将其权限设为 `0600`，并把实际 secret 配置纳入受控备份。
-
-启动：
-
-```bash
-docker compose up -d
-```
-
-默认面板只监听 VPS 本机。先在你的电脑上开 SSH 隧道：
-
-```bash
-ssh -L 8080:127.0.0.1:8080 root@<你的 VPS IP>
-```
-
-浏览器访问 `http://127.0.0.1:8080`，输入 `API_TOKEN` 登录后即可使用面板。
+保存脚本输出的 **访问地址** 和 **Panel token**。打开该地址，用 Panel token 登录；全新部署不需要用户名和密码。临时 HTTP 不加密令牌，公网长期使用前请启用 HTTPS。
 
 ![登录面板](/screenshots/panel-login.png)
 
-登录后看到的首页：
-
 ![仪表盘首页](/screenshots/panel-dashboard.png)
 
-## 第二步：添加一条 HTTP 规则
+需要自行维护 Compose 或已有外部反代？使用 [部署指南](./deploy.md)。手动部署默认只监听 `127.0.0.1:8080`，需要通过 SSH 隧道首次访问。
 
-进入面板的 **流量管理 → HTTP 规则**，选择 `local` 节点，点击 **添加规则**：
+## 第二步：创建第一条规则
 
-| 字段 | 示例 | 说明 |
-| --- | --- | --- |
-| 入口域名 | `http://app.example.com` | 你访问用的域名，确保 DNS 已指向 VPS。注意：下拉选 `http://`，不要选 `https://` |
-| 后端地址 | `https://origin.example.net` | 真正的服务地址，带协议和端口 |
-| 启用规则 | 开 | 只有开启才会生效 |
+进入 **流量管理 → HTTP 规则**，节点选择 `local`，点击 **添加规则**：
+
+| 字段 | 填什么 |
+| --- | --- |
+| 入口域名 | 选择 `https://`，填写 `app.example.com` |
+| 后端地址 | `https://origin.example.net`，填写真实协议与端口 |
+| 启用规则 | 开启 |
+| 其它设置 | 先保留默认值 |
 
 ![添加 HTTP 规则](/screenshots/panel-http-rule-form.png)
 
-点击 **创建规则**。`local` Agent 会自动同步配置并开始监听。
+点击 **创建规则**。`local` 节点同步配置后，自动申请 HTTPS 证书。默认 HTTP-01 要求域名解析正确且外部能访问 TCP 80；访问 HTTPS 还需要 TCP 443。证书未就绪时到 **基础设施 → 证书管理** 查看状态。
 
-## 第三步：给面板自身启用 HTTPS（推荐）
+如果暂时无法完成证书验证，可以先用 `http://` 验证页面连通性，确认后改为 HTTPS；不要通过未加密的公网入口提交账号密码。80 端口不可用、需要通配符或 DNS-01 时，见 [证书与 HTTPS](../guides/certificates.md)。
 
-如果你希望之后通过 HTTPS 打开面板，可以让面板自己代理自己。准备一个面板域名，例如 `panel.example.com`，DNS 指向 VPS，然后在 **流量管理 → HTTP 规则** 创建：
+## 第三步：从客户端验证
 
-| 字段 | 示例 | 说明 |
-| --- | --- | --- |
-| 入口域名 | `https://panel.example.com` | 面板公网 HTTPS 地址 |
-| 后端地址 | `http://127.0.0.1:8080` | 控制面本机 HTTP 地址 |
-| 启用规则 | 开 | 只有开启才会生效 |
+在你实际使用的电脑或手机上打开 `https://app.example.com`：
 
-确认 VPS 防火墙放行 80 和 443。规则同步后，local Agent 会自动申请证书并把 `https://panel.example.com` 转回面板。
+- 页面显示的是预期的后端服务。
+- 浏览器证书有效，登录和主要功能正常。
+- 媒体服务再验证播放与拖动进度，见 [媒体反代验收](../guides/emby-jellyfin.md#验证是否真正可用)。
 
-自代理 HTTPS 可用后，建议在 `docker-compose.yaml` 设置：
+**打不开时**，在运行规则的 VPS 上执行只读检查：
 
-```yaml
-environment:
-  NRE_PUBLIC_URL: https://panel.example.com
-  NRE_TRUST_FORWARDED_HEADERS: "true"
+```bash
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/check-proxy.sh -o check-proxy.sh
+sh check-proxy.sh \
+  --upstream https://origin.example.net \
+  --frontend https://app.example.com
 ```
 
-这里的 local Agent 会清洗并重写 `X-Forwarded-*`。如果改用其它上游代理，只能在它也会丢弃客户端伪造值并写入自身值时开启该选项。
+请把示例换成自己的服务首页地址，**不要带 token、用户名密码或带签名的播放链接**。工具只发送 HEAD，不修改配置，也不下载视频。
 
-## 第四步：验证业务反代
+| 检查结果 | 下一步 |
+| --- | --- |
+| 后端 DNS / 连接失败 | 先解决 VPS 到后端的网络或地址问题 |
+| 后端通过，入口连接失败 | 检查入口 DNS、80/443、防火墙、规则启用状态及节点同步 |
+| 入口证书校验失败 | 查看证书签发状态、域名和证书链 |
+| 401 / 403 / 405 | 根据工具提示检查访问限制或用浏览器验证 |
+| 两边通过，客户端仍异常 | 从客户端检查 DNS、网络与播放；服务器检查不代表公网可达 |
 
-浏览器打开 `http://app.example.com`。
+使用出口代理、Relay 或插件后端时，脚本的直连结果不能代表规则的实际转发路径。更多说明见 [排障指南](../operations/troubleshooting.md#只读连通性检查)。
 
-如果打不开，按顺序检查：
+## 跑通以后
 
-1. DNS 是否解析到 VPS
-2. VPS 防火墙是否放行了 80 端口
-3. VPS 能不能访问后端（`curl -I <后端地址>`）
-4. 规则是否选了 `local` 节点并且已启用
-
-更多排查见 [排障指南](../operations/troubleshooting.md)。
-
-## 下一步
-
-- 想启用 HTTPS：[证书与 HTTPS](../guides/certificates.md)
-- 想转发 TCP/UDP 端口：[L4 端口转发](../guides/l4-rules.md)
-- 想接入更多 VPS 作为节点：[Agent 节点管理](../guides/agents.md)
-- 想了解详细部署参数：[部署指南](./deploy.md)
+- [为面板自身启用 HTTPS](../guides/http-rules.md#给面板自身代理-https)，与业务入口分开管理。
+- [备份数据](../operations/backup-restore.md)，保存配置与密钥。
+- 按需增加 [L4 端口转发](../guides/l4-rules.md)、[远程节点](../guides/agents.md) 或 [Relay](../guides/relay.md)。

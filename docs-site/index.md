@@ -10,8 +10,8 @@ hero:
       text: 快速开始
       link: /getting-started/quickstart
     - theme: alt
-      text: HTTP 反向代理
-      link: /guides/http-rules
+      text: Emby / Jellyfin 反代
+      link: /guides/emby-jellyfin
     - theme: alt
       text: GitHub
       link: https://github.com/sakullla/nginx-reverse-emby
