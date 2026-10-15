@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/rand"
 	"net"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +51,7 @@ type Cache struct {
 	backoffLimit time.Duration
 	lastPruned   time.Time
 
+	dnsLookups map[string]*dnsLookup
 	dnsCache   map[string]dnsCacheEntry
 	failures   map[string]failureEntry
 	roundRobin map[string]int
@@ -130,7 +130,6 @@ type trafficMix struct {
 }
 
 type candidateSnapshot struct {
-	key                        string
 	successes                  int
 	failures                   int
 	qualifiedThroughputSamples int
@@ -337,73 +336,14 @@ func (c *Cache) Resolve(ctx context.Context, endpoint Endpoint) ([]Candidate, er
 	}
 
 	candidates := make([]Candidate, 0, len(ips))
+	port := strconv.Itoa(endpoint.Port)
 	for _, resolvedIP := range ips {
 		candidates = append(candidates, Candidate{
 			Endpoint: endpoint,
-			Address:  net.JoinHostPort(resolvedIP, strconv.Itoa(endpoint.Port)),
+			Address:  net.JoinHostPort(resolvedIP, port),
 		})
 	}
 	return candidates, nil
-}
-
-func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidate {
-	return c.order(scope, strategy, candidates, true)
-}
-
-func (c *Cache) OrderLatencyOnly(scope, strategy string, candidates []Candidate) []Candidate {
-	return c.order(scope, strategy, candidates, false)
-}
-
-func (c *Cache) order(scope, strategy string, candidates []Candidate, allowThroughput bool) []Candidate {
-	ordered := make([]Candidate, len(candidates))
-	copy(ordered, candidates)
-
-	if len(ordered) <= 1 {
-		return ordered
-	}
-
-	switch normalizeStrategy(strategy) {
-	case StrategyRandom:
-		for i := len(ordered) - 1; i > 0; i-- {
-			j := c.randomIntn(i + 1)
-			if j < 0 || j > i {
-				j = 0
-			}
-			ordered[i], ordered[j] = ordered[j], ordered[i]
-		}
-		return ordered
-	case StrategyAdaptive:
-		now := c.now()
-		snapshots, sharedMix := c.backendSnapshots(scope, ordered, now, allowThroughput)
-		orderedState, hasCold, hasRecovering := candidateOrderFromSnapshots(ordered, snapshots, now, allowThroughput, sharedMix)
-
-		sort.SliceStable(orderedState, func(i, j int) bool {
-			left := orderedState[i].preference
-			right := orderedState[j].preference
-			if left.inBackoff != right.inBackoff {
-				return !left.inBackoff
-			}
-			if left.stability != right.stability {
-				return left.stability > right.stability
-			}
-			if left.performance != right.performance {
-				return left.performance > right.performance
-			}
-			return false
-		})
-		writeCandidatesFromOrder(ordered, orderedState)
-		ordered = c.maybePromoteExplorationCandidateFromOrder(ordered, orderedState, hasCold, hasRecovering)
-		return ordered
-	default:
-		offset := c.roundRobinOffset(scope, len(ordered))
-		if offset == 0 {
-			return ordered
-		}
-		rotated := make([]Candidate, 0, len(ordered))
-		rotated = append(rotated, ordered[offset:]...)
-		rotated = append(rotated, ordered[:offset]...)
-		return rotated
-	}
 }
 
 func (c *Cache) ObserveSuccess(address string, latency time.Duration) {
@@ -463,43 +403,6 @@ func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, to
 	delete(c.failures, key)
 }
 
-func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
-	return c.preferResolvedCandidates(candidates, true)
-}
-
-func (c *Cache) PreferResolvedCandidatesLatencyOnly(candidates []Candidate) []Candidate {
-	return c.preferResolvedCandidates(candidates, false)
-}
-
-func (c *Cache) preferResolvedCandidates(candidates []Candidate, allowThroughput bool) []Candidate {
-	ordered := make([]Candidate, len(candidates))
-	copy(ordered, candidates)
-
-	now := c.now()
-	snapshots, sharedMix := c.resolvedSnapshots(ordered, now, allowThroughput)
-	preferenceState, _, _ := preferencesFromSnapshots(snapshots, now, allowThroughput, sharedMix)
-
-	sort.SliceStable(ordered, func(i, j int) bool {
-		leftKey := strings.TrimSpace(ordered[i].Address)
-		rightKey := strings.TrimSpace(ordered[j].Address)
-		left := preferenceState[leftKey]
-		right := preferenceState[rightKey]
-		if left.inBackoff != right.inBackoff {
-			return !left.inBackoff
-		}
-		if left.stability != right.stability {
-			return left.stability > right.stability
-		}
-		if left.performance != right.performance {
-			return left.performance > right.performance
-		}
-		return false
-	})
-	ordered = c.maybePromoteExplorationCandidate(ordered, preferenceState, c.hasState(preferenceState, ObservationStateCold), c.hasState(preferenceState, ObservationStateRecovering))
-
-	return ordered
-}
-
 func (c *Cache) MarkFailure(address string) time.Duration {
 	key := strings.TrimSpace(address)
 	if key == "" {
@@ -542,99 +445,6 @@ func (c *Cache) IsInBackoff(address string) bool {
 		return false
 	}
 	return now.Before(entry.retryAfter)
-}
-
-func (c *Cache) lookupHost(ctx context.Context, host string) ([]string, error) {
-	now := c.now()
-
-	c.mu.Lock()
-	entry, ok := c.dnsCache[host]
-	if ok && now.Before(entry.expiresAt) {
-		ips := append([]string(nil), entry.ips...)
-		c.mu.Unlock()
-		return ips, nil
-	}
-	c.mu.Unlock()
-
-	resolved, err := c.resolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		if entry, ok := c.staleDNSEntry(host, now); ok {
-			return entry, nil
-		}
-		return nil, err
-	}
-	if len(resolved) == 0 {
-		return nil, fmt.Errorf("no IPs resolved for host %q", host)
-	}
-
-	dedup := make(map[string]struct{}, len(resolved))
-	ips := make([]string, 0, len(resolved))
-	for _, candidate := range resolved {
-		if candidate.IP == nil {
-			continue
-		}
-		ip := candidate.IP.String()
-		if _, exists := dedup[ip]; exists {
-			continue
-		}
-		dedup[ip] = struct{}{}
-		ips = append(ips, ip)
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("no valid IPs resolved for host %q", host)
-	}
-
-	c.mu.Lock()
-	c.dnsCache[host] = dnsCacheEntry{
-		ips:        append([]string(nil), ips...),
-		expiresAt:  now.Add(dnsCacheTTL),
-		staleUntil: now.Add(dnsCacheTTL + dnsCacheStaleIfErrorTTL),
-	}
-	c.mu.Unlock()
-
-	return ips, nil
-}
-
-func (c *Cache) staleDNSEntry(host string, now time.Time) ([]string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	entry, ok := c.dnsCache[host]
-	if !ok || len(entry.ips) == 0 || !now.Before(entry.dnsRetainUntil()) {
-		return nil, false
-	}
-	return append([]string(nil), entry.ips...), true
-}
-
-func (e dnsCacheEntry) dnsRetainUntil() time.Time {
-	if e.staleUntil.After(e.expiresAt) {
-		return e.staleUntil
-	}
-	return e.expiresAt
-}
-
-func (c *Cache) roundRobinOffset(scope string, total int) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	key := strings.TrimSpace(scope)
-	offset := c.roundRobin[key]
-	if total > 0 {
-		offset %= total
-	}
-	c.roundRobin[key] = offset + 1
-	return offset
-}
-
-func normalizeStrategy(strategy string) string {
-	switch strings.ToLower(strings.TrimSpace(strategy)) {
-	case StrategyRandom:
-		return StrategyRandom
-	case StrategyAdaptive:
-		return StrategyAdaptive
-	default:
-		return StrategyRoundRobin
-	}
 }
 
 func (c *Cache) observationFor(address string) candidateObservation {
@@ -700,16 +510,16 @@ func (c *Cache) summaryForKey(key string, allowThroughput bool, mix trafficMix, 
 }
 
 func summaryFromObservation(observation candidateObservation, now time.Time, allowThroughput bool, mix trafficMix, useProvidedMix bool) ObservationSummary {
-	successes, failures := observation.recentCounts(now)
+	snapshot, observedMix := snapshotFromObservation(observation, now)
 	if !useProvidedMix {
-		mix = observation.recentTrafficMix(now)
+		mix = observedMix
 	}
-	preference := observation.preference(now, allowThroughput, mix)
+	preference := snapshot.preference(now, allowThroughput, mix)
 
 	return ObservationSummary{
 		Stability:        preference.stability,
-		RecentSucceeded:  successes,
-		RecentFailed:     failures,
+		RecentSucceeded:  snapshot.successes,
+		RecentFailed:     snapshot.failures,
 		Latency:          preference.latency,
 		HasLatency:       preference.hasLatency,
 		Bandwidth:        preference.bandwidth,
@@ -724,92 +534,9 @@ func summaryFromObservation(observation candidateObservation, now time.Time, all
 	}
 }
 
-func (c *Cache) backendSnapshots(scope string, candidates []Candidate, now time.Time, allowThroughput bool) ([]candidateSnapshot, trafficMix) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	snapshots := make([]candidateSnapshot, 0, len(candidates))
-	sharedMix := trafficMix{}
-	normalizedScope := strings.TrimSpace(scope)
-	for _, candidate := range candidates {
-		key := strings.TrimSpace(candidate.Address)
-		observation := c.backendObservation(normalizedScope, key)
-		snapshot, mix := snapshotFromObservation(key, observation, now)
-		snapshots = append(snapshots, snapshot)
-		if allowThroughput {
-			sharedMix.small += mix.small
-			sharedMix.bulk += mix.bulk
-		}
-	}
-	return snapshots, sharedMix
-}
-
-func (c *Cache) resolvedSnapshots(candidates []Candidate, now time.Time, allowThroughput bool) ([]candidateSnapshot, trafficMix) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	snapshots := make([]candidateSnapshot, 0, len(candidates))
-	sharedMix := trafficMix{}
-	for _, candidate := range candidates {
-		key := strings.TrimSpace(candidate.Address)
-		observation := c.observed[key]
-		snapshot, mix := snapshotFromObservation(key, observation, now)
-		snapshots = append(snapshots, snapshot)
-		if allowThroughput {
-			sharedMix.small += mix.small
-			sharedMix.bulk += mix.bulk
-		}
-	}
-	return snapshots, sharedMix
-}
-
-func preferencesFromSnapshots(snapshots []candidateSnapshot, now time.Time, allowThroughput bool, sharedMix trafficMix) (map[string]candidatePreference, bool, bool) {
-	preferenceState := make(map[string]candidatePreference, len(snapshots))
-	hasCold := false
-	hasRecovering := false
-	for _, snapshot := range snapshots {
-		preference := snapshot.preference(now, allowThroughput, sharedMix)
-		preferenceState[snapshot.key] = preference
-		switch preference.state {
-		case ObservationStateCold:
-			hasCold = true
-		case ObservationStateRecovering:
-			hasRecovering = true
-		}
-	}
-	return preferenceState, hasCold, hasRecovering
-}
-
-func candidateOrderFromSnapshots(candidates []Candidate, snapshots []candidateSnapshot, now time.Time, allowThroughput bool, sharedMix trafficMix) ([]candidateOrder, bool, bool) {
-	ordered := make([]candidateOrder, 0, len(candidates))
-	hasCold := false
-	hasRecovering := false
-	for i, candidate := range candidates {
-		preference := snapshots[i].preference(now, allowThroughput, sharedMix)
-		ordered = append(ordered, candidateOrder{
-			candidate:  candidate,
-			preference: preference,
-		})
-		switch preference.state {
-		case ObservationStateCold:
-			hasCold = true
-		case ObservationStateRecovering:
-			hasRecovering = true
-		}
-	}
-	return ordered, hasCold, hasRecovering
-}
-
-func writeCandidatesFromOrder(candidates []Candidate, ordered []candidateOrder) {
-	for i, entry := range ordered {
-		candidates[i] = entry.candidate
-	}
-}
-
-func snapshotFromObservation(key string, observation candidateObservation, now time.Time) (candidateSnapshot, trafficMix) {
+func snapshotFromObservation(observation candidateObservation, now time.Time) (candidateSnapshot, trafficMix) {
 	successes, failures, mix, qualifiedSamples, qualifiedWeight := observation.windowStats(now)
 	return candidateSnapshot{
-		key:                        key,
 		successes:                  successes,
 		failures:                   failures,
 		qualifiedThroughputSamples: qualifiedSamples,
@@ -933,45 +660,6 @@ func (o *candidateObservation) bucketFor(now time.Time) *observationBucket {
 	return &o.counts[index]
 }
 
-func (o candidateObservation) preference(now time.Time, allowThroughput bool, mix trafficMix) candidatePreference {
-	successes, failures := o.recentCounts(now)
-	inBackoff := o.inBackoff(now)
-	state := o.state(now, successes, failures, inBackoff)
-	confidence := sampleConfidence(successes, failures)
-	slowFactor, slowStartActive := slowStartFactor(now, o.slowStartStartedAt, o.slowStartUntil)
-	preference := candidatePreference{
-		inBackoff:       inBackoff,
-		stability:       stabilityScore(successes, failures),
-		state:           state,
-		confidence:      confidence,
-		slowStartActive: slowStartActive,
-		slowStartFactor: slowFactor,
-	}
-	if latency, ok := o.latencyFor(now); ok {
-		preference.latency = latency
-		preference.hasLatency = true
-	}
-	if allowThroughput {
-		preference.outlier = o.isOutlier(now, failures)
-		if bandwidth, ok := o.bandwidthFor(now); ok {
-			preference.bandwidth = bandwidth
-			preference.hasBandwidth = true
-		}
-	}
-	preference.performance = effectivePerformance(preference, allowThroughput, mix)
-	switch {
-	case preference.inBackoff:
-		preference.trafficShareHint = "blocked"
-	case preference.slowStartActive:
-		preference.trafficShareHint = "recovery"
-	case preference.state == ObservationStateCold:
-		preference.trafficShareHint = "cold"
-	default:
-		preference.trafficShareHint = "normal"
-	}
-	return preference
-}
-
 func stabilityScore(successes, failures int) float64 {
 	switch {
 	case successes <= 0 && failures <= 0:
@@ -1024,29 +712,6 @@ func outlierPenalty(outlier bool) float64 {
 		return outlierPenaltyFactor
 	}
 	return 1
-}
-
-func (o candidateObservation) state(now time.Time, recentSuccesses, recentFailures int, inBackoff bool) string {
-	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.After(o.slowStartStartedAt) && now.Before(o.recoveryUntil) {
-		return ObservationStateRecovering
-	}
-	if inBackoff || recentSuccesses <= 0 || recentSuccesses+recentFailures < minRecentSamples {
-		return ObservationStateCold
-	}
-	return ObservationStateWarm
-}
-
-func (o candidateObservation) isOutlier(now time.Time, failures int) bool {
-	if !o.qualifiedThroughputReady(now) || !o.outlierThroughput {
-		return false
-	}
-	if !o.outlierUntil.IsZero() && now.Before(o.outlierUntil) {
-		return true
-	}
-	if o.lastThroughput > 0 && o.throughputEstimate > 0 {
-		return o.lastThroughput < 0.5*o.throughputEstimate || o.lastThroughput > 2.5*o.throughputEstimate
-	}
-	return false
 }
 
 func effectivePerformance(preference candidatePreference, allowThroughput bool, mix trafficMix) float64 {
@@ -1139,20 +804,6 @@ func (o candidateObservation) windowStats(now time.Time) (int, int, trafficMix, 
 		qualifiedWeight += throughputWeightFromUnits(bucket.qualifiedThroughputWeightUnits)
 	}
 	return successes, failures, mix, samples, qualifiedWeight
-}
-
-func (o candidateObservation) latencyFor(now time.Time) (time.Duration, bool) {
-	if o.lastSuccessAt.IsZero() || now.Sub(o.lastSuccessAt) >= observationWindow || o.latencyEstimate <= 0 {
-		return 0, false
-	}
-	return o.latencyEstimate, true
-}
-
-func (o candidateObservation) bandwidthFor(now time.Time) (float64, bool) {
-	if !o.qualifiedThroughputReady(now) {
-		return 0, false
-	}
-	return o.throughputEstimate, true
 }
 
 func (o candidateObservation) qualifiedThroughputReady(now time.Time) bool {
@@ -1311,84 +962,6 @@ func (s candidateSnapshot) state(now time.Time, inBackoff bool) string {
 
 func (s candidateSnapshot) inBackoff(now time.Time) bool {
 	return !s.recoveryUntil.IsZero() && now.Before(s.slowStartStartedAt)
-}
-
-func (c *Cache) maybePromoteExplorationCandidate(ordered []Candidate, preferences map[string]candidatePreference, hasCold bool, hasRecovering bool) []Candidate {
-	budget := c.chooseExplorationBudget(hasRecovering, hasCold)
-	if budget == 0 {
-		return ordered
-	}
-	if c.randomIntn(100) >= budget {
-		return ordered
-	}
-
-	target := ObservationStateRecovering
-	if !hasRecovering {
-		target = ObservationStateCold
-	}
-	for i, candidate := range ordered {
-		pref := preferences[strings.TrimSpace(candidate.Address)]
-		if rotated, ok := rotateExplorationCandidate(ordered, i, pref, target); ok {
-			return rotated
-		}
-	}
-	return ordered
-}
-
-func (c *Cache) maybePromoteExplorationCandidateFromOrder(ordered []Candidate, orderedState []candidateOrder, hasCold bool, hasRecovering bool) []Candidate {
-	budget := c.chooseExplorationBudget(hasRecovering, hasCold)
-	if budget == 0 {
-		return ordered
-	}
-	if c.randomIntn(100) >= budget {
-		return ordered
-	}
-
-	target := ObservationStateRecovering
-	if !hasRecovering {
-		target = ObservationStateCold
-	}
-	for i, entry := range orderedState {
-		if rotated, ok := rotateExplorationCandidate(ordered, i, entry.preference, target); ok {
-			return rotated
-		}
-	}
-	return ordered
-}
-
-func rotateExplorationCandidate(ordered []Candidate, index int, preference candidatePreference, target string) ([]Candidate, bool) {
-	if preference.inBackoff || preference.state != target {
-		return nil, false
-	}
-	if index == 0 {
-		return ordered, true
-	}
-	rotated := make([]Candidate, 0, len(ordered))
-	rotated = append(rotated, ordered[index:]...)
-	rotated = append(rotated, ordered[:index]...)
-	return rotated, true
-}
-
-func (c *Cache) hasState(preferences map[string]candidatePreference, state string) bool {
-	for _, preference := range preferences {
-		if preference.state == state {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *Cache) chooseExplorationBudget(hasRecovering bool, hasCold bool) int {
-	switch {
-	case hasRecovering && hasCold:
-		return combinedExplPct
-	case hasRecovering:
-		return recoveringExplPct
-	case hasCold:
-		return coldExplorationPct
-	default:
-		return 0
-	}
 }
 
 func (c *Cache) slowStartWindowForKey(key string) time.Duration {

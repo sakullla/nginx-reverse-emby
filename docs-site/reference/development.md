@@ -67,6 +67,8 @@ local Agent 不参与自更新。
 
 ## 性能测试
 
+Go Agent 后端选择和 DNS 缓存的基准、对照结果及验证限制见[后端选择与 DNS 缓存性能](./backend-selection-performance.md)。
+
 Windows PowerShell：
 
 ```powershell
