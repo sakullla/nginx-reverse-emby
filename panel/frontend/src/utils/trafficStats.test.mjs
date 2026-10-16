@@ -6,9 +6,43 @@ import {
   dailyBudget,
   quotaColorThreshold,
   formatPercentage,
+  formatQuota,
+  formatRetentionHint,
   summaryBucketForObject,
   agentTrafficBytes
 } from './trafficStats.js'
+
+describe('formatQuota', () => {
+  it('falls back to the Chinese unlimited label when no quota is set', () => {
+    expect(formatQuota(null)).toBe('无限制')
+    expect(formatQuota(undefined)).toBe('无限制')
+    expect(formatQuota(1024 ** 3)).toBe('1.00 GiB')
+  })
+})
+
+describe('formatRetentionHint', () => {
+  it('keeps day-based retention readable without collapsing to zero months', () => {
+    expect(formatRetentionHint(180, 'days')).toBe('约 6 个月')
+    expect(formatRetentionHint(15, 'days')).toBe('约 15 天')
+  })
+
+  it('converts month-based retention to days or years and never reports zero', () => {
+    expect(formatRetentionHint(3, 'months')).toBe('约 90 天')
+    expect(formatRetentionHint(24, 'months')).toBe('约 2 年')
+    expect(formatRetentionHint(6, 'months')).toBe('约 180 天')
+  })
+
+  it('uses the empty label for the permanent retention case', () => {
+    expect(formatRetentionHint(null, 'months', '永久保留')).toBe('永久保留')
+    expect(formatRetentionHint('', 'months', '永久保留')).toBe('永久保留')
+    expect(formatRetentionHint(0, 'months', '永久保留')).toBe('永久保留')
+  })
+
+  it('omits the hint for other empty or invalid values', () => {
+    expect(formatRetentionHint('', 'days')).toBe('')
+    expect(formatRetentionHint(undefined, 'months')).toBe('')
+  })
+})
 
 describe('summaryBucketForObject', () => {
   const summary = {

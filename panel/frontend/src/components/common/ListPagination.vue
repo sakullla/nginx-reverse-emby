@@ -1,6 +1,6 @@
 <template>
   <div v-if="total > 0" class="list-pagination">
-    <span class="list-pagination__meta">
+    <span class="list-pagination__meta" role="status" aria-live="polite">
       共 {{ total }} 条 · 第 {{ page }} / {{ totalPages }} 页
     </span>
     <div class="list-pagination__controls">
@@ -51,14 +51,14 @@ function emitPage(next) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem 1rem;
-  margin-top: 1rem;
-  padding-top: 0.15rem;
+  gap: var(--space-3) var(--space-4);
+  margin-top: var(--space-4);
+  padding-top: var(--space-0-5);
   flex-wrap: wrap;
 }
 
 .list-pagination__meta {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   line-height: 1.3;
@@ -66,17 +66,17 @@ function emitPage(next) {
 
 .list-pagination__controls {
   display: flex;
-  gap: 0.4rem;
+  gap: var(--space-1-5);
 }
 
 .list-pagination__btn {
   min-height: 32px;
-  padding: 0.3rem 0.85rem;
+  padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default),
@@ -98,7 +98,18 @@ function emitPage(next) {
 }
 
 .list-pagination__btn:disabled {
-  opacity: 0.42;
+  opacity: 0.48;
   cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .list-pagination__controls {
+    width: 100%;
+  }
+
+  .list-pagination__btn {
+    flex: 1;
+    min-height: 44px;
+  }
 }
 </style>

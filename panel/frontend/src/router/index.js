@@ -64,12 +64,6 @@ const routes = [
         meta: { title: 'Relay 监听器' }
       },
       {
-        path: 'versions',
-        name: 'versions',
-        component: () => import('../pages/VersionsPage.vue'),
-        meta: { title: '版本策略' }
-      },
-      {
         path: 'plugins',
         name: 'plugins',
         component: () => import('../pages/plugins/PluginsPage.vue'),

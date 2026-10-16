@@ -224,7 +224,7 @@ function openDetail(detail) {
       </div>
       <div class="page-header__right">
         <ViewToggle v-if="plugins.length || searchQuery || taskFilter" v-model:view="view" />
-        <RouterLink class="btn btn-primary" to="/plugins/marketplace">打开插件市场</RouterLink>
+        <RouterLink class="btn btn--primary" to="/plugins/marketplace">打开插件市场</RouterLink>
       </div>
     </header>
 
@@ -249,13 +249,15 @@ function openDetail(detail) {
           </svg>
         </button>
       </div>
-      <div class="plugins-chips" role="tablist" aria-label="任务状态">
+      <div class="plugins-chips" aria-label="任务状态">
         <button
           v-for="option in taskStatusOptions"
           :key="option.value || 'all'"
           type="button"
           class="plugins-chip"
           :class="{ 'plugins-chip--active': taskFilter === option.value }"
+          :aria-pressed="taskFilter === option.value"
+          :data-test="`plugins-filter-${option.value || 'all'}`"
           @click="setTaskFilter(option.value)"
         >
           {{ option.label }}
@@ -276,8 +278,8 @@ function openDetail(detail) {
       <EmptyState title="读取失败" :description="`${error} 下一步：重试读取已安装列表，或先去插件市场安装。`">
         <template #action>
           <div class="plugins-empty-actions">
-            <button class="btn btn-secondary" type="button" @click="load">重试</button>
-            <RouterLink class="btn btn-secondary" to="/plugins/marketplace">去插件市场</RouterLink>
+            <button class="btn btn--secondary" type="button" @click="load">重试</button>
+            <RouterLink class="btn btn--secondary" to="/plugins/marketplace">去插件市场</RouterLink>
           </div>
         </template>
       </EmptyState>
@@ -289,7 +291,7 @@ function openDetail(detail) {
       description="下一步：到插件市场安装一个插件，装好后回到这里继续部署。"
     >
       <template #action>
-        <RouterLink class="btn btn-primary" to="/plugins/marketplace">去插件市场安装</RouterLink>
+        <RouterLink class="btn btn--primary" to="/plugins/marketplace">去插件市场安装</RouterLink>
       </template>
     </EmptyState>
 
@@ -341,7 +343,7 @@ function openDetail(detail) {
             <button
               v-else-if="manageHref(detail)"
               type="button"
-              class="btn btn-ghost btn-sm plugin-card__manage"
+              class="btn btn--ghost btn--sm plugin-card__manage"
               data-test="plugin-open-manage"
               @click.stop.prevent="openManage(detail, $event)"
             >打开管理页</button>
@@ -365,7 +367,10 @@ function openDetail(detail) {
           <tr
             v-for="detail in filteredPlugins"
             :key="detail.plugin.plugin_id"
+            tabindex="0"
             @click="openDetail(detail)"
+            @keydown.enter.prevent="openDetail(detail)"
+            @keydown.space.prevent="openDetail(detail)"
           >
             <td>
               <div class="plugin-catalog-table__name">
@@ -373,7 +378,7 @@ function openDetail(detail) {
                 <small>{{ firstPublishedEntry(detail) ? publishedEntryLabel(firstPublishedEntry(detail)) : nextStepLabel(detail) }}</small>
               </div>
             </td>
-            <td>
+            <td data-label="状态">
               <BaseBadge
                 :tone="taskStatusTone(pluginTaskStatus(detail))"
                 :data-test="`plugin-task-status-${pluginTaskStatus(detail)}`"
@@ -382,16 +387,23 @@ function openDetail(detail) {
                 {{ taskStatusLabel(pluginTaskStatus(detail)) }}
               </BaseBadge>
             </td>
-            <td>
+            <td data-label="版本">
               <span class="plugin-catalog-table__version">{{ detail.package.version }}</span>
             </td>
-            <td>
+            <td data-label="来源">
               <BaseBadge :tone="detail.plugin?.active_source_kind === 'official' ? 'success' : 'warning'">
                 {{ sourceLabel(detail) }}
               </BaseBadge>
             </td>
             <td class="plugin-catalog-table__col-actions">
-              <div class="plugin-catalog-table__actions" @click.stop>
+              <!-- Keydown must stop here: the row's Enter/Space handler would otherwise
+                   swallow the inline action's default activation and navigate to detail. -->
+              <div
+                class="plugin-catalog-table__actions"
+                @click.stop
+                @keydown.enter.stop
+                @keydown.space.stop
+              >
                 <a
                   v-if="firstPublishedEntry(detail)"
                   class="plugin-card__domain plugin-card__domain--table"
@@ -411,7 +423,7 @@ function openDetail(detail) {
                 <button
                   v-else-if="manageHref(detail)"
                   type="button"
-                  class="btn btn-ghost btn-sm"
+                  class="btn btn--ghost btn--sm"
                   data-test="plugin-open-manage"
                   @click="openManage(detail, $event)"
                 >打开管理页</button>
@@ -527,7 +539,7 @@ function openDetail(detail) {
 .plugins-chip {
   padding: 0.3rem 0.7rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-bg-canvas);
   color: var(--color-text-secondary);
   font: inherit;
@@ -538,7 +550,7 @@ function openDetail(detail) {
 .plugins-chip--active {
   border-color: var(--color-primary);
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-text-inverse);
 }
 
 .plugin-card__meta {
@@ -571,7 +583,7 @@ function openDetail(detail) {
   min-width: 0;
   padding: 0.28rem 0.6rem;
   border: 1px solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border-default));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
   color: var(--color-primary);
   font-family: var(--font-mono);
@@ -619,7 +631,7 @@ function openDetail(detail) {
 }
 
 .plugin-card__facts dd {
-  margin: 2px 0 0;
+  margin: var(--space-0-5) 0 0;
   font-size: 0.8125rem;
   overflow-wrap: anywhere;
 }
@@ -627,6 +639,89 @@ function openDetail(detail) {
 @media (max-width: 640px) {
   .plugin-grid {
     grid-template-columns: 1fr;
+  }
+
+  .plugin-catalog-table-wrap {
+    border: 0;
+    background: transparent;
+    overflow: visible;
+  }
+
+  .plugin-catalog-table, .plugin-catalog-table tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .plugin-catalog-table thead {
+    display: none;
+  }
+
+  .plugin-catalog-table tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .plugin-catalog-table tbody tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    padding: 1rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-xl);
+    background: var(--color-bg-surface);
+  }
+
+  .plugin-catalog-table td {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: auto;
+    padding: 0.35rem 0;
+    border: 0;
+  }
+
+  .plugin-catalog-table td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .plugin-catalog-table td:first-child {
+    grid-column: 1 / -1;
+    width: auto;
+    padding: 0 0 0.5rem;
+  }
+
+  .plugin-catalog-table td[data-label="状态"] {
+    grid-column: 2;
+    grid-row: 2;
+    justify-content: flex-end;
+  }
+
+  .plugin-catalog-table td[data-label="版本"] {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .plugin-catalog-table td[data-label="来源"] {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .plugin-catalog-table td:last-child {
+    grid-column: 2;
+    grid-row: 3;
+    justify-content: flex-end;
+  }
+
+  .plugin-catalog-table__name small {
+    white-space: normal;
+    line-height: 1.6;
+  }
+
+  .plugin-catalog-table__actions .btn {
+    min-height: 44px;
   }
 }
 </style>

@@ -259,15 +259,15 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 .agent-search-select__trigger {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
   min-height: 34px;
-  padding: 0.35rem 0.65rem;
+  padding: var(--space-1-5) var(--space-2-5);
   border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default),
@@ -300,29 +300,29 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 .agent-search-select__dropdown {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + var(--space-1-5));
   left: 0;
   z-index: var(--z-dropdown);
   width: min(320px, 80vw);
   background: var(--color-bg-surface-raised);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
   overflow: hidden;
 }
 
 .agent-search-select__search {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  padding: var(--space-2);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
 }
 
 .agent-search-select__search-shell {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: var(--space-1);
   min-height: 2rem;
-  padding: 0 0.3rem 0 0.55rem;
-  border: 1.5px solid var(--color-border-default);
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
   box-sizing: border-box;
@@ -343,10 +343,10 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 .agent-search-select__search-input {
   width: 100%;
   min-width: 0;
-  padding: 0.3rem 0;
+  padding: var(--space-1) 0;
   border: none;
   background: transparent;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-primary);
   outline: none;
   font-family: inherit;
@@ -367,7 +367,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   margin: 0;
   padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
@@ -388,19 +388,19 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 .agent-search-select__filters {
   display: flex;
-  gap: 0.25rem;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
   overflow-x: auto;
 }
 
 .agent-search-select__filter-btn {
-  padding: 0.25rem 0.625rem;
+  padding: var(--space-1) var(--space-2-5);
   border: none;
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   white-space: nowrap;
   font-family: inherit;
@@ -414,22 +414,22 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 .agent-search-select__filter-btn--active {
   background: var(--color-primary);
-  color: white;
+  color: var(--color-text-inverse);
 }
 
 .agent-search-select__list {
   max-height: 240px;
   overflow-y: auto;
-  padding: 0.25rem;
+  padding: var(--space-1);
   scrollbar-width: thin;
 }
 
 .agent-search-select__option {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
-  padding: 0.5rem 0.65rem;
+  padding: var(--space-2) var(--space-2-5);
   border: none;
   background: transparent;
   border-radius: var(--radius-md);
@@ -450,7 +450,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 .agent-search-select__option-name {
   flex: 1;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -458,35 +458,35 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 }
 
 .agent-search-select__option-time {
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
 .agent-search-select__empty {
-  padding: 1rem;
+  padding: var(--space-4);
   text-align: center;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
 
 .agent-search-select__sort {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  border-top: 1px solid var(--color-border-subtle);
-  font-size: 0.75rem;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-top: var(--border-width-thin) solid var(--color-border-subtle);
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
 }
 
 .agent-search-select__sort-btn {
-  padding: 0.125rem 0.375rem;
+  padding: var(--space-0-5) var(--space-1-5);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   font-family: inherit;
   transition: background var(--duration-fast) var(--ease-default),
@@ -500,7 +500,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 .agent-search-select__sort-btn--active {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
-  font-weight: 500;
+  font-weight: var(--font-medium);
 }
 
 .agent-search-select__status-dot {

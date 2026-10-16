@@ -2,6 +2,25 @@
 
 遇到问题先来对着症状查。大部分常见问题都能快速定位。
 
+## 只读连通性检查
+
+在**运行规则的 Agent 主机**上执行（单机部署就是 VPS）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/check-proxy.sh -o check-proxy.sh
+sh check-proxy.sh --upstream https://origin.example.net --frontend https://app.example.com
+```
+
+替换为自己的首页地址；也可只传 `--upstream` 或 `--frontend`。需要 `sh` 和 `curl`，不需要 root 或面板令牌。URL 不接受凭据、查询参数和片段，请勿传入播放链接。
+
+工具只发送 HEAD，不跟随跳转、不下载正文、不修改配置、不读取 `.env`。每个目标最多等待 10 秒，并保留 TLS 证书校验。它忽略 curl 配置文件和环境代理，测试的是**当前主机直连**，不模拟规则中的出口 Profile、Relay、插件后端和自定义请求头。
+
+- `通过`：收到 2xx/3xx；3xx 只代表收到跳转，没有验证跳转目标。
+- `需检查`：按提示区分 DNS、连接、超时、TLS 和 HTTP 响应。401/403 表示访问限制，405/501 可能是不支持 HEAD，均需进一步验证。
+- 退出码 `0`：所有目标返回 2xx/3xx；`1`：至少一个目标需检查；`2`：参数或依赖错误。
+
+输出不包含目标 URL、响应头、正文和原始 curl 错误，可作为反馈线索，但分享前仍请检查。服务器上通过不代表公网客户端能访问，也不代表响应来自预期服务；最后务必用实际客户端验收。
+
 ## 访问入口域名没反应
 
 **症状：** 浏览器输入域名后一直加载，最后超时。

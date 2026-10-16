@@ -693,8 +693,8 @@ async function deploy(payload) {
 .plugin-face-switch__button--active { background: var(--color-bg-surface) !important; color: var(--color-primary) !important; box-shadow: var(--shadow-sm); }
 .plugin-deployment__metadata { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
 .plugin-deployment__metadata label, .plugin-deployment__entry-fields label { display: grid; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--text-sm); }
-.plugin-deployment__metadata select, .plugin-deployment__entry-fields input[type="text"] { min-width: 0; padding: .6rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit; }
-.plugin-deployment__metadata select:focus-visible, .plugin-deployment__entry-fields input[type="text"]:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
+.plugin-deployment__metadata select, .plugin-deployment__entry-fields input[type="text"] { min-width: 0; padding: var(--space-2-5) var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit; }
+.plugin-deployment__metadata select:focus-visible, .plugin-deployment__entry-fields input[type="text"]:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle)); }
 .plugin-deployment__agents, .plugin-deployment__entry { display: grid; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
 .plugin-deployment__agents legend, .plugin-deployment__entry legend { margin-bottom: var(--space-1); color: var(--color-text-primary); font-weight: 600; font-size: var(--text-sm); }
 .plugin-deployment__local-target {
@@ -709,7 +709,7 @@ async function deploy(payload) {
 .plugin-deployment__local-target > span:last-child { display: grid; gap: 0.15rem; min-width: 0; }
 .plugin-deployment__local-target strong { color: var(--color-text-primary); font-size: var(--text-sm); }
 .plugin-deployment__local-target small { color: var(--color-text-muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
-.plugin-deployment__local-target-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--color-success); }
+.plugin-deployment__local-target-dot { width: var(--space-2); height: var(--space-2); flex-shrink: 0; border-radius: 50%; background: var(--color-success); }
 .plugin-deployment__agent-hint { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); }
 .plugin-deployment__picker {
   min-width: 0; overflow: hidden;
@@ -732,11 +732,11 @@ async function deploy(payload) {
 .plugin-deployment__agent-search input::-webkit-search-cancel-button { appearance: none; }
 .plugin-deployment__agent-filters { display: flex; flex-wrap: wrap; gap: .25rem; }
 .plugin-deployment__agent-filter {
-  padding: .15rem .55rem; border: 0; border-radius: 999px;
+  padding: var(--space-0-5) var(--space-2); border: 0; border-radius: var(--radius-full);
   background: var(--color-bg-surface); color: var(--color-text-secondary);
   font: inherit; font-size: var(--text-xs); cursor: pointer;
 }
-.plugin-deployment__agent-filter--active { background: var(--color-primary); color: #fff; }
+.plugin-deployment__agent-filter--active { background: var(--color-primary); color: var(--color-text-inverse); }
 .plugin-deployment__agent-filter:disabled { cursor: not-allowed; opacity: .6; }
 .plugin-deployment__agent-list { max-height: 12.75rem; overflow: auto; min-width: 0; }
 .plugin-deployment__agent {

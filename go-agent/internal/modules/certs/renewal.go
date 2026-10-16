@@ -93,22 +93,33 @@ func (m *Manager) renewalCandidates() []renewalCandidate {
 // next-retry-at <= 0) means "retry immediately". The lock is held by the
 // caller; state is loaded read-only without mutating persisted state.
 func (m *Manager) isInRenewalBackoffLocked(certificateID int, now time.Time) bool {
+	return m.renewalBackoffErrorLocked(certificateID, now) != nil
+}
+
+// The persisted failure is already sanitized when recorded. Keep its cause and
+// deadline visible when subsequent Apply attempts are deferred, without recording
+// another failure or extending the cooldown on every configuration retry.
+func (m *Manager) renewalBackoffErrorLocked(certificateID int, now time.Time) error {
 	state, ok, err := m.loadManagedCertificateState(certificateID)
 	if err != nil || !ok || state.ACME == nil {
-		return false
+		return nil
 	}
 	renewal := state.ACME.Renewal
 	if strings.TrimSpace(renewal.BackoffClass) == "" {
-		return false
+		return nil
 	}
 	if renewal.LastAttemptStatus != "error" {
-		return false
+		return nil
 	}
 	next := renewal.BackoffRetryNext
-	if next <= 0 {
-		return false
+	if next <= 0 || now.Unix() >= next {
+		return nil
 	}
-	return now.Unix() < next
+	message := fmt.Sprintf("issuance deferred by failure backoff; retry at %s", time.Unix(next, 0).UTC().Format(time.RFC3339))
+	if cause := strings.TrimSpace(renewal.LastAttemptError); cause != "" {
+		message += "; last failure: " + cause
+	}
+	return errors.New(message)
 }
 
 func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandidate) error {

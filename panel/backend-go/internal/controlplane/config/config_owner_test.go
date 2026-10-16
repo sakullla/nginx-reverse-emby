@@ -166,6 +166,22 @@ func TestCloudflareReadinessRequiresConfiguredToken(t *testing.T) {
 	}
 }
 
+func TestUnsetDNSProviderLeavesCloudflareReadinessFalse(t *testing.T) {
+	requiredTokens(t)
+	t.Setenv("ACME_DNS_PROVIDER", "")
+	t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "")
+	t.Setenv("CF_DNS_API_TOKEN", "")
+	t.Setenv("CF_TOKEN", "")
+	t.Setenv("CF_Token", "")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCloudflareDNSReady() || cfg.DDNS.Token != "" || cfg.DDNSReady() {
+		t.Fatalf("unset provider readiness enabled=%v cloudflare=%v token=%q ddns=%v", cfg.ManagedDNSCertificatesEnabled, cfg.ManagedCloudflareDNSReady(), cfg.DDNS.Token, cfg.DDNSReady())
+	}
+}
+
 func TestCloudflareProviderSelectionEnablesPluginBackedLifecycleWithoutEnvToken(t *testing.T) {
 	requiredTokens(t)
 	t.Setenv("ACME_DNS_PROVIDER", "cf")

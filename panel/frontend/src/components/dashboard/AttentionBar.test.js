@@ -75,4 +75,20 @@ describe('AttentionBar', () => {
     expect(wrapper.find('[data-testid="attention-ok"]').exists()).toBe(false)
     expect(wrapper.findAllComponents(RouterLinkStub)).toHaveLength(0)
   })
+
+  it('surfaces a request failure with a retry instead of the eternal loading line', async () => {
+    const wrapper = mountBar({ attention: null, error: true })
+    expect(wrapper.find('[data-testid="attention-error"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('集群状态获取失败')
+    expect(wrapper.text()).not.toContain('检查集群状态')
+
+    await wrapper.find('[data-testid="attention-retry"]').trigger('click')
+    expect(wrapper.emitted('retry')).toHaveLength(1)
+  })
+
+  it('prefers recovered attention data over a stale error flag', () => {
+    const wrapper = mountBar({ attention: emptyAttention, error: true })
+    expect(wrapper.find('[data-testid="attention-ok"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="attention-error"]').exists()).toBe(false)
+  })
 })

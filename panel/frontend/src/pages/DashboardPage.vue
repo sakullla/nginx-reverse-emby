@@ -7,23 +7,42 @@
       </div>
     </div>
 
+    <!-- 首启上手清单:无规则的新实例展示,关闭后可从关于页重新打开 -->
+    <OnboardingChecklist
+      class="dashboard__onboarding card-enter"
+      :agents="agents || []"
+      :loaded="!isLoading"
+    />
+
     <!-- 第一屏:系统健康总览(需关注条 + 集群指标 + 节点状态) -->
-    <AttentionBar :attention="attention" class="dashboard__attention card-enter stagger-1" />
+    <AttentionBar
+      :attention="attention"
+      :error="attentionFailed"
+      class="dashboard__attention card-enter stagger-1"
+      @retry="refetchAttention"
+    />
 
     <!-- Loading state -->
     <SkeletonList v-if="isLoading" variant="cards" :count="3" label="仪表盘加载中" />
 
     <!-- Empty state -->
-    <div v-else-if="!agents?.length" class="dashboard__empty card-enter">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <ellipse cx="12" cy="5" rx="9" ry="3"/>
-        <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
-        <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
-      </svg>
-      <p>还没有节点</p>
-      <p class="dashboard__empty-hint">到节点管理加入第一台 Agent，这里会显示在线、同步和证书状态。</p>
-      <RouterLink to="/agents" class="btn btn-primary">去加入节点</RouterLink>
-    </div>
+    <EmptyState
+      v-else-if="!agents?.length"
+      class="card-enter"
+      title="还没有节点"
+      description="到节点管理加入第一台 Agent，这里会显示在线、同步和证书状态。"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <ellipse cx="12" cy="5" rx="9" ry="3"/>
+          <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+        </svg>
+      </template>
+      <template #action>
+        <RouterLink to="/agents" class="btn btn-primary">去加入节点</RouterLink>
+      </template>
+    </EmptyState>
 
     <div
       v-else
@@ -59,15 +78,20 @@ import { useAgents } from '../hooks/useAgents'
 import { useAttention } from '../hooks/useAttention'
 import { fetchSystemInfo } from '../api'
 import AttentionBar from '../components/dashboard/AttentionBar.vue'
+import OnboardingChecklist from '../components/dashboard/OnboardingChecklist.vue'
 import AgentStatusTiles from '../components/dashboard/AgentStatusTiles.vue'
 import ClusterMetricsCard from '../components/dashboard/ClusterMetricsCard.vue'
 import DashboardTrafficModule from '../components/traffic/DashboardTrafficModule.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
+import EmptyState from '../components/base/EmptyState.vue'
 
 const { data: agents, isLoading } = useAgents()
 
-const { data: attentionData } = useAttention()
+const { data: attentionData, isError: attentionIsError, refetch: refetchAttention } = useAttention()
 const attention = computed(() => attentionData.value?.ok ? attentionData.value : null)
+// A failed request (or an explicit ok:false payload) must surface as an error,
+// not stay stuck on the "checking cluster status" loading line forever.
+const attentionFailed = computed(() => !!attentionIsError?.value || attentionData.value?.ok === false)
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -127,6 +151,10 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
   margin: 0;
 }
 
+.dashboard__onboarding {
+  margin-bottom: var(--space-4);
+}
+
 .dashboard__attention {
   margin-bottom: var(--space-4);
 }
@@ -146,7 +174,7 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 }
 
 .dashboard__health-cell {
-  background: var(--color-bg-surface);
+  background: var(--color-bg-panel, var(--color-bg-surface));
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-xs);
@@ -194,28 +222,6 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
   gap: var(--space-3);
   padding: var(--space-12);
   color: var(--color-text-secondary);
-}
-
-.dashboard__empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  padding: var(--space-16) var(--space-6);
-  color: var(--color-text-secondary);
-  text-align: center;
-}
-
-.dashboard__empty p {
-  margin: 0;
-  font-size: var(--text-base);
-}
-
-.dashboard__empty .dashboard__empty-hint {
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-  max-width: 28rem;
 }
 
 @media (max-width: 1024px) {

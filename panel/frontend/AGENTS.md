@@ -12,6 +12,7 @@ This repository combines a Vue 3 control panel with a Go control plane and the G
 - `cd panel/backend-go && go test ./...` - run Go control-plane tests.
 - `cd go-agent && go test ./...` - run execution-plane tests.
 - `npm test` - run the fast frontend behavior suite.
+- `npm run capture:ui` - run the Playwright UI capture tool at `scripts/capture-ui.mjs` against an already running Vite dev server (default `http://localhost:5173`). It captures pages, dialogs, and menus in light/dark themes at desktop/tablet/mobile widths, and reports browser errors and viewport overflow.
 - `docker build -t nginx-reverse-emby .` - build the full container image.
 - `docker compose up -d` - start the local stack.
 
@@ -19,7 +20,7 @@ This repository combines a Vue 3 control panel with a Go control plane and the G
 Use 2-space indentation throughout the frontend. Vue components should use `<script setup>`, single quotes, and no semicolons. For control-plane API work, follow Go conventions in `panel/backend-go` and keep files `gofmt`-clean. Keep shell scripts POSIX-friendly unless the file already requires otherwise. Name Vue components with `PascalCase.vue` and JavaScript modules/stores in `camelCase`. Environment variables should remain uppercase with prefixes such as `PANEL_`, `PROXY_`, `MASTER_`, and `AGENT_`.
 
 ## Testing Guidelines
-Keep request, navigation, form, and state-transition coverage. Do not add presentation-only rendering matrices or test Vue source text with regular expressions. Before opening a PR, run `npm test` and `npm run build`.
+Keep request, navigation, form, and state-transition coverage. Do not add presentation-only rendering matrices or test Vue source text with regular expressions. For panel UI/UX changes, run `npm run capture:ui` (`scripts/capture-ui.mjs`) before and after changes and inspect the screenshots; output defaults to `panel/frontend/docs/verification/ui/` (ignored by Git), with `NRE_CAPTURE_OUT`, `NRE_CAPTURE_URL`, `NRE_CAPTURE_THEMES`, `NRE_CAPTURE_WIDTHS`, and `NRE_CAPTURE_CHANNEL` overrides. Captures use synthetic API fixtures, so treat them as visual review evidence rather than backend acceptance evidence. The default browser is Microsoft Edge with bundled Chromium as fallback. Before opening a PR, run `npm test` and `npm run build`.
 
 ## Commit & Pull Request Guidelines
 Follow Conventional Commits, for example `feat(panel): add login status banner` or `fix(agent): handle timeout`. Keep commits focused by area: frontend, backend, infra/scripts, or docs. PRs should include a short summary, manual verification steps, linked issues when applicable, and screenshots or GIFs for UI changes.

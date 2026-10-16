@@ -194,8 +194,8 @@ async function handleExport() {
 }
 
 .resource-list__checkbox {
-  width: 16px;
-  height: 16px;
+  width: var(--space-4);
+  height: var(--space-4);
   accent-color: var(--color-primary);
   cursor: pointer;
   flex-shrink: 0;
@@ -219,7 +219,7 @@ async function handleExport() {
   color: var(--color-text-tertiary);
   background: var(--color-bg-subtle);
   padding: 0.15rem 0.5rem;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
 }
 

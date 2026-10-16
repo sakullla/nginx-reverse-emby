@@ -130,6 +130,13 @@ describe('AgentDdnsForm', () => {
     expect(wrapper.emitted('save')).toHaveLength(1)
   })
 
+  it('emits cancel from the secondary button', async () => {
+    const wrapper = mountForm({ modelValue: defaultModel({ domain: 'edge.example.com' }) })
+    await wrapper.find('[data-testid="agent-ddns-form-cancel"]').trigger('click')
+    expect(wrapper.emitted('cancel')).toHaveLength(1)
+    expect(wrapper.emitted('save')).toBeUndefined()
+  })
+
   it('disables save while saving and shows progress text', () => {
     const wrapper = mountForm({
       modelValue: defaultModel({ domain: 'edge.example.com' }),

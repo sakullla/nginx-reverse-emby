@@ -47,14 +47,19 @@ function onClick(e) {
   color: var(--color-text-secondary);
   cursor: pointer;
   border-radius: var(--radius-md);
-  transition: background 0.15s, color 0.15s, transform 0.15s;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default), transform var(--duration-fast) var(--ease-default);
   padding: 0;
   flex-shrink: 0;
 }
 
 .base-icon-button:disabled {
-  opacity: 0.4;
+  opacity: 0.48;
   cursor: not-allowed;
+}
+
+.base-icon-button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-primary);
 }
 
 .base-icon-button:active:not(:disabled) {
@@ -91,5 +96,12 @@ function onClick(e) {
 .base-icon-button--primary:hover:not(:disabled) {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
+}
+
+@media (pointer: coarse) {
+  .base-icon-button {
+    width: 44px;
+    height: 44px;
+  }
 }
 </style>

@@ -279,7 +279,7 @@ function backendTooltip(rule) {
 .toggle {
   width: 36px;
   height: 20px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: none;
   background: var(--color-bg-subtle);
   cursor: pointer;
@@ -292,21 +292,21 @@ function backendTooltip(rule) {
 
 .toggle__knob {
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: var(--space-0-5);
+  left: var(--space-0-5);
   width: 16px;
   height: 16px;
   border-radius: 50%;
   background: var(--color-text-inverse);
   transition: transform var(--duration-normal) var(--ease-default);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-xs);
 }
 
 .toggle--on .toggle__knob { transform: translateX(16px); }
 
 .tag {
   font-size: 0.6875rem;
-  padding: 2px 7px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-primary-subtle);
   color: var(--color-primary);
   border-radius: var(--radius-full);

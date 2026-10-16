@@ -105,6 +105,7 @@
         :initial-data="editingProfile"
         :is-loading="isSaving"
         @submit="handleSubmit"
+        @cancel="showForm = false"
       />
     </BaseModal>
 
@@ -421,8 +422,8 @@ function confirmDelete() {
 }
 
 .egress-card__status-dot {
-  width: 6px;
-  height: 6px;
+  width: var(--space-1-5);
+  height: var(--space-1-5);
   border-radius: 50%;
   background: currentColor;
   flex-shrink: 0;

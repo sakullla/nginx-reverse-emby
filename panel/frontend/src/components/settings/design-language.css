@@ -2,7 +2,7 @@
    设置页设计语言范式（新设计语言先行页）
    复用 themes.css token（以 --color-、--radius-、--space-、--text-、--font-、--duration-、--ease- 开头的 CSS 变量）。
    本文件为设置页专属样式，由 SettingsPage.vue 引入；设置页各分区复用 .btn--* 与 .settings-section 范式。
-   不引入第三方 UI 库；token 驱动以兼容 4 主题（sakura-day/sakura-night/neko-dark/business）。
+   不引入第三方 UI 库；token 驱动以兼容 5 主题（fresh-green/sakura-day/sakura-night/neko-dark/business）。
    ============================================= */
 
 /* === Button 范式 ===

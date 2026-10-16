@@ -21,6 +21,18 @@ permissions:
   contents: read
 
 jobs:
+  proxy-check:
+    if: github.event_name != 'schedule'
+    name: First-proxy connectivity checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Check shell syntax
+        run: sh -n scripts/check-proxy.sh
+      - name: Test local HTTP responses and failure diagnostics
+        run: python3 scripts/check-proxy.test.py
+
   go-fast:
     if: github.event_name != 'schedule'
     name: Fast Go (${{ matrix.module }})

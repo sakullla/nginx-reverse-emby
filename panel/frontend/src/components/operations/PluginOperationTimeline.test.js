@@ -36,6 +36,33 @@ describe('PluginOperationTimeline', () => {
     expect(wrapper.text()).not.toContain('kind-2')
   })
 
+  it('expands and collapses older operations with the show-more entry', async () => {
+    const operations = Array.from({ length: 7 }, (_, index) => ({
+      id: `op-${index + 1}`,
+      kind: `kind-${index + 1}`,
+      status: 'succeeded',
+      created_at: `2026-08-${String(index + 1).padStart(2, '0')}T00:00:00Z`
+    }))
+    const wrapper = mount(PluginOperationTimeline, { props: { operations } })
+    const toggle = wrapper.get('[data-test="plugin-operation-toggle"]')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.text()).toContain('还有 2 条')
+    await toggle.trigger('click')
+    expect(wrapper.findAll('li')).toHaveLength(7)
+    expect(wrapper.text()).toContain('kind-2')
+    expect(wrapper.get('[data-test="plugin-operation-toggle"]').attributes('aria-expanded')).toBe('true')
+    await wrapper.get('[data-test="plugin-operation-toggle"]').trigger('click')
+    expect(wrapper.findAll('li')).toHaveLength(5)
+    expect(wrapper.text()).not.toContain('kind-2')
+  })
+
+  it('hides the show-more entry when all operations already fit', () => {
+    const wrapper = mount(PluginOperationTimeline, {
+      props: { operations: [{ id: 'op-1', kind: 'configure', status: 'succeeded', created_at: '2026-08-24T06:55:53Z' }] }
+    })
+    expect(wrapper.find('[data-test="plugin-operation-toggle"]').exists()).toBe(false)
+  })
+
   it('formats operation times in the panel timezone after /info loads NRE_TIMEZONE', async () => {
     setPanelTimeZone('UTC')
     const wrapper = mount(PluginOperationTimeline, {

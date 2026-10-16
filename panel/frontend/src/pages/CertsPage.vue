@@ -6,6 +6,18 @@
       :subtitle="publicSubtitle"
     >
       <template #actions>
+        <a
+          class='btn btn-secondary docs-link cert-center__docs-link'
+          :href='DOC_LINKS.certificates'
+          target='_blank'
+          rel='noopener'
+        >
+          <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'>
+            <path d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20' />
+            <path d='M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z' />
+          </svg>
+          <span class='btn-text'>查看文档</span>
+        </a>
         <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
         <button v-if='canCreate' class='btn btn-primary' title='新建证书' aria-label='新建证书' @click="startCreate">
           <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' aria-hidden='true'>
@@ -32,15 +44,21 @@
       @update:filter="onFilterUpdate"
     />
 
-    <div v-if='!allAgents.length' class='certs-page__prompt'>
-      <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
-        <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
-        <path d='M7 11V7a5 5 0 0 1 10 0v4' />
-      </svg>
-      <p>暂无可用节点</p>
-      <p class="certs-page__prompt-hint">请先加入节点后再管理证书</p>
-      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
-    </div>
+    <EmptyState
+      v-if='!allAgents.length'
+      title='暂无可用节点'
+      description='请先加入节点后再管理证书'
+    >
+      <template #icon>
+        <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+          <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
+          <path d='M7 11V7a5 5 0 0 1 10 0v4' />
+        </svg>
+      </template>
+      <template #action>
+        <RouterLink to='/agents' class='btn btn-primary'>加入节点</RouterLink>
+      </template>
+    </EmptyState>
 
     <SkeletonList v-else-if='isLoading' :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
 
@@ -72,28 +90,34 @@
       @update:page="page = $event"
     />
 
-    <div v-if='hasAgentFilter && certificates.length && !filteredCerts.length && !_crossSearching' class='certs-page__empty'>
-      <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
-        <circle cx='11' cy='11' r='8' />
-        <line x1='21' y1='21' x2='16.65' y2='16.65' />
-      </svg>
-      <p>没有匹配的证书</p>
-    </div>
+    <EmptyState
+      v-if='hasAgentFilter && certificates.length && !filteredCerts.length && !_crossSearching'
+      title='没有匹配的证书'
+      description=''
+    >
+      <template #icon>
+        <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+          <circle cx='11' cy='11' r='8' />
+          <line x1='21' y1='21' x2='16.65' y2='16.65' />
+        </svg>
+      </template>
+    </EmptyState>
 
-    <div v-if='hasAgentFilter && !isLoading && !certificates.length && !exactCertMatch && !_crossSearching' class='certs-page__empty'>
-      <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
-        <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
-        <path d='M7 11V7a5 5 0 0 1 10 0v4' />
-      </svg>
-      <template v-if='hasActiveFilters'>
-        <p>没有匹配的证书</p>
+    <EmptyState
+      v-if='hasAgentFilter && !isLoading && !certificates.length && !exactCertMatch && !_crossSearching'
+      :title="hasActiveFilters ? '没有匹配的证书' : '暂无证书'"
+      :description="!hasActiveFilters && !canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
+    >
+      <template #icon>
+        <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+          <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
+          <path d='M7 11V7a5 5 0 0 1 10 0v4' />
+        </svg>
       </template>
-      <template v-else>
-        <p>暂无证书</p>
-        <button v-if='canCreate' class='btn btn-primary' @click="startCreate">从模板创建第一个证书</button>
-        <p v-else class='certs-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
+      <template v-if='!hasActiveFilters && canCreate' #action>
+        <button class='btn btn-primary' @click="startCreate">从模板创建第一个证书</button>
       </template>
-    </div>
+    </EmptyState>
 
     <BaseModal
       :model-value="showAddForm || !!editingCert"
@@ -103,7 +127,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <CertificateForm :initial-data="editingCert" :agent-id="formAgentId" @success="closeForm" />
+      <CertificateForm :initial-data="editingCert" :agent-id="formAgentId" @success="closeForm" @cancel="closeForm" />
     </BaseModal>
 
     <DeleteConfirmDialog
@@ -113,6 +137,7 @@
       :name='deletingCert?.domain'
       confirm-text='确认删除'
       :loading='deleteCertificate.isPending?.value'
+      :error='deleteError'
       @confirm='confirmDelete'
       @cancel='deletingCert = null'
     />
@@ -150,9 +175,11 @@ import CertificateCenterChrome from '../components/certs/CertificateCenterChrome
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
+import EmptyState from '../components/base/EmptyState.vue'
 import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { useListFilterUrl } from '../composables/useListFilterUrl'
+import { DOC_LINKS } from '../constants/docLinks'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
@@ -163,6 +190,7 @@ import { fetchCertificates, fetchAllAgentsCertificates } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
+import { messageStore } from '../stores/messages'
 
 const route = useRoute()
 const router = useRouter()
@@ -392,6 +420,7 @@ const listTotal = computed(() => certsPage.value?.total ?? 0)
 const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)
+const deleteError = ref('')
 
 // Search pre-fill / clear is handled by useListFilterUrl's key-level watcher
 // on route.query.search (replaces the old per-page watch; same semantics).
@@ -502,9 +531,11 @@ function startEdit(cert) {
 
 function startDelete(cert) {
   if (isSystemRelayCA(cert)) {
+    messageStore.error('系统 Relay CA 证书由面板自动管理，不能手动删除')
     return
   }
   deletingCert.value = cert
+  deleteError.value = ''
 }
 
 function closeForm() {
@@ -512,12 +543,18 @@ function closeForm() {
   editingCert.value = null
 }
 
-function confirmDelete() {
+async function confirmDelete() {
   if (!deletingCert.value) return
   const target = requireMutationAgent(deletingCert.value, '删除')
   if (!target) return
-  deleteCertificate.mutate({ id: deletingCert.value.id, agentId: target })
-  deletingCert.value = null
+  try {
+    await deleteCertificate.mutateAsync({ id: deletingCert.value.id, agentId: target })
+    deleteError.value = ''
+    deletingCert.value = null
+  } catch (error) {
+    // Keep the dialog open with the failure reason; the hook also toasts.
+    deleteError.value = error?.message || '删除失败，请稍后重试'
+  }
 }
 
 </script>
@@ -529,25 +566,6 @@ function confirmDelete() {
   animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }
 
-.certs-page__loading,
-.certs-page__empty,
-.certs-page__prompt {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 3.25rem 1.5rem;
-  color: var(--color-text-muted);
-  text-align: center;
-  animation: fadeIn 0.3s var(--ease-default) both;
-}
-
-.certs-page__prompt-hint {
-  font-size: 0.8125rem;
-  color: var(--color-text-tertiary);
-}
-
 .cert-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -556,6 +574,10 @@ function confirmDelete() {
 
 @media (min-width: 1280px) {
   .cert-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .cert-grid { grid-template-columns: 1fr; }
 }
 
 .cert-grid,

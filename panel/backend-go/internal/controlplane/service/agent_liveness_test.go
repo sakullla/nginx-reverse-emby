@@ -30,9 +30,7 @@ func TestAgentHeartbeatReturnsCommittedQuotaBlock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("SQLite-backed heartbeat lifecycle runs in the full test tier")
 	}
-	store, err := storage.NewStore(storage.StoreConfig{
-		Driver: "sqlite", DataRoot: t.TempDir(), LocalAgentID: "local", TrafficStatsEnabled: true,
-	})
+	store, err := newServiceSQLiteStore(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,9 +74,7 @@ func TestAgentHeartbeatLivenessAndPackageStateRemainIndependent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("SQLite-backed heartbeat lifecycle runs in the full test tier")
 	}
-	store, err := storage.NewStore(storage.StoreConfig{
-		Driver: "sqlite", DataRoot: t.TempDir(), LocalAgentID: "local", TrafficStatsEnabled: true,
-	})
+	store, err := newServiceSQLiteStore(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,18 @@
         <p v-else class='relay-page__subtitle'>暂无可用节点</p>
       </div>
       <div class='relay-page__header-right'>
+        <a
+          class='btn btn-secondary docs-link relay-page__docs-link'
+          :href='DOC_LINKS.relay'
+          target='_blank'
+          rel='noopener'
+        >
+          <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'>
+            <path d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20' />
+            <path d='M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z' />
+          </svg>
+          <span class='btn-text'>查看文档</span>
+        </a>
         <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
         <button v-if='canCreate' class='btn btn-primary' title='新建监听器' aria-label='新建监听器' @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
@@ -33,36 +45,48 @@
     />
 
     <!-- No agents available -->
-    <div v-if='!allAgents.length' class='relay-page__prompt'>
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
-      </svg>
-      <p>暂无可用节点</p>
-      <p class="relay-page__prompt-hint">请先加入节点后再管理 Relay 监听器</p>
-      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
-    </div>
+    <EmptyState
+      v-if='!allAgents.length'
+      title='暂无可用节点'
+      description='请先加入节点后再管理 Relay 监听器'
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
+        </svg>
+      </template>
+      <template #action>
+        <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
+      </template>
+    </EmptyState>
 
     <!-- Filter active, no listeners -->
-    <div v-else-if='hasAgentFilter && !listeners.length && !exactRelayMatch && !isLoading && !_crossSearching' class='relay-page__empty'>
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
-      </svg>
-      <template v-if='hasActiveFilters'>
-        <p>没有匹配的 Relay 监听器</p>
+    <EmptyState
+      v-else-if='hasAgentFilter && !listeners.length && !exactRelayMatch && !isLoading && !_crossSearching'
+      :title="hasActiveFilters ? '没有匹配的 Relay 监听器' : '暂无 Relay 监听器'"
+      :description="!hasActiveFilters && !canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
+        </svg>
       </template>
-      <template v-else>
-        <p>暂无 Relay 监听器</p>
-        <button v-if='canCreate' class='btn btn-primary' @click="startCreate">创建第一个监听器</button>
-        <p v-else class='relay-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
+      <template v-if='!hasActiveFilters && canCreate' #action>
+        <button class='btn btn-primary' @click="startCreate">创建第一个监听器</button>
       </template>
-    </div>
+    </EmptyState>
 
-    <div v-else-if='hasAgentFilter && listeners.length && !displayListeners.length && !_crossSearching' class='relay-page__empty'>
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-      </svg>
-      <p>没有匹配的 Relay 监听器</p>
-    </div>
+    <EmptyState
+      v-else-if='hasAgentFilter && listeners.length && !displayListeners.length && !_crossSearching'
+      title='没有匹配的 Relay 监听器'
+      description=''
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </template>
+    </EmptyState>
 
     <!-- Listener card grid -->
     <div v-show='hasAgentFilter && displayListeners.length && view === "card"' class='relay-grid'>
@@ -109,7 +133,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <RelayListenerForm :initial-data="editingListener" :agent-id="formAgentId" @success="closeForm" />
+      <RelayListenerForm :initial-data="editingListener" :agent-id="formAgentId" @success="closeForm" @cancel="closeForm" />
     </BaseModal>
 
     <DeleteConfirmDialog
@@ -119,6 +143,7 @@
       :name="deletingListener?.name"
       confirm-text="确认删除"
       :loading="deleteRelayListener.isPending?.value"
+      :error="deleteError"
       @confirm="confirmDelete"
       @cancel="deletingListener = null"
     />
@@ -167,6 +192,7 @@ import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
+import EmptyState from '../components/base/EmptyState.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
@@ -176,6 +202,8 @@ import OperationStatusList from '../components/operations/OperationStatusList.vu
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
+import { DOC_LINKS } from '../constants/docLinks'
+import { messageStore } from '../stores/messages'
 
 const route = useRoute()
 const router = useRouter()
@@ -536,22 +564,17 @@ function toggleListener(listener) {
   updateRelayListener.mutate({ id: listener.id, enabled: !listener.enabled, agentId: target })
 }
 
-function confirmDelete() {
+async function confirmDelete() {
   if (!deletingListener.value) return
   const target = requireMutationAgent(deletingListener.value, '删除')
   if (!target) return
-  deleteRelayListener.mutate(
-    { id: deletingListener.value.id, agentId: target },
-    {
-      onSuccess: () => {
-        deleteError.value = ''
-        deletingListener.value = null
-      },
-      onError: (err) => {
-        deleteError.value = err?.message || '删除失败'
-      },
-    },
-  )
+  try {
+    await deleteRelayListener.mutateAsync({ id: deletingListener.value.id, agentId: target })
+    deleteError.value = ''
+    deletingListener.value = null
+  } catch (err) {
+    deleteError.value = err?.message || '删除失败'
+  }
 }
 </script>
 
@@ -598,25 +621,6 @@ function confirmDelete() {
   margin: 0;
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
-}
-
-.relay-page__prompt,
-.relay-page__empty,
-.relay-page__loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 3.25rem 1.5rem;
-  color: var(--color-text-muted);
-  text-align: center;
-  animation: fadeIn 0.3s var(--ease-default) both;
-}
-
-.relay-page__prompt-hint {
-  font-size: 0.8125rem;
-  color: var(--color-text-tertiary);
 }
 
 .relay-grid {

@@ -8,10 +8,9 @@
       @update:open="searchOpen = $event"
     />
     <div class="app-layout">
+      <SakuraBackdrop />
       <!-- Desktop sidebar -->
       <Sidebar v-if="!isMobile" />
-      <!-- Mobile sidebar overlay -->
-      <div v-if="mobileSidebarOpen" class="sidebar-overlay" @click="mobileSidebarOpen = false" />
       <main id="main-content" class="content" tabindex="-1">
         <RouterView />
       </main>
@@ -21,14 +20,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import TopBar from './TopBar.vue'
 import Sidebar from './Sidebar.vue'
 import BottomNav from './BottomNav.vue'
 import GlobalSearch from '../GlobalSearch.vue'
 import OperationTracker from '../operations/OperationTracker.vue'
+import SakuraBackdrop from '../base/SakuraBackdrop.vue'
 
-const mobileSidebarOpen = ref(false)
 const searchOpen = ref(false)
 const isMobile = ref(window.innerWidth < 1024)
 
@@ -47,26 +46,26 @@ onUnmounted(() => {
 
 <style scoped>
 .app-shell {
+  background: var(--color-bg-atmosphere, var(--color-bg-canvas));
   height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .app-layout {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
 }
 .content {
+  position: relative;
+  z-index: 1;
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
-  padding: 1.5rem;
-}
-.sidebar-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.3);
-  z-index: calc(var(--z-fixed) - 1);
+  scrollbar-gutter: stable;
+  padding: var(--space-6);
 }
 /* Keyboard-only shortcut into the page — invisible until focused */
 .skip-link {
@@ -78,7 +77,7 @@ onUnmounted(() => {
   border-radius: var(--radius-lg);
   background: var(--color-bg-surface-raised);
   color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   box-shadow: var(--shadow-lg);
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
@@ -95,13 +94,13 @@ onUnmounted(() => {
 @media (max-width: 1023px) {
   .content {
     /* Tighter side padding on phones/tablets so list cards keep usable width */
-    padding: 1rem 0.85rem 5rem;
+    padding: var(--space-4) var(--space-3) calc(var(--space-20) + env(safe-area-inset-bottom, 0px));
   }
 }
 
 @media (max-width: 640px) {
   .content {
-    padding: 0.85rem 0.75rem 5rem;
+    padding: var(--space-3) var(--space-3) calc(var(--space-20) + env(safe-area-inset-bottom, 0px));
   }
 }
 </style>

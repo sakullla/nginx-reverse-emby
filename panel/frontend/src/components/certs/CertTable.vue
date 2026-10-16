@@ -311,7 +311,7 @@ function nextRetryLabel(cert) {
 
 .tag {
   font-size: 0.6875rem;
-  padding: 2px 7px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-primary-subtle);
   color: var(--color-primary);
   border-radius: var(--radius-full);

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/sanitize"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -40,13 +41,45 @@ var pluginUISessionRequestHeaders = []string{
 	"X-Register-Token",
 }
 
-const internalDNSResolvePath = "/.nre/providers/dns/token"
-const internalDNSProviderVersionHeader = "X-NRE-DNS-Provider-Version"
+const (
+	internalDNSResolvePath           = "/.nre/providers/dns/token"
+	internalDNSEnsurePath            = "/.nre/providers/dns/records/ensure"
+	internalDNSDeletePath            = "/.nre/providers/dns/records/delete"
+	internalDNSProviderVersionHeader = "X-NRE-DNS-Provider-Version"
+)
+
+const (
+	DNSProviderCloudflare = "cloudflare"
+	DNSProviderAliyun     = "aliyun"
+	DNSProviderDNSPodCN   = "dnspod-cn"
+	DNSProviderDNSPodCom  = "dnspod-com"
+	DNSProviderTencentDNS = "tencent-dns"
+)
 
 var (
-	ErrDNSProviderUnavailable = errors.New("DNS provider is unavailable")
-	ErrDNSTokenNotMapped      = errors.New("DNS provider has no token mapping for domain")
+	ErrDNSProviderUnavailable   = errors.New("DNS provider is unavailable")
+	ErrDNSTokenNotMapped        = errors.New("DNS provider has no token mapping for domain")
+	ErrDNSProviderNotCloudflare = errors.New("DNS provider mapping is not a Cloudflare token")
 )
+
+// DNSProviderResolution is the winning dns.provider mapping for one domain.
+// Domestic providers leave Token empty; that response must not be given to a
+// Cloudflare client.
+type DNSProviderResolution struct {
+	Provider string
+	Token    string
+}
+
+// IsDomesticDNSProvider reports the four providers whose records are written
+// by the plugin instead of the control-plane Cloudflare client.
+func IsDomesticDNSProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case DNSProviderAliyun, DNSProviderDNSPodCN, DNSProviderDNSPodCom, DNSProviderTencentDNS:
+		return true
+	default:
+		return false
+	}
+}
 
 type pluginUIHTTPClient struct {
 	client    *http.Client
@@ -278,16 +311,52 @@ func (h *Host) HasActiveDNSProvider() bool {
 }
 
 // ResolveDNSToken asks published dns.provider instances for the longest-suffix
-// mapping they own. Provider traffic stays on the authenticated private Unix
-// endpoint and the reserved path is never exposed through the panel UI proxy.
+// Cloudflare mapping they own. A domestic mapping is not a Cloudflare token and
+// must not fall through to an environment credential.
 func (h *Host) ResolveDNSToken(ctx context.Context, domain string) (string, error) {
+	resolved, err := h.ResolveDNSProvider(ctx, domain)
+	if err != nil {
+		return "", err
+	}
+	if IsDomesticDNSProvider(resolved.Provider) || resolved.Token == "" {
+		return "", ErrDNSProviderNotCloudflare
+	}
+	return resolved.Token, nil
+}
+
+// ResolveDNSProvider returns the single winning mapping. An empty provider with
+// a token is the legacy Cloudflare contract. More than one mapping fails closed.
+func (h *Host) ResolveDNSProvider(ctx context.Context, domain string) (DNSProviderResolution, error) {
+	instance, resolved, err := h.selectDNSProvider(ctx, domain)
+	if err != nil {
+		return DNSProviderResolution{}, err
+	}
+	if instance == nil {
+		return DNSProviderResolution{}, ErrDNSTokenNotMapped
+	}
+	return resolved, nil
+}
+
+// EnsureDNSRecord asks the winning domestic provider to create or update one
+// A, AAAA, or TXT record. Cloudflare and unmapped suffixes are not written.
+func (h *Host) EnsureDNSRecord(ctx context.Context, domain, recordType, name, content string, ttl int) error {
+	return h.mutateDNSRecord(ctx, internalDNSEnsurePath, "dns-ensure", domain, recordType, name, content, &ttl)
+}
+
+// DeleteDNSRecord asks the winning domestic provider to remove one TXT whose
+// name and content both match. Other records are left untouched.
+func (h *Host) DeleteDNSRecord(ctx context.Context, domain, recordType, name, content string) error {
+	return h.mutateDNSRecord(ctx, internalDNSDeletePath, "dns-delete", domain, recordType, name, content, nil)
+}
+
+func (h *Host) selectDNSProvider(ctx context.Context, domain string) (*Instance, DNSProviderResolution, error) {
 	if h == nil || ctx == nil {
-		return "", ErrDNSProviderUnavailable
+		return nil, DNSProviderResolution{}, ErrDNSProviderUnavailable
 	}
 	domain = strings.ToLower(strings.TrimRight(strings.TrimSpace(domain), "."))
 	domain = strings.TrimPrefix(domain, "*.")
 	if domain == "" {
-		return "", errors.New("DNS token domain is required")
+		return nil, DNSProviderResolution{}, errors.New("DNS token domain is required")
 	}
 	h.mu.RLock()
 	instances := make([]*Instance, 0)
@@ -298,49 +367,170 @@ func (h *Host) ResolveDNSToken(ctx context.Context, domain string) (string, erro
 	}
 	h.mu.RUnlock()
 	if len(instances) == 0 {
-		return "", ErrDNSProviderUnavailable
+		return nil, DNSProviderResolution{}, ErrDNSProviderUnavailable
 	}
 	sort.Slice(instances, func(left, right int) bool { return instances[left].ID < instances[right].ID })
 
-	resolved := ""
+	var selected *Instance
+	var resolved DNSProviderResolution
 	for _, instance := range instances {
-		token, err := h.resolveDNSTokenFromInstance(ctx, instance, domain)
+		hit, err := h.resolveDNSProviderFromInstance(ctx, instance, domain)
 		if errors.Is(err, ErrDNSTokenNotMapped) {
 			continue
 		}
 		if err != nil {
-			return "", err
+			return nil, DNSProviderResolution{}, err
 		}
-		if resolved != "" {
-			return "", errors.New("multiple DNS providers mapped the same domain")
+		if selected != nil {
+			return nil, DNSProviderResolution{}, errors.New("multiple DNS providers mapped the same domain")
 		}
-		resolved = token
+		selected = instance
+		resolved = hit
 	}
-	if resolved == "" {
-		return "", ErrDNSTokenNotMapped
-	}
-	return resolved, nil
+	return selected, resolved, nil
 }
 
-func (h *Host) resolveDNSTokenFromInstance(ctx context.Context, instance *Instance, domain string) (string, error) {
+func (h *Host) mutateDNSRecord(ctx context.Context, path, operation, domain, recordType, name, content string, ttl *int) error {
+	instance, resolved, err := h.selectDNSProvider(ctx, domain)
+	if err != nil {
+		return err
+	}
+	if instance == nil || !IsDomesticDNSProvider(resolved.Provider) {
+		return ErrDNSProviderNotCloudflare
+	}
+	recordType = strings.ToUpper(strings.TrimSpace(recordType))
+	switch recordType {
+	case "A", "AAAA", "TXT":
+	default:
+		return errors.New("DNS record type is not supported")
+	}
+	if recordType != "TXT" && ttl == nil {
+		return errors.New("DNS record deletion only removes matching TXT records")
+	}
+	name = strings.TrimSpace(name)
+	content = strings.TrimSpace(content)
+	if name == "" || content == "" {
+		return errors.New("DNS record name and content are required")
+	}
+	payload := struct {
+		Domain  string `json:"domain"`
+		Type    string `json:"type"`
+		Name    string `json:"name"`
+		Content string `json:"content"`
+		TTL     int    `json:"ttl,omitempty"`
+	}{
+		Domain:  strings.TrimPrefix(strings.ToLower(strings.TrimRight(strings.TrimSpace(domain), ".")), "*."),
+		Type:    recordType,
+		Name:    name,
+		Content: content,
+	}
+	if ttl != nil {
+		payload.TTL = *ttl
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	defer clear(body)
+	response, cancel, err := h.postDNSProvider(ctx, instance, path, "operation/"+operation+"/", body)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	defer response.Body.Close()
+	if response.Header.Get(internalDNSProviderVersionHeader) != "1" {
+		return errors.New("DNS provider does not implement private token resolution contract v1")
+	}
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	if err != nil {
+		return fmt.Errorf("DNS provider request: %w", err)
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return errors.New("DNS provider refused the record operation")
+	}
+	if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent {
+		h.mu.RLock()
+		stillActive := h.active[instance.ID] == instance && instance.Generation == instance.candidate.Identity.Generation
+		h.mu.RUnlock()
+		if !stillActive {
+			return ErrDNSProviderUnavailable
+		}
+		return nil
+	}
+	return dnsProviderStatusError(response.StatusCode, responseBody)
+}
+
+func (h *Host) resolveDNSProviderFromInstance(ctx context.Context, instance *Instance, domain string) (DNSProviderResolution, error) {
+	body, err := json.Marshal(struct {
+		Domain string `json:"domain"`
+	}{Domain: domain})
+	if err != nil {
+		return DNSProviderResolution{}, err
+	}
+	defer clear(body)
+	response, cancel, err := h.postDNSProvider(ctx, instance, internalDNSResolvePath, "operation/dns-resolve/", body)
+	if err != nil {
+		return DNSProviderResolution{}, err
+	}
+	defer cancel()
+	defer response.Body.Close()
+	if response.Header.Get(internalDNSProviderVersionHeader) != "1" {
+		return DNSProviderResolution{}, errors.New("DNS provider does not implement private token resolution contract v1")
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return DNSProviderResolution{}, ErrDNSTokenNotMapped
+	}
+	if response.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return DNSProviderResolution{}, dnsProviderStatusError(response.StatusCode, responseBody)
+	}
+	var result struct {
+		Token    []byte `json:"token"`
+		Provider string `json:"provider"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 8192))
+	if err := decoder.Decode(&result); err != nil {
+		return DNSProviderResolution{}, fmt.Errorf("decode DNS provider response: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		clear(result.Token)
+		return DNSProviderResolution{}, errors.New("DNS provider returned trailing response data")
+	}
+	defer clear(result.Token)
+	provider := strings.ToLower(strings.TrimSpace(result.Provider))
+	if provider == "" {
+		provider = DNSProviderCloudflare
+	}
+	h.mu.RLock()
+	stillActive := h.active[instance.ID] == instance && instance.Generation == instance.candidate.Identity.Generation
+	h.mu.RUnlock()
+	if !stillActive {
+		return DNSProviderResolution{}, ErrDNSProviderUnavailable
+	}
+	if IsDomesticDNSProvider(provider) {
+		return DNSProviderResolution{Provider: provider}, nil
+	}
+	if provider != DNSProviderCloudflare {
+		return DNSProviderResolution{}, errors.New("DNS provider returned an unknown provider")
+	}
+	if len(result.Token) == 0 || len(result.Token) > 4096 {
+		return DNSProviderResolution{}, errors.New("DNS provider returned an invalid token")
+	}
+	return DNSProviderResolution{Provider: DNSProviderCloudflare, Token: string(result.Token)}, nil
+}
+
+func (h *Host) postDNSProvider(ctx context.Context, instance *Instance, path, operationPrefix string, body []byte) (*http.Response, context.CancelFunc, error) {
 	deadline := instance.candidate.Deadline
 	if deadline <= 0 {
 		deadline = 5 * time.Second
 	}
 	callCtx, cancel := context.WithTimeout(ctx, deadline)
-	defer cancel()
-	body, err := json.Marshal(struct {
-		Domain string `json:"domain"`
-	}{Domain: domain})
+	request, err := http.NewRequestWithContext(callCtx, http.MethodPost, "http://plugin-ui"+path, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		cancel()
+		return nil, nil, err
 	}
-	request, err := http.NewRequestWithContext(callCtx, http.MethodPost, "http://plugin-ui"+internalDNSResolvePath, bytes.NewReader(body))
-	if err != nil {
-		clear(body)
-		return "", err
-	}
-	defer clear(body)
 	request.Header.Set("Content-Type", "application/json")
 	request.Close = true
 	request.Header.Set(pluginsdk.HeaderPluginUICredential, instance.candidate.uiEndpoint.Cookie)
@@ -352,43 +542,28 @@ func (h *Host) resolveDNSTokenFromInstance(ctx context.Context, instance *Instan
 	request.Header.Set("X-NRE-Resource-Group", resourceGroupRef)
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		return "", err
+		cancel()
+		return nil, nil, err
 	}
-	request.Header.Set("X-NRE-Operation-Key", "operation/dns-resolve/"+hex.EncodeToString(nonce[:]))
+	request.Header.Set("X-NRE-Operation-Key", operationPrefix+hex.EncodeToString(nonce[:]))
 	response, err := instance.pluginUIClient().Do(request)
 	if err != nil {
-		return "", fmt.Errorf("DNS provider request: %w", err)
+		cancel()
+		return nil, nil, fmt.Errorf("DNS provider request: %w", err)
 	}
-	defer response.Body.Close()
-	if response.Header.Get(internalDNSProviderVersionHeader) != "1" {
-		return "", errors.New("DNS provider does not implement private token resolution contract v1")
+	return response, cancel, nil
+}
+
+func dnsProviderStatusError(status int, body []byte) error {
+	if status == http.StatusNotFound {
+		return ErrDNSTokenNotMapped
 	}
-	if response.StatusCode == http.StatusNotFound {
-		return "", ErrDNSTokenNotMapped
+	message := strings.TrimSpace(sanitize.Text(string(body), nil))
+	if len(message) > 300 {
+		message = message[:300]
 	}
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("DNS provider returned status %d", response.StatusCode)
+	if message == "" {
+		return fmt.Errorf("DNS provider returned status %d", status)
 	}
-	var result struct {
-		Token []byte `json:"token"`
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 8192))
-	if err := decoder.Decode(&result); err != nil {
-		return "", fmt.Errorf("decode DNS provider response: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return "", errors.New("DNS provider returned trailing response data")
-	}
-	defer clear(result.Token)
-	if len(result.Token) == 0 || len(result.Token) > 4096 {
-		return "", errors.New("DNS provider returned an invalid token")
-	}
-	h.mu.RLock()
-	stillActive := h.active[instance.ID] == instance && instance.Generation == instance.candidate.Identity.Generation
-	h.mu.RUnlock()
-	if !stillActive {
-		return "", ErrDNSProviderUnavailable
-	}
-	return string(result.Token), nil
+	return fmt.Errorf("DNS provider returned status %d: %s", status, message)
 }

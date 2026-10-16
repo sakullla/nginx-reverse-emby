@@ -10,7 +10,7 @@
         v-if="cert.domain"
         class="cert-card__name"
         :title="cert.domain"
-      >{{ cert.domain }}</span>
+      ><template v-for="(part, index) in domainParts" :key="index">{{ part }}<wbr v-if="index < domainParts.length - 1" /></template></span>
       <BaseBadge
         class="cert-card__scope"
         tone="neutral"
@@ -107,6 +107,7 @@ import {
 } from '../../utils/certificateTemplates'
 import { certCardStatusLabel, certCardStatusTone } from '../../utils/resourceCardStatus.js'
 import { certExpiryInfo } from '../../utils/certExpiry.js'
+import { softBreakParts } from '../../utils/softBreak.js'
 
 const props = defineProps({
   cert: { type: Object, required: true },
@@ -117,6 +118,7 @@ defineEmits(['edit', 'delete', 'issue'])
 
 // agent prop is the page-selected node; when set, every card would repeat the same badge.
 const showAgentBadge = computed(() => !props.agent)
+const domainParts = computed(() => softBreakParts(props.cert.domain))
 
 /** Badge may use primary for issuing visual; card strip uses four-tone map. */
 const BADGE_TONE = {
@@ -324,7 +326,8 @@ const canDelete = computed(() => !isSystemRelayCA(props.cert))
   -webkit-line-clamp: 2;
   overflow: hidden;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .cert-card__scope {

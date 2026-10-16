@@ -181,7 +181,7 @@ watch(() => props.visible, async (value) => {
 .create-agent-picker-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(37, 23, 54, 0.4);
+  background: var(--color-overlay);
   backdrop-filter: blur(8px);
   z-index: var(--z-modal);
   display: flex;
@@ -192,7 +192,7 @@ watch(() => props.visible, async (value) => {
 
 .create-agent-picker {
   background: var(--color-bg-surface-raised);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-3xl);
   width: min(420px, 90vw);
   max-height: min(520px, calc(100vh - var(--space-8)));
@@ -207,13 +207,13 @@ watch(() => props.visible, async (value) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
 }
 
 .create-agent-picker__title {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
   margin: 0;
   color: var(--color-text-primary);
 }
@@ -241,20 +241,20 @@ watch(() => props.visible, async (value) => {
 
 .create-agent-picker__hint {
   margin: 0;
-  padding: 0.75rem 1.25rem 0;
-  font-size: 0.8125rem;
+  padding: var(--space-3) var(--space-5) 0;
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
 
 .create-agent-picker__search {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin: 0.75rem 1.25rem;
-  padding: 0 0.75rem;
+  gap: var(--space-2);
+  margin: var(--space-3) var(--space-5);
+  padding: 0 var(--space-3);
   min-height: 34px;
   border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   transition: border-color var(--duration-fast) var(--ease-default),
               box-shadow var(--duration-fast) var(--ease-default);
@@ -276,10 +276,10 @@ watch(() => props.visible, async (value) => {
   border: none;
   background: transparent;
   color: var(--color-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   outline: none;
-  padding: 0.3rem 0;
+  padding: var(--space-1) 0;
 }
 
 .create-agent-picker__search-input::-webkit-search-cancel-button {
@@ -289,21 +289,21 @@ watch(() => props.visible, async (value) => {
 .create-agent-picker__filters {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   min-height: 2rem;
-  padding: 0.5rem 1.25rem;
+  padding: var(--space-2) var(--space-5);
   background: var(--color-bg-surface-raised);
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
   overflow-x: auto;
 }
 
 .create-agent-picker__filter-btn {
-  padding: 0.35rem 0.875rem;
+  padding: var(--space-1-5) var(--space-4);
   border: none;
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   line-height: 1.4;
   cursor: pointer;
   white-space: nowrap;
@@ -318,31 +318,31 @@ watch(() => props.visible, async (value) => {
 
 .create-agent-picker__filter-btn--active {
   background: var(--color-primary);
-  color: white;
+  color: var(--color-text-inverse);
 }
 
 .create-agent-picker__list {
   flex: 0 1 auto;
   overflow-y: auto;
   max-height: 260px;
-  padding: 0 0.75rem 0.75rem;
+  padding: 0 var(--space-3) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--space-1);
   min-height: 120px;
 }
 
 .create-agent-picker__item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
-  padding: 0.55rem 0.75rem;
+  padding: var(--space-2) var(--space-3);
   border: none;
   border-radius: var(--radius-lg);
   background: transparent;
   color: var(--color-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -389,35 +389,35 @@ watch(() => props.visible, async (value) => {
 }
 
 .create-agent-picker__time {
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
 .create-agent-picker__empty {
-  padding: 2rem 0;
+  padding: var(--space-8) 0;
   text-align: center;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
 
 .create-agent-picker__sort {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1.25rem;
-  border-top: 1px solid var(--color-border-subtle);
-  font-size: 0.75rem;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border-top: var(--border-width-thin) solid var(--color-border-subtle);
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
 }
 
 .create-agent-picker__sort-btn {
-  padding: 0.125rem 0.375rem;
+  padding: var(--space-0-5) var(--space-1-5);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   font-family: inherit;
   transition: background var(--duration-fast) var(--ease-default),
@@ -431,14 +431,14 @@ watch(() => props.visible, async (value) => {
 .create-agent-picker__sort-btn--active {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
-  font-weight: 500;
+  font-weight: var(--font-medium);
 }
 
 .create-agent-picker__actions {
   display: flex;
   justify-content: flex-end;
-  gap: 0.75rem;
-  padding: 0.75rem 1.25rem 1rem;
-  border-top: 1px solid var(--color-border-subtle);
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5) var(--space-4);
+  border-top: var(--border-width-thin) solid var(--color-border-subtle);
 }
 </style>

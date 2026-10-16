@@ -8,6 +8,7 @@
         class="quick-agent-select__chip"
         :class="{ 'quick-agent-select__chip--active': isAllSelected }"
         title="全部节点"
+        :aria-pressed="isAllSelected"
         @click="selectAll"
       >
         <span class="quick-agent-select__chip-name">全部节点</span>
@@ -19,6 +20,7 @@
         class="quick-agent-select__chip"
         :class="{ 'quick-agent-select__chip--active': !isAllSelected && agent.id === agentId }"
         :title="agent.name"
+        :aria-pressed="!isAllSelected && agent.id === agentId"
         @click="select(agent)"
       >
         <span
@@ -34,7 +36,10 @@
         ref="moreRef"
       >
         <button
+          ref="moreButtonRef"
           class="quick-agent-select__chip quick-agent-select__chip--more"
+          aria-haspopup="listbox"
+          :aria-expanded="moreOpen"
           @click="moreOpen = !moreOpen"
         >
           +{{ hiddenAgents.length }} 更多
@@ -42,20 +47,33 @@
             <polyline points="6 9 12 15 18 9"/>
           </svg>
         </button>
-        <div v-if="moreOpen" class="quick-agent-select__dropdown">
+        <div
+          v-if="moreOpen"
+          class="quick-agent-select__dropdown"
+          @keydown="handleDropdownKeydown"
+        >
           <div class="quick-agent-select__dropdown-search">
             <input
+              ref="searchInputRef"
               v-model="moreSearch"
               class="quick-agent-select__dropdown-input"
               placeholder="搜索节点..."
             />
           </div>
-          <div class="quick-agent-select__dropdown-list">
+          <div
+            class="quick-agent-select__dropdown-list"
+            role="listbox"
+            aria-label="更多节点"
+            :aria-activedescendant="activeDescendantId || undefined"
+          >
             <button
-              v-for="agent in filteredHiddenAgents"
+              v-for="(agent, i) in filteredHiddenAgents"
+              :id="`quick-agent-option-${i}`"
               :key="agent.id"
               class="quick-agent-select__dropdown-item"
-              :class="{ active: !isAllSelected && agent.id === agentId }"
+              :class="{ active: !isAllSelected && agent.id === agentId, 'quick-agent-select__dropdown-item--highlight': activeIndex === i }"
+              role="option"
+              :aria-selected="!isAllSelected && agent.id === agentId"
               @click="select(agent)"
             >
               <span
@@ -64,7 +82,7 @@
               />
               <span class="quick-agent-select__dropdown-name">{{ agent.name }}</span>
             </button>
-            <div v-if="!filteredHiddenAgents.length" class="quick-agent-select__dropdown-empty">
+            <div v-if="!filteredHiddenAgents.length" class="quick-agent-select__dropdown-empty" role="status">
               没有匹配的节点
             </div>
           </div>
@@ -75,7 +93,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { getAgentStatus } from '../utils/agentHelpers.js'
 import { useAgent } from '../context/AgentContext.js'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter } from '../utils/agentFilter.js'
@@ -95,6 +113,53 @@ const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'
 const moreOpen = ref(false)
 const moreSearch = ref('')
 const moreRef = ref(null)
+const moreButtonRef = ref(null)
+const searchInputRef = ref(null)
+
+// Roving arrow-key highlight over the hidden-agent options.
+const activeIndex = ref(-1)
+watch([moreOpen, moreSearch], () => {
+  activeIndex.value = -1
+})
+
+const activeDescendantId = computed(() =>
+  activeIndex.value >= 0 && filteredHiddenAgents.value[activeIndex.value]
+    ? `quick-agent-option-${activeIndex.value}`
+    : ''
+)
+
+function closeMore() {
+  moreOpen.value = false
+  moreSearch.value = ''
+  nextTick(() => moreButtonRef.value?.focus())
+}
+
+function handleDropdownKeydown(e) {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    const total = filteredHiddenAgents.value.length
+    if (!total) return
+    const delta = e.key === 'ArrowDown' ? 1 : -1
+    let next = activeIndex.value + delta
+    if (next < 0) next = total - 1
+    if (next >= total) next = 0
+    activeIndex.value = next
+    nextTick(() => {
+      document.getElementById(activeDescendantId.value)?.scrollIntoView({ block: 'nearest' })
+    })
+    return
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && activeIndex.value >= 0 && e.target === searchInputRef.value) {
+    e.preventDefault()
+    const agent = filteredHiddenAgents.value[activeIndex.value]
+    if (agent) select(agent)
+    return
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeMore()
+  }
+}
 
 const isAllSelected = computed(() => isAllAgentsFilter(props.agentId))
 
@@ -182,32 +247,32 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 <style scoped>
 .quick-agent-select {
-  margin-bottom: 1.25rem;
+  margin-bottom: var(--space-5);
 }
 
 .quick-agent-select__empty {
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
-  padding: 0.5rem 0;
+  padding: var(--space-2) 0;
 }
 
 .quick-agent-select__chips {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
 .quick-agent-select__chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem 0.875rem;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3);
   border-radius: var(--radius-full);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
@@ -222,7 +287,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 .quick-agent-select__chip--active {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-text-inverse);
   border-color: var(--color-primary);
 }
 
@@ -235,7 +300,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
   border-color: var(--color-border-default);
-  padding-right: 0.625rem;
+  padding-right: var(--space-2-5);
 }
 
 .quick-agent-select__chip--more:hover {
@@ -277,30 +342,30 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 .quick-agent-select__dropdown {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + var(--space-1-5));
   left: 0;
   width: 220px;
   background: var(--color-bg-surface-raised);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
   z-index: var(--z-dropdown);
-  animation: scaleIn 0.15s var(--ease-bounce) both;
+  animation: scaleIn var(--duration-fast) var(--ease-bounce) both;
   overflow: hidden;
 }
 
 .quick-agent-select__dropdown-search {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  padding: var(--space-2);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
 }
 
 .quick-agent-select__dropdown-input {
   width: 100%;
-  padding: 0.375rem 0.625rem;
-  border: 1.5px solid var(--color-border-default);
+  padding: var(--space-1-5) var(--space-2-5);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
-  font-size: 0.8rem;
+  font-size: var(--text-xs);
   color: var(--color-text-primary);
   outline: none;
   font-family: inherit;
@@ -317,20 +382,20 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 .quick-agent-select__dropdown-list {
   max-height: 240px;
   overflow-y: auto;
-  padding: 0.25rem;
+  padding: var(--space-1);
   scrollbar-width: thin;
 }
 
 .quick-agent-select__dropdown-list::-webkit-scrollbar { width: 6px; }
 .quick-agent-select__dropdown-list::-webkit-scrollbar-track { background: transparent; }
-.quick-agent-select__dropdown-list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 3px; }
+.quick-agent-select__dropdown-list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: var(--radius-full); }
 
 .quick-agent-select__dropdown-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
-  padding: 0.5rem 0.625rem;
+  padding: var(--space-2) var(--space-2-5);
   border: none;
   background: transparent;
   border-radius: var(--radius-md);
@@ -340,7 +405,8 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   text-align: left;
 }
 
-.quick-agent-select__dropdown-item:hover {
+.quick-agent-select__dropdown-item:hover,
+.quick-agent-select__dropdown-item--highlight {
   background: var(--color-bg-hover);
 }
 
@@ -350,7 +416,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 }
 
 .quick-agent-select__dropdown-name {
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-primary);
   flex: 1;
   overflow: hidden;
@@ -359,16 +425,16 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 }
 
 .quick-agent-select__dropdown-empty {
-  padding: 1rem;
+  padding: var(--space-4);
   text-align: center;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
 
 @media (max-width: 768px) {
   .quick-agent-select__chip {
-    padding: 0.3125rem 0.625rem;
-    font-size: 0.75rem;
+    padding: var(--space-1-5) var(--space-2-5);
+    font-size: var(--text-xs);
     max-width: 120px;
   }
 }

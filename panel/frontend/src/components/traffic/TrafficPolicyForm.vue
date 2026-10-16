@@ -53,7 +53,7 @@
               <span class="traffic-policy-form__badge">单位：天</span>
             </span>
             <input :value="modelValue.hourly_retention_days" class="traffic-policy-form__input" type="number" min="1" @input="updateField('hourly_retention_days', Number($event.target.value))">
-            <span class="traffic-policy-form__hint">约 {{ Math.round(modelValue.hourly_retention_days / 30) }} 个月</span>
+            <span class="traffic-policy-form__hint">{{ formatRetentionHint(modelValue.hourly_retention_days, 'days') }}</span>
           </label>
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">
@@ -61,7 +61,7 @@
               <span class="traffic-policy-form__badge">单位：月</span>
             </span>
             <input :value="modelValue.daily_retention_months" class="traffic-policy-form__input" type="number" min="1" @input="updateField('daily_retention_months', Number($event.target.value))">
-            <span class="traffic-policy-form__hint">约 {{ modelValue.daily_retention_months * 30 }} 天</span>
+            <span class="traffic-policy-form__hint">{{ formatRetentionHint(modelValue.daily_retention_months, 'months') }}</span>
           </label>
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">
@@ -69,7 +69,7 @@
               <span class="traffic-policy-form__badge">单位：月</span>
             </span>
             <input :value="modelValue.monthly_retention_months" class="traffic-policy-form__input" type="number" min="1" placeholder="留空表示永久" @input="updateField('monthly_retention_months', $event.target.value)">
-            <span class="traffic-policy-form__hint">约 {{ Math.round(modelValue.monthly_retention_months / 12) }} 年</span>
+            <span class="traffic-policy-form__hint">{{ formatRetentionHint(modelValue.monthly_retention_months, 'months', '永久保留') }}</span>
           </label>
         </div>
       </div>
@@ -93,6 +93,8 @@
 </template>
 
 <script setup>
+import { formatRetentionHint } from '../../utils/trafficStats.js'
+
 const props = defineProps({
   modelValue: { type: Object, required: true },
   saving: { type: Boolean, default: false }
@@ -138,7 +140,7 @@ function updateField(key, value) {
   border-radius: var(--radius-lg);
   padding: 0.875rem 1rem 1rem;
   min-width: 0;
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+  box-shadow: var(--shadow-xs);
 }
 .traffic-policy-form__card--primary {
   border-color: color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 65%, var(--color-border-default));
@@ -169,7 +171,7 @@ function updateField(key, value) {
   display: inline-flex;
   align-items: center;
   padding: 0.08rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 70%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-primary-50) 75%, var(--color-bg-surface));
   color: var(--color-text-secondary);
@@ -255,7 +257,7 @@ function updateField(key, value) {
 .traffic-policy-form__badge {
   margin-left: 0.35rem;
   padding: 0.05rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--color-bg-subtle) 88%, transparent);
   color: var(--color-text-muted);
   font-size: 0.6875rem;
@@ -280,7 +282,7 @@ function updateField(key, value) {
 .traffic-policy-form__input:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--color-primary, #3b82f6) 55%, var(--color-border-default));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary, #3b82f6) 16%, transparent);
+  box-shadow: var(--shadow-focus);
 }
 .traffic-policy-form__hint {
   color: var(--color-text-muted);

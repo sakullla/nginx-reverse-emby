@@ -5,6 +5,7 @@ import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } 
 import { sanitizePluginText } from '../api/pluginSecurity'
 import { messageStore } from '../stores/messages'
 import { formatPanelDateTime } from '../utils/panelDateTime.js'
+import { pluginOperationKindLabel } from '../utils/pluginOperationLabels.js'
 
 const downloadSteps = [
   { id: 'download', label: '下载签名包' },
@@ -104,7 +105,6 @@ export function useMarketplaceCatalog() {
   const detail = ref(null)
   const detailPrepared = ref(false)
   const confirmVisible = ref(false)
-  const pendingConflict = ref(false)
   const downloadElapsedSec = ref(0)
   const packageDetailCache = new Map()
   let downloadTimer = 0
@@ -117,18 +117,23 @@ export function useMarketplaceCatalog() {
   })
   const downloadHint = computed(() => (
     source.value.kind === 'official'
-      ? '官方包首次安装会先下载并校验，可能需要一两分钟。进度按真实阶段显示，不会假装已经快完成。'
-      : '安装前会读取并校验签名包。进度按真实阶段显示，不会假装已经快完成。'
+      ? '首次下载可能需要一两分钟，校验完成后可确认安装。'
+      : '正在下载并校验签名包，完成后会显示所需权限。'
   ))
 
   const source = computed(() => selected.value?.source || {})
   const installedPlugin = computed(() => installed.value.find((item) => item.plugin_id === selected.value?.plugin.id))
   const isUpgrade = computed(() => pluginHasUpgrade(installedPlugin.value, selected.value))
   const requiredPermissions = computed(() => detail.value?.permissions || [])
-  const alreadyInstalled = computed(() => !!installedPlugin.value && !isUpgrade.value)
+  const alreadyInstalled = computed(() => !!installedPlugin.value && !isUpgrade.value && !hasPendingOperation())
   const selectedPluginID = computed(() => String(selected.value?.plugin.id || '').trim())
   const selectedDetailPath = computed(() => selectedPluginID.value ? `/plugins/${encodeURIComponent(selectedPluginID.value)}` : '')
-  const hasPendingDetailLink = computed(() => Boolean(actionError.value && hasPendingOperation()))
+  const hasPendingDetailLink = computed(() => hasPendingOperation())
+  const statusRefreshing = ref(false)
+  const pendingOperationLabel = computed(() => {
+    const kind = installedPlugin.value?.pending_kind
+    return pluginOperationKindLabel(kind)
+  })
   const hasHTTPBackend = computed(() => {
     const pkg = detail.value
     const providers = pkg?.manifest?.http_backend_providers || pkg?.http_backend_providers
@@ -144,6 +149,7 @@ export function useMarketplaceCatalog() {
       : '安装后把插件部署到一个节点即可在该节点上使用。'
   })
   const nextStepHint = computed(() => {
+    if (hasPendingOperation()) return `${pendingOperationLabel.value}正在处理，可查看进度；结束后再安装或更新。`
     if (alreadyInstalled.value) {
       return hasHTTPBackend.value
         ? '当前版本已安装。下一步：打开详情继续部署，或在已部署后发布域名。'
@@ -227,9 +233,11 @@ export function useMarketplaceCatalog() {
         catalogSources.value.map((sourceItem) => fetchRepositoryContents(sourceItem.id))
       )
       packages.value = packagesFromContents(catalogSources.value, contentResults, packages.value)
+      error.value = contentResults.flatMap((result, index) => result.status === 'rejected'
+        ? [`${catalogSources.value[index].name || catalogSources.value[index].id}：${sanitizePluginText(result.reason?.message || '读取目录失败')}`]
+        : []).join('；')
     } catch (cause) {
-      if (!packages.value.length) applyPreviewPackages()
-      error.value = ''
+      error.value = sanitizePluginText(cause?.message || '读取插件市场失败，请重试。')
     } finally {
       loading.value = false
     }
@@ -268,49 +276,14 @@ export function useMarketplaceCatalog() {
         messageStore.error(failures.map((item) => `${item.name}：${item.message}`).join('；'))
         return
       }
+      if (error.value) {
+        messageStore.error(error.value)
+        return
+      }
       if (sourceList.length) messageStore.success('市场目录已更新')
     } finally {
       catalogRefreshing.value = false
     }
-  }
-
-  function applyPreviewPackages() {
-    const official = { id: 'official', kind: 'official', risk_label: 'official' }
-    const community = { id: 'community', kind: 'custom', risk_label: 'community' }
-    packages.value = [
-      {
-        source: official,
-        plugin: {
-          id: 'official.emby-helper',
-          name: 'Emby 助手',
-          version: '1.4.2',
-          sha256: 'preview-emby-helper',
-          description: '媒体访问入口',
-          http_backend_providers: [{ id: 'default' }],
-        },
-      },
-      {
-        source: official,
-        plugin: {
-          id: 'official.waf',
-          name: '网站防火墙',
-          version: '2.1.0',
-          sha256: 'preview-waf',
-          description: '入口请求检查',
-        },
-      },
-      {
-        source: community,
-        plugin: {
-          id: 'community.ddns',
-          name: '动态域名',
-          version: '0.9.1',
-          sha256: 'preview-ddns',
-          description: '公网地址自动更新',
-        },
-      },
-    ]
-    installed.value = []
   }
 
   function packageDetailKey(item) {
@@ -390,7 +363,7 @@ export function useMarketplaceCatalog() {
       detailPrepared.value = false
       if (!String(item?.plugin?.sha256 || '').startsWith('preview-')) {
         actionError.value = humanLoadError(cause, '读取签名包详情失败')
-        messageStore.error(actionError.value)
+        if (!confirmVisible.value) messageStore.error(actionError.value)
       }
       return false
     } finally {
@@ -406,7 +379,6 @@ export function useMarketplaceCatalog() {
     detailPrepared.value = false
     confirmVisible.value = false
     actionError.value = ''
-    pendingConflict.value = false
   }
 
   function isSelected(item) {
@@ -416,6 +388,7 @@ export function useMarketplaceCatalog() {
   function installedStatus(item) {
     const current = installed.value.find((plugin) => plugin.plugin_id === item?.plugin.id)
     if (!current) return '未安装'
+    if (String(current.pending_operation_id || '').trim()) return '处理中'
     if (pluginHasUpgrade(current, item)) return '可升级'
     return '已安装'
   }
@@ -424,11 +397,12 @@ export function useMarketplaceCatalog() {
     const status = installedStatus(item)
     if (status === '已安装') return 'success'
     if (status === '可升级') return 'warning'
+    if (status === '处理中') return 'warning'
     return 'neutral'
   }
 
   function isPendingConflictMessage(message) {
-    return /already pending|plugin state conflict/i.test(String(message || ''))
+    return /already pending/i.test(String(message || ''))
   }
 
   function isMarketplaceBusyMessage(message) {
@@ -455,21 +429,23 @@ export function useMarketplaceCatalog() {
       && pendingDigest.toLowerCase() === selectedDigest.toLowerCase()
   }
 
-  function humanLoadError(cause, fallback) {
+  function humanLoadError(cause, fallback, stage = 'download') {
     const raw = sanitizePluginText(cause?.message || fallback)
     if (isMarketplaceBusyMessage(raw)) {
       return '市场目录刚刷新或正在刷新。这个插件本身正常，请稍后重新点升级。'
     }
-    if (isPendingConflictMessage(raw)) {
+    if (isPendingConflictMessage(raw) || (cause?.status === 409 && hasPendingOperation())) {
       if (isPendingSameUpgrade()) {
         return '这个插件已有升级在进行。打开详情查看进度，不用重复提交。'
       }
       if (hasPendingOperation()) {
-        return '这个插件还有未完成的操作，所以这次没有提交。打开详情查看进度，结束后再点重试。'
+        return '这个插件还有未完成的操作。请查看进度，结束后刷新状态再继续。'
       }
-      return '另一个插件的升级还在节点上应用。这个插件本身正常，等当前升级完成后再试。'
+      return '服务端报告有操作尚未结束。请刷新状态后重试。'
     }
+    if (cause?.status === 409 || /plugin state conflict/i.test(raw)) return '插件状态已变化，这次没有提交成功。请刷新状态后重试。'
     if (/timeout|timed out|exceeded|econnaborted/i.test(raw)) {
+      if (stage === 'submit') return '等待提交结果超时。请刷新状态确认操作是否已提交，再决定是否重试。'
       return '读取插件包超时。安装前需要下载并校验签名包，请检查出站网络或 HTTP 代理后重试。'
     }
     if (/status code 5\d\d|network error|failed to fetch/i.test(raw)) {
@@ -482,6 +458,7 @@ export function useMarketplaceCatalog() {
     const status = installedStatus(item)
     if (status === '可升级') return '更新'
     if (status === '已安装') return '打开'
+    if (status === '处理中') return '查看进度'
     return '安装'
   }
 
@@ -494,14 +471,17 @@ export function useMarketplaceCatalog() {
     selected.value = item
     error.value = ''
     actionError.value = ''
-    pendingConflict.value = false
+    detail.value = previewPackageDetail(item)
+    detailPrepared.value = false
     const status = installedStatus(item)
+    if (status === '处理中') {
+      confirmVisible.value = true
+      return
+    }
     if (status === '已安装') {
       await router.push(`/plugins/${encodeURIComponent(item.plugin.id)}`)
       return
     }
-    detail.value = previewPackageDetail(item)
-    detailPrepared.value = false
     confirmVisible.value = true
     await preparePackageDetail(item)
   }
@@ -520,32 +500,64 @@ export function useMarketplaceCatalog() {
     cancelConfirm()
   }
 
-  async function refreshInstalled() {
+  async function refreshInstalled(strict = false) {
     try {
       installed.value = await fetchPlugins()
-    } catch {
+    } catch (cause) {
+      if (strict) throw cause
       // Keep the last known installed list so retry and pending checks still work.
     }
   }
 
+  async function refreshOperationStatus() {
+    if (statusRefreshing.value || actionBusy.value || detailLoading.value) return
+    const item = selected.value
+    const key = packageKey(item)
+    statusRefreshing.value = true
+    try {
+      await refreshInstalled(true)
+      if (!confirmVisible.value || packageKey(selected.value) !== key) return
+      actionError.value = ''
+      if (!hasPendingOperation() && selected.value && !alreadyInstalled.value && !detailPrepared.value) {
+        await preparePackageDetail(item)
+      }
+    } catch (cause) {
+      if (confirmVisible.value && packageKey(selected.value) === key) {
+        actionError.value = sanitizePluginText(cause?.message || '刷新插件状态失败，请重试。')
+      }
+    } finally {
+      statusRefreshing.value = false
+    }
+  }
+
   async function applyPackage() {
-    if (!selected.value || actionBusy.value || detailLoading.value) return
+    if (!selected.value || actionBusy.value || detailLoading.value || statusRefreshing.value || hasPendingOperation()) return
     const item = selected.value
     const pluginID = String(item?.plugin?.id || '').trim()
     if (!pluginID) return
     actionBusy.value = true
     actionError.value = ''
-    pendingConflict.value = false
     try {
-      if (!detailPrepared.value) {
-        const prepared = await preparePackageDetail(item)
-        if (!prepared) return
+      await refreshInstalled(true)
+      if (hasPendingOperation()) return
+      if (alreadyInstalled.value) {
+        confirmVisible.value = false
+        await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
+        return
       }
-      await refreshInstalled()
+      if (!detailPrepared.value) {
+        // A retry that only retrieves permissions must leave them visible for
+        // review. Installation requires a separate confirmation afterwards.
+        await preparePackageDetail(item)
+        return
+      }
       // Both the verified permission list and current installation state may
       // have changed while the package was downloading. Snapshot them only
       // after the final refresh, immediately before choosing the mutation.
       const current = installed.value.find((plugin) => plugin.plugin_id === pluginID)
+      if (hasPendingOperation()) {
+        return
+      }
       const shouldUpgrade = pluginHasUpgrade(current, item)
       if (current && !shouldUpgrade) {
         confirmVisible.value = false
@@ -560,18 +572,16 @@ export function useMarketplaceCatalog() {
         confirmed_permissions: [...requiredPermissions.value].sort(),
         risk_accepted: item.source?.kind !== 'official'
       }
-      if (shouldUpgrade) await upgradePlugin(pluginID, selection)
-      else await installPlugin(selection)
+      const result = shouldUpgrade ? await upgradePlugin(pluginID, selection) : await installPlugin(selection)
       confirmVisible.value = false
       actionError.value = ''
-      messageStore.success(shouldUpgrade ? '插件已升级' : '插件已安装')
+      messageStore.success(result?.pending_operation_id ? '操作已提交，可在详情查看进度' : shouldUpgrade ? '插件已升级' : '插件已安装')
       await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
     } catch (cause) {
       confirmVisible.value = true
       await refreshInstalled()
-      pendingConflict.value = isPendingConflictMessage(cause?.message) && hasPendingOperation()
-      actionError.value = humanLoadError(cause, '提交插件包失败')
-      messageStore.error(actionError.value)
+      const pending = hasPendingOperation() && (isPendingConflictMessage(cause?.message) || cause?.status === 409)
+      actionError.value = pending ? '' : humanLoadError(cause, '提交插件包失败', 'submit')
     } finally {
       actionBusy.value = false
     }
@@ -592,7 +602,9 @@ export function useMarketplaceCatalog() {
     detail,
     detailPrepared,
     confirmVisible,
-    pendingConflict,
+    statusRefreshing,
+    pendingOperationLabel,
+    refreshOperationStatus,
     downloadElapsedSec,
     downloadSteps,
     downloadPhaseLabel,

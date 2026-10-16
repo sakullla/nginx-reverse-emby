@@ -44,12 +44,12 @@ defineEmits(['update:view'])
 .view-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-height: 34px;
   background: var(--color-bg-subtle);
   border-radius: var(--radius-md);
-  padding: 3px;
-  border: 1px solid var(--color-border-subtle);
+  padding: var(--space-1);
+  border: var(--border-width-thin) solid var(--color-border-subtle);
   box-sizing: border-box;
 }
 .view-toggle__btn {
@@ -58,7 +58,7 @@ defineEmits(['update:view'])
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: calc(var(--radius-md) - 2px);
+  border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);

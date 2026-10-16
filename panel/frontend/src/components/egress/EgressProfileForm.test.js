@@ -76,4 +76,17 @@ describe('EgressProfileForm', () => {
       proxy_url: ''
     })
   })
+
+  it('emits cancel from the secondary button without submitting', async () => {
+    const wrapper = mountForm()
+
+    const cancel = wrapper.findAll('button').find((button) => button.text() === '取消')
+    expect(cancel).toBeTruthy()
+    expect(cancel.classes()).toContain('btn--secondary')
+
+    await cancel.trigger('click')
+
+    expect(wrapper.emitted('cancel')).toHaveLength(1)
+    expect(wrapper.emitted('submit')).toBeUndefined()
+  })
 })

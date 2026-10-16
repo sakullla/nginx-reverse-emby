@@ -65,7 +65,7 @@ export function useAgentFilters(agentsRef) {
   const sortOrder = ref(route.query.order || 'desc')
 
   // Search
-  const searchQuery = ref('')
+  const searchQuery = ref(Array.isArray(route.query.search) ? route.query.search[0] : (route.query.search || ''))
 
   // Reactive wall-clock for time-dependent recency buckets.
   // Updated every minute so last_seen_at ordering stays fresh while the page is open.
@@ -88,6 +88,9 @@ export function useAgentFilters(agentsRef) {
 
     if (!tagFilter.value) delete query.tag
     else query.tag = tagFilter.value
+
+    if (!searchQuery.value.trim()) delete query.search
+    else query.search = searchQuery.value.trim()
 
     query.view = view.value
     query.sort = sortField.value

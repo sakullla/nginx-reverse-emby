@@ -9,7 +9,7 @@ const outDir = process.env.NRE_CAPTURE_OUT
   ?? path.join(frontendRoot, 'docs', 'verification', 'ui')
 const baseURL = (process.env.NRE_CAPTURE_URL ?? 'http://localhost:5173').replace(/\/$/, '')
 const themes = (process.env.NRE_CAPTURE_THEMES ?? 'sakura-day,sakura-night').split(',').map((item) => item.trim()).filter(Boolean)
-const widths = (process.env.NRE_CAPTURE_WIDTHS ?? '1360,900,640').split(',').map((item) => Number(item.trim())).filter((item) => item > 0)
+const widths = (process.env.NRE_CAPTURE_WIDTHS ?? '1360,900,390').split(',').map((item) => Number(item.trim())).filter((item) => item > 0)
 
 fs.mkdirSync(outDir, { recursive: true })
 
@@ -91,7 +91,7 @@ function pluginDetail(id) {
         http_backend_providers: deployed ? [{ id: 'default', display_name: '默认' }] : []
       }
     },
-    instances: deployed ? [{ id: 'inst-emby', resource_group_id: 'default', targets: ['local'] }] : [],
+    instances: deployed ? [{ id: 'inst-emby', resource_group_id: 'default', targets: ['local'], config_version: 1, current_state: 'active' }] : [],
     agent_statuses: deployed ? [{ instance_id: 'inst-emby', agent_id: 'local', runtime_state: 'active' }] : [],
     published_entries: deployed ? [{
       rule_id: 12,
@@ -142,11 +142,15 @@ async function fulfillPanelApi(route) {
   }
   if (pathname === '/plugins' && request.method() === 'GET') return json(route, { plugins })
   if (pathname === '/plugins/package-detail') {
+    const selection = request.postDataJSON() || {}
+    const entry = Object.values(catalog).flat().find((item) => item.id === selection.plugin_id)
     return json(route, {
-      digest: 'preview-waf',
-      version: '2.1.0',
-      manifest: { id: 'official.waf', name: '网站防火墙' },
-      permissions: ['http.inspect']
+      package: {
+        digest: entry?.sha256,
+        version: entry?.version,
+        manifest: { id: entry?.id, name: entry?.name },
+        permissions: ['http.outbound', 'secret.use', 'dns.manage']
+      }
     })
   }
   if (/^\/plugins\/[^/]+\/operations$/.test(pathname)) return json(route, { operations: [] })
@@ -184,7 +188,7 @@ const browser = await launchBrowser()
 
 for (const width of widths) {
   for (const theme of themes) {
-    const context = await browser.newContext({ viewport: { width, height: 1000 }, deviceScaleFactor: 1 })
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, deviceScaleFactor: 1, hasTouch: width < 1024 })
     await context.route('**/panel-api/**', fulfillPanelApi)
     await context.addInitScript((initialTheme) => {
       localStorage.setItem('panel_token', 'admin')
@@ -196,11 +200,25 @@ for (const width of widths) {
     page.on('pageerror', (error) => failures.push({ theme, width, message: error.message }))
 
     async function settle() {
+      // Let lazy route modules mount before checking their loading indicators.
+      await page.waitForTimeout(500)
       await page.waitForFunction(() => {
-        const busy = document.querySelectorAll('.spinner, .skeleton, [class*="skeleton"]')
+        const busy = document.querySelectorAll('.spinner, .skeleton, [class*="skeleton"], [data-testid="traffic-trend-loading"]')
         return [...busy].every((el) => !el.getClientRects().length)
-      }, { timeout: 8000 }).catch(() => {})
-      await page.waitForTimeout(180)
+      }, undefined, { timeout: 8000 })
+      // ApexCharts mounts its canvas before painting the series; wait until each
+      // chart host has painted marks (or legitimately shows its empty state) so
+      // screenshots do not capture a blank plot area. Best effort.
+      await page.waitForFunction(() => {
+        const hosts = [...document.querySelectorAll('.traffic-trend-chart')]
+        return hosts.every((host) => {
+          if (host.querySelector('[data-testid="traffic-trend-loading"]')) return false
+          if (host.querySelector('[data-testid="traffic-trend-empty"]')) return true
+          const canvas = host.querySelector('.apexcharts-canvas')
+          return Boolean(canvas && canvas.querySelector('.apexcharts-series path, .apexcharts-series rect'))
+        })
+      }, undefined, { timeout: 5000 }).catch(() => {})
+      await page.evaluate(() => document.fonts.ready)
     }
 
     async function chooseLocalAgent() {
@@ -216,7 +234,7 @@ for (const width of widths) {
         document.documentElement.dataset.theme = activeTheme
       }, theme)
       const file = path.join(outDir, `${name}-${theme}-${width}.png`)
-      await page.screenshot({ path: file })
+      await page.screenshot({ path: file, animations: 'disabled' })
       const over = await page.evaluate(() => [...document.querySelectorAll('main, section, article, input, textarea, select, button, table')]
         .filter((el) => el.getClientRects().length && el.getBoundingClientRect().right > window.innerWidth + 1)
         .slice(0, 8)
@@ -231,7 +249,7 @@ for (const width of widths) {
       if (scrolled) {
         await page.waitForTimeout(80)
         const endFile = path.join(outDir, `${name}-end-${theme}-${width}.png`)
-        await page.screenshot({ path: endFile })
+        await page.screenshot({ path: endFile, animations: 'disabled' })
         await page.evaluate(() => {
           const el = document.querySelector('.app-shell .content')
           if (el) el.scrollTop = 0
@@ -325,12 +343,13 @@ for (const width of widths) {
     await step('rules', async () => {
       await open('/rules', 'HTTP 规则')
       await capture('rules')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '添加规则' }).waitFor()
       await capture('rules-agent')
-      await page.getByTitle('列表视图').click()
-      await capture('rules-list')
+      if (desktop) {
+        await page.getByTitle('列表视图').click()
+        await capture('rules-list')
+      }
       await page.getByRole('button', { name: '添加规则' }).click()
       await page.getByRole('dialog').waitFor()
       await capture('rules-create')
@@ -343,7 +362,6 @@ for (const width of widths) {
     await step('l4', async () => {
       await open('/l4', 'L4 规则')
       await capture('l4')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '添加 L4 规则' }).click()
       await page.getByRole('dialog').waitFor()
@@ -354,7 +372,6 @@ for (const width of widths) {
     await step('certs', async () => {
       await open('/certs', '公网证书')
       await capture('certs')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '新建证书' }).click()
       await page.getByRole('dialog').waitFor()
@@ -370,17 +387,11 @@ for (const width of widths) {
     await step('relays', async () => {
       await open('/relay-listeners', 'Relay 监听器')
       await capture('relays')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '新建监听器' }).click()
       await page.getByRole('dialog').waitFor()
       await capture('relays-create')
       await closeDialog()
-    })
-
-    await step('versions', async () => {
-      await open('/versions', '版本策略')
-      await capture('versions')
     })
 
     await step('plugins', async () => {
@@ -390,6 +401,57 @@ for (const width of widths) {
       await capture('plugin-detail')
       await open('/plugins/marketplace', '插件市场')
       await capture('marketplace')
+      await page.getByRole('button', { name: '列表视图' }).click()
+      await capture('marketplace-list')
+      await page.getByRole('button', { name: '卡片视图' }).click()
+      await page.locator('[data-test="marketplace-package-community.ddns"]').click()
+      await capture('marketplace-inspect')
+      await page.locator('[data-test="marketplace-inspect-action"]').click()
+      await page.locator('[data-test="marketplace-confirm-submit"]').waitFor()
+      await capture('marketplace-install')
+      let pendingInstall = false
+      let installedDDNS = false
+      const ddns = { plugin_id: 'community.ddns', name: '动态域名', active_version: '0.9.1' }
+      await page.route('**/panel-api/plugins', (route) => json(route, {
+        plugins: [...plugins, ...(pendingInstall ? [{ ...ddns, pending_operation_id: 'op-configure', pending_kind: 'configure' }] : installedDDNS ? [ddns] : [])]
+      }))
+      await page.route('**/panel-api/plugins/install', (route) => json(route, { message: '暂时连不上服务，请稍后重试。' }, 503))
+      await page.locator('[data-test="marketplace-confirm-submit"]').click()
+      await page.locator('[data-test="marketplace-action-error"]').waitFor()
+      await capture('marketplace-install-error')
+      await page.unroute('**/panel-api/plugins/install')
+      await page.route('**/panel-api/plugins/install', (route) => {
+        pendingInstall = true
+        return json(route, { message: 'plugin state conflict', details: 'another plugin operation is already pending' }, 409)
+      })
+      await page.locator('[data-test="marketplace-confirm-submit"]').click()
+      await page.locator('[data-test="marketplace-pending-status"]').waitFor()
+      await capture('marketplace-pending')
+      await page.route('**/panel-api/plugins/community.ddns', (route) => {
+        const detail = pluginDetail(ddns.plugin_id)
+        detail.plugin = { ...detail.plugin, ...ddns, pending_operation_id: 'op-configure', pending_kind: 'configure' }
+        detail.package.manifest.name = ddns.name
+        return json(route, detail)
+      })
+      await page.route('**/panel-api/plugins/community.ddns/operations', (route) => json(route, {
+        operations: [{ id: 'op-configure', kind: 'configure', status: 'running', created_at: '2026-10-01T08:00:00Z', agent_results: { local: { state: 'running' } } }]
+      }))
+      await page.locator('[data-test="marketplace-pending-detail"]').click()
+      await page.locator('[data-test="plugin-pending-progress"]').waitFor()
+      await capture('plugin-operation-progress')
+      await open('/plugins/marketplace', '插件市场')
+      await page.locator('[data-test="marketplace-card-action-community.ddns"]').click()
+      await page.locator('[data-test="marketplace-pending-status"]').waitFor()
+      pendingInstall = false
+      installedDDNS = true
+      await page.locator('[data-test="marketplace-pending-refresh"]').click()
+      await page.locator('[data-test="marketplace-pending-status"]').waitFor({ state: 'hidden' })
+      await capture('marketplace-operation-complete')
+      await closeDialog()
+      await page.unroute('**/panel-api/plugins')
+      await page.unroute('**/panel-api/plugins/install')
+      await page.unroute('**/panel-api/plugins/community.ddns')
+      await page.unroute('**/panel-api/plugins/community.ddns/operations')
       await open('/plugins/marketplace/official.waf?source=official', '网站防火墙')
       await capture('marketplace-detail')
       await open('/plugins/repositories', '插件仓库')
@@ -410,5 +472,6 @@ for (const width of widths) {
 }
 
 await browser.close()
+fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify({ baseURL, themes, widths, failures }, null, 2))
 console.log(JSON.stringify({ failures }, null, 2))
 if (failures.length) process.exitCode = 1

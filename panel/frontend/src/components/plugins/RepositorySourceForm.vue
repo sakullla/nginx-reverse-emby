@@ -221,7 +221,7 @@ function submit() {
   display: grid;
   place-items: center;
   padding: var(--space-4);
-  background: rgba(37, 23, 54, 0.42);
+  background: var(--color-overlay);
   backdrop-filter: blur(8px);
 }
 
@@ -284,7 +284,7 @@ function submit() {
 .repository-form__segment {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   align-items: flex-start;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-default);

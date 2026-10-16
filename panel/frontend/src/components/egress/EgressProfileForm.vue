@@ -1,6 +1,6 @@
 <template>
   <form class="egress-form" @submit.prevent="handleSubmit">
-    <div v-if="error" class="form-error">{{ error }}</div>
+    <FieldError v-if="error" block>{{ error }}</FieldError>
 
     <div class="form-grid">
       <div class="form-group">
@@ -42,6 +42,9 @@
     </div>
 
     <div class="form-actions">
+      <button type="button" class="btn btn--secondary" :disabled="isLoading" @click="emit('cancel')">
+        取消
+      </button>
       <button type="submit" class="btn btn--primary" :disabled="isLoading">
         {{ initialData ? '保存' : '创建' }}
       </button>
@@ -51,13 +54,14 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import FieldError from '../base/FieldError.vue'
 
 const props = defineProps({
   initialData: { type: Object, default: null },
   isLoading: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['submit'])
+const emit = defineEmits(['submit', 'cancel'])
 
 const error = ref('')
 const form = ref(createFormState(props.initialData))
@@ -177,14 +181,6 @@ function handleSubmit() {
   box-shadow: var(--shadow-focus);
 }
 
-.form-error {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-  font-size: var(--text-sm);
-}
-
 .toggle-row {
   display: flex;
   align-items: center;
@@ -238,6 +234,7 @@ function handleSubmit() {
 .form-actions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 @media (max-width: 640px) {

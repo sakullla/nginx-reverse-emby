@@ -64,18 +64,13 @@
               class="input protocol-input-group__host"
               :class="{ 'input--error': errors.frontend_url }"
               placeholder="例如：emby.yourdomain.com"
+              :aria-invalid="errors.frontend_url ? 'true' : undefined"
+              :aria-describedby="errors.frontend_url ? 'frontend-url-error' : undefined"
               @input="handleFrontendHostInput($event.target.value)"
               @paste="handleFrontendPaste"
             >
           </div>
-          <p v-if="errors.frontend_url" class="form-error">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            {{ errors.frontend_url }}
-          </p>
+          <FieldError v-if="errors.frontend_url" id="frontend-url-error">{{ errors.frontend_url }}</FieldError>
         </div>
 
         <div class="form-group form-group--block">
@@ -145,6 +140,8 @@
                   class="input protocol-input-group__host"
                   :class="{ 'input--error': errors.backend }"
                   placeholder="例如：192.168.1.100:8096"
+                  :aria-invalid="index === 0 && errors.backend ? 'true' : undefined"
+                  :aria-describedby="index === 0 && errors.backend ? 'backend-url-error' : undefined"
                   @input="handleBackendHostInput(index, $event.target.value)"
                   @paste="handleBackendPaste(index, $event)"
                 >
@@ -199,14 +196,7 @@
               当前节点没有可用的插件提供商
             </p>
           </div>
-          <p v-if="errors.backend" class="form-error">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            {{ errors.backend }}
-          </p>
+          <FieldError v-if="errors.backend" id="backend-url-error">{{ errors.backend }}</FieldError>
           <p v-if="form.backend_mode === 'url'" class="field-hint">可填多台后端，多后端时按负载策略分发</p>
         </div>
       </div>
@@ -231,9 +221,10 @@
               <button
                 type="button"
                 class="tag__remove"
+                :aria-label="`移除标签 ${tag}`"
                 @click="removeTag(index)"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <line x1="18" y1="6" x2="6" y2="18"/>
                   <line x1="6" y1="6" x2="18" y2="18"/>
                 </svg>
@@ -261,7 +252,7 @@
           >
           <span class="toggle__content">
             <span class="toggle__label">启用此规则</span>
-            <span class="toggle__desc">创建后立即生效</span>
+            <span class="toggle__desc">{{ isEdit ? '保存后立即生效' : '创建后立即生效' }}</span>
           </span>
           <span class="toggle__slider" aria-hidden="true"></span>
         </label>
@@ -445,9 +436,10 @@
                       class="input input--compact"
                       :class="{ 'input--error': headerErrors[index]?.name }"
                       placeholder="X-Custom-Header"
+                      :aria-invalid="headerErrors[index]?.name ? 'true' : undefined"
                       @input="handleCustomHeaderNameInput(index)"
                     >
-                    <p v-if="headerErrors[index]?.name" class="field-error">{{ headerErrors[index].name }}</p>
+                    <FieldError v-if="headerErrors[index]?.name">{{ headerErrors[index].name }}</FieldError>
                   </div>
                   <div class="headers-table__cell">
                     <input
@@ -456,9 +448,10 @@
                       class="input input--compact"
                       :class="{ 'input--error': headerErrors[index]?.value }"
                       placeholder="value"
+                      :aria-invalid="headerErrors[index]?.value ? 'true' : undefined"
                       @input="clearHeaderFieldError(index, 'value')"
                     >
-                    <p v-if="headerErrors[index]?.value" class="field-error">{{ headerErrors[index].value }}</p>
+                    <FieldError v-if="headerErrors[index]?.value">{{ headerErrors[index].value }}</FieldError>
                   </div>
                   <div class="headers-table__cell--action">
                     <button
@@ -559,14 +552,15 @@
     </div>
 
     <div class="rule-form__footer">
-      <p v-if="errors.submit" class="form-error rule-form__submit-error">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        {{ errors.submit }}
-      </p>
+      <FieldError v-if="errors.submit" block class="rule-form__submit-error">{{ errors.submit }}</FieldError>
+      <button
+        type="button"
+        class="btn btn--secondary"
+        :disabled="isLoading"
+        @click="emit('cancel')"
+      >
+        取消
+      </button>
       <button
         type="submit"
         class="btn btn--primary rule-form__submit"
@@ -588,6 +582,7 @@ import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import { useAgent } from '../context/AgentContext'
 import { fetchHTTPBackendProviders } from '../api'
 import RelayChainInput from './RelayChainInput.vue'
+import FieldError from './base/FieldError.vue'
 
 const UA_PRESETS = [
   { id: 'custom', label: '自定义', value: '' },
@@ -604,7 +599,7 @@ const props = defineProps({
   agentId: { type: [String, Object], required: true }
 })
 
-const emit = defineEmits(['success'])
+const emit = defineEmits(['success', 'cancel'])
 
 const { systemInfo } = useAgent()
 
@@ -1423,7 +1418,7 @@ async function handleSubmit() {
   background: var(--color-bg-surface-raised);
   border-color: color-mix(in srgb, var(--color-primary) 16%, transparent);
   font-weight: 700;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+  box-shadow: var(--shadow-xs);
 }
 
 .form-tabs__dot {
@@ -1832,7 +1827,6 @@ async function handleSubmit() {
   line-height: 1.35;
 }
 
-.form-error,
 .form-warning {
   display: flex;
   align-items: center;
@@ -1842,20 +1836,9 @@ async function handleSubmit() {
   font-size: 0.75rem;
 }
 
-.form-error {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-}
-
 .form-warning {
   background: var(--color-warning-50);
   color: var(--color-warning);
-}
-
-.field-error {
-  margin: 0;
-  font-size: 0.6875rem;
-  color: var(--color-danger);
 }
 
 .input {
@@ -1966,7 +1949,7 @@ async function handleSubmit() {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: min(100%, 22rem);
-  padding: 3px;
+  padding: var(--space-1);
   margin-bottom: 0.65rem;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
@@ -2151,7 +2134,7 @@ async function handleSubmit() {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  padding: 1px 7px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-primary-subtle);
   border: none;
   border-radius: var(--radius-full);
@@ -2230,7 +2213,7 @@ async function handleSubmit() {
   background: white;
   border-radius: var(--radius-full);
   transition: transform var(--duration-fast) var(--ease-bounce);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-sm);
 }
 
 .toggle__input:checked + .toggle__slider,
@@ -2517,7 +2500,7 @@ async function handleSubmit() {
 }
 
 .rule-form__submit.btn--primary {
-  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
+  box-shadow: var(--shadow-lg);
 }
 
 /* 请求头配置样式 */
@@ -2540,7 +2523,7 @@ async function handleSubmit() {
   height: 32px;
   background: var(--color-primary);
   border-radius: var(--radius-md);
-  color: white;
+  color: var(--color-text-inverse);
   flex-shrink: 0;
 }
 

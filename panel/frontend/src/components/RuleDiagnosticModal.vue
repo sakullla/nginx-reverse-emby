@@ -14,7 +14,13 @@
           <p class="diagnostic-modal__subtitle">{{ endpointLabel }}</p>
           <p v-if="agentLabel" class="diagnostic-modal__meta">节点: {{ agentLabel }}</p>
         </div>
-        <span class="diagnostic-modal__state" :class="`diagnostic-modal__state--${tone}`">
+        <span
+          class="diagnostic-modal__state"
+          :class="`diagnostic-modal__state--${tone}`"
+          role="status"
+          aria-live="polite"
+          data-test="diagnostic-state"
+        >
           {{ stateLabel }}
         </span>
       </div>
@@ -27,11 +33,20 @@
         </div>
       </div>
 
-      <div v-else-if="task?.error" class="diagnostic-modal__error">
-        {{ task.error }}
-      </div>
+      <template v-else>
+        <div v-if="task?.error" class="diagnostic-modal__error">
+          {{ task.error }}
+        </div>
 
-      <template v-else-if="summary">
+        <div class="diagnostic-conclusion" :class="`diagnostic-conclusion--${conclusion.tone}`">
+          <div class="diagnostic-conclusion__headline">{{ conclusion.headline }}</div>
+          <p v-if="conclusion.detail" class="diagnostic-conclusion__detail">{{ conclusion.detail }}</p>
+          <ul v-if="conclusion.suggestions.length" class="diagnostic-conclusion__suggestions">
+            <li v-for="(suggestion, index) in conclusion.suggestions" :key="index">{{ suggestion }}</li>
+          </ul>
+        </div>
+
+        <template v-if="summary">
         <div class="diagnostic-modal__stats">
           <div class="diagnostic-stat">
             <span class="diagnostic-stat__label">{{ hasRelayPaths ? '总路径数' : '总测试数' }}</span>
@@ -224,6 +239,7 @@
             </div>
           </div>
         </div>
+        </template>
       </template>
     </div>
   </BaseModal>
@@ -233,6 +249,7 @@
 import { computed, ref } from 'vue'
 import BaseModal from './base/BaseModal.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
+import { buildDiagnosticConclusion } from '../utils/diagnosticConclusion'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
@@ -252,6 +269,12 @@ const title = computed(() => props.kind === 'l4_tcp' ? 'L4 规则诊断' : 'HTTP
 const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' : 'HTTP PATH DIAGNOSIS')
 const stateLabel = computed(() => diagnosticStateLabel(state.value))
 const tone = computed(() => diagnosticStateTone(state.value))
+const conclusion = computed(() => buildDiagnosticConclusion({
+  kind: props.kind,
+  state: state.value,
+  error: props.task?.error,
+  result: props.task?.result
+}))
 const agentLabel = computed(() => {
   const explicitLabel = props.agentLabel.trim()
   if (explicitLabel) return explicitLabel
@@ -718,7 +741,7 @@ function qualityToneFor(value) {
   justify-content: space-between;
   gap: 1rem;
   padding: 1rem 1.1rem;
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
 }
@@ -730,14 +753,14 @@ function qualityToneFor(value) {
 .diagnostic-modal__state {
   align-self: flex-start;
   padding: 0.25rem 0.65rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 0.75rem;
   font-weight: 700;
   border: 1px solid transparent;
 }
-.diagnostic-modal__state--success { background: rgba(16, 185, 129, 0.12); color: var(--color-success); border-color: rgba(16, 185, 129, 0.25); box-shadow: 0 0 10px rgba(16, 185, 129, 0.12); }
-.diagnostic-modal__state--danger { background: rgba(239, 68, 68, 0.12); color: var(--color-danger); border-color: rgba(239, 68, 68, 0.25); box-shadow: 0 0 10px rgba(239, 68, 68, 0.12); }
-.diagnostic-modal__state--info { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); border-color: rgba(56, 189, 248, 0.25); box-shadow: 0 0 10px rgba(56, 189, 248, 0.12); }
+.diagnostic-modal__state--success { background: var(--color-success-subtle); color: var(--color-success); border-color: var(--color-success-glow); box-shadow: 0 0 10px var(--color-success-glow); }
+.diagnostic-modal__state--danger { background: var(--color-danger-subtle); color: var(--color-danger); border-color: var(--color-danger-glow); box-shadow: 0 0 10px var(--color-danger-glow); }
+.diagnostic-modal__state--info { background: var(--color-primary-subtle); color: var(--color-primary); border-color: var(--color-primary-300); box-shadow: 0 0 10px var(--color-primary-200); }
 .diagnostic-modal__state--muted { background: var(--color-bg-hover); color: var(--color-text-muted); border-color: var(--color-border-subtle); }
 
 .diagnostic-modal__loading, .diagnostic-modal__error {
@@ -745,21 +768,61 @@ function qualityToneFor(value) {
   align-items: center;
   gap: 0.875rem;
   padding: 0.875rem 1rem;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--color-bg-hover);
   border: 1px solid var(--color-border-subtle);
 }
-.diagnostic-modal__error { color: var(--color-danger); border-color: rgba(239, 68, 68, 0.25); }
+.diagnostic-modal__error { color: var(--color-danger); border-color: var(--color-danger-glow); }
 .diagnostic-modal__pulse {
   width: 14px;
   height: 14px;
   border-radius: 50%;
   background: var(--color-primary);
-  box-shadow: 0 0 12px rgba(13, 148, 136, 0.4);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-primary) 40%, transparent);
   animation: diag-pulse 1.5s infinite;
 }
 .diagnostic-modal__loading-title { font-weight: 700; color: var(--color-text-primary); }
 .diagnostic-modal__loading-text { font-size: 0.82rem; color: var(--color-text-secondary); }
+
+.diagnostic-conclusion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+}
+.diagnostic-conclusion__headline {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+.diagnostic-conclusion__detail {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.diagnostic-conclusion__suggestions {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+.diagnostic-conclusion__suggestions li::marker { color: var(--color-primary); }
+.diagnostic-conclusion--success { background: var(--color-success-50); border-color: var(--color-success); }
+.diagnostic-conclusion--success .diagnostic-conclusion__headline { color: var(--color-success); }
+.diagnostic-conclusion--danger { background: var(--color-danger-50); border-color: var(--color-danger); }
+.diagnostic-conclusion--danger .diagnostic-conclusion__headline { color: var(--color-danger); }
+.diagnostic-conclusion--warning { background: var(--color-warning-50); border-color: var(--color-warning); }
+.diagnostic-conclusion--warning .diagnostic-conclusion__headline { color: var(--color-warning); }
 
 .diagnostic-modal__stats {
   display: grid;
@@ -768,7 +831,7 @@ function qualityToneFor(value) {
 }
 .diagnostic-stat {
   padding: 0.875rem 1rem;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-subtle);
   display: flex;
@@ -794,7 +857,7 @@ function qualityToneFor(value) {
 .relay-path-card {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 .relay-path-card__header {
@@ -817,7 +880,7 @@ function qualityToneFor(value) {
 .diagnostic-table {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 .diagnostic-table__header {
@@ -857,7 +920,7 @@ function qualityToneFor(value) {
 .pill {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
+  padding: var(--space-0-5) var(--space-2-5);
   border-radius: var(--radius-full);
   font-size: 0.65rem;
   font-weight: 700;
@@ -866,7 +929,7 @@ function qualityToneFor(value) {
 .pill--danger { background: var(--color-danger-50); color: var(--color-danger); border: 1px solid var(--color-danger); }
 .pill--warning { background: var(--color-warning-50); color: var(--color-warning); border: 1px solid var(--color-warning); }
 .pill--info { background: var(--color-primary-subtle); color: var(--color-primary); border: 1px solid var(--color-primary); }
-.pill--preferred { background: rgba(245, 158, 11, 0.12); color: #d97706; border: 1px solid rgba(245, 158, 11, 0.35); font-size: 0.6rem; padding: 1px 6px; }
+.pill--preferred { background: var(--color-warning-subtle); color: var(--color-warning); border: 1px solid var(--color-warning-glow); font-size: 0.6rem; padding: var(--space-0-5) var(--space-1-5); }
 .pill--muted { background: var(--color-bg-hover); color: var(--color-text-muted); border: 1px solid var(--color-border-subtle); }
 
 .slide-expand-enter-active,
@@ -897,7 +960,7 @@ function qualityToneFor(value) {
 }
 .diagnostic-backend-item {
   padding: 0.85rem 1rem;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-subtle);
   display: flex;
@@ -925,20 +988,20 @@ function qualityToneFor(value) {
 .diagnostic-backend-item__preferred {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
-  border-radius: 999px;
+  padding: var(--space-0-5) var(--space-2-5);
+  border-radius: var(--radius-full);
   font-size: 0.62rem;
   font-weight: 700;
-  background: rgba(16, 185, 129, 0.12);
+  background: var(--color-success-subtle);
   color: var(--color-success);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  border: 1px solid var(--color-success-glow);
 }
 .diagnostic-backend-item__quality {
   flex-shrink: 0;
   font-size: 0.62rem;
   font-weight: 700;
-  padding: 2px 10px;
-  border-radius: 999px;
+  padding: var(--space-0-5) var(--space-2-5);
+  border-radius: var(--radius-full);
   background: var(--color-bg-hover);
   color: var(--color-text-muted);
 }
@@ -955,7 +1018,7 @@ function qualityToneFor(value) {
   flex: 1 1 0;
   min-width: 0;
   padding: 0.4rem 0.5rem;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--color-primary-subtle);
   border: 1px solid var(--color-border-subtle);
   display: flex;
@@ -978,7 +1041,7 @@ function qualityToneFor(value) {
   align-items: center;
   gap: 0.35rem;
   padding: 0.22rem 0.6rem;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-border-subtle);
   background: var(--color-primary-subtle);
   color: var(--color-primary);
@@ -1064,7 +1127,7 @@ function qualityToneFor(value) {
 }
 .diagnostic-factor {
   padding: 0.4rem 0.5rem;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--color-primary-subtle);
   border: 1px solid var(--color-border-subtle);
   display: flex;
@@ -1097,7 +1160,7 @@ function qualityToneFor(value) {
   cursor: pointer;
   font: inherit;
   text-align: left;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
 }
 .diagnostic-modal__section-title--toggle:hover {
   background: var(--color-bg-hover);
@@ -1116,8 +1179,8 @@ function qualityToneFor(value) {
   font-weight: 600;
   color: var(--color-text-tertiary);
   background: var(--color-bg-hover);
-  padding: 2px 7px;
-  border-radius: 999px;
+  padding: var(--space-0-5) var(--space-2);
+  border-radius: var(--radius-full);
 }
 .diagnostic-modal__samples {
   display: flex;
@@ -1127,7 +1190,7 @@ function qualityToneFor(value) {
   max-height: 220px;
   overflow-y: auto;
   border: 1px solid var(--color-border-subtle);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 0.3rem 0.4rem;
   background: var(--color-bg-surface);
 }
@@ -1143,7 +1206,7 @@ function qualityToneFor(value) {
 }
 .diagnostic-sample--failed {
   color: var(--color-danger);
-  background: rgba(239, 68, 68, 0.04);
+  background: var(--color-danger-50);
 }
 .diagnostic-sample__left {
   display: flex;
@@ -1161,12 +1224,12 @@ function qualityToneFor(value) {
 .diagnostic-sample__status {
   font-size: 0.65rem;
   font-weight: 700;
-  padding: 1px 4px;
+  padding: var(--space-0-5) var(--space-1);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
 }
 .diagnostic-sample__status--success { background: var(--color-success-50); color: var(--color-success); }
-.diagnostic-sample__status--info { background: rgba(56, 189, 248, 0.12); color: #0ea5e9; }
+.diagnostic-sample__status--info { background: var(--color-primary-subtle); color: var(--color-primary); }
 .diagnostic-sample__status--warning { background: var(--color-warning-50); color: var(--color-warning); }
 .diagnostic-sample__status--danger { background: var(--color-danger-50); color: var(--color-danger); }
 .diagnostic-sample__status--muted { background: var(--color-bg-hover); color: var(--color-text-muted); }
@@ -1206,8 +1269,8 @@ function qualityToneFor(value) {
 }
 
 @keyframes diag-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.4); }
-  70% { box-shadow: 0 0 14px 8px rgba(13, 148, 136, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0); }
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 40%, transparent); }
+  70% { box-shadow: 0 0 14px 8px color-mix(in srgb, var(--color-primary) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 0%, transparent); }
 }
 </style>

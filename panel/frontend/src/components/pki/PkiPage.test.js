@@ -13,7 +13,6 @@ import agentPickerSource from '../AgentPicker.vue?raw'
 import baseModalSource from '../base/BaseModal.vue?raw'
 import createAgentPickerSource from '../common/CreateAgentPicker.vue?raw'
 import globalSearchSource from '../GlobalSearch.vue?raw'
-import versionsPageSource from '../../pages/VersionsPage.vue?raw'
 import indexDocumentSource from '../../../index.html?raw'
 
 const modalUtilitiesSource = readFileSync(resolve('src/styles/utilities.css'), 'utf8')
@@ -200,6 +199,35 @@ describe('PkiPage behavior boundary', () => {
     pki.revoke.mockResolvedValue({ id: 'op-revoke', state: 'accepted', kind: 'revoke' })
   })
 
+  it('surfaces the load error with retry instead of mock data when reads fail', async () => {
+    pki.overview.mockRejectedValue(new Error('pki api unavailable'))
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    const notices = wrapper.findAll('.notice--danger')
+    expect(notices.length).toBe(1)
+    expect(notices[0].text()).toContain('内部 PKI 数据暂时不可用')
+    expect(notices[0].text()).toContain('pki api unavailable')
+    // Mock preview identities must not leak into a real failure view.
+    expect(wrapper.text()).not.toContain('identity-agent-edge-1')
+
+    pki.overview.mockResolvedValue({
+      pki_domain_id: 'domain-1',
+      pki_epoch: 4,
+      security_revision: 11,
+      upgrade_state: 'tunnel_mtls_only',
+      runtime_status: 'healthy',
+      identity_count: 1,
+      certificate_count: 1
+    })
+    await wrapper.get('.notice--danger .text-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.notice--danger').exists()).toBe(false)
+    // Real identities are back (rendered through the shared agent names).
+    expect(wrapper.text()).toContain('香港边缘节点')
+  })
+
   it('keeps mounted dialogs inside the mobile viewport and safe area', async () => {
     const wrapper = await mountPage()
     await flushPromises()
@@ -235,16 +263,14 @@ describe('PkiPage behavior boundary', () => {
     expect(declarationsFor(sharedModalStyles, '.modal-overlay', 'padding-bottom'))
       .toContain('max(clamp(0.75rem, 2vw, 1.5rem), env(safe-area-inset-bottom, 0px))')
 
+    // Policy forms mount through BaseModal, whose mobile viewport contract is
+    // asserted above, so pages no longer ship local modal CSS.
     const overlayContracts = [
       [globalSearchSource, 'GlobalSearch.vue', '.global-search-panel', undefined, ['80vh', '80dvh']],
       [agentPickerSource, 'AgentPicker.vue', '.agent-picker__dropdown', '(max-width: 640px)', ['70vh', '70dvh']],
       [createAgentPickerSource, 'CreateAgentPicker.vue', '.create-agent-picker', undefined, [
         'min(520px, calc(100vh - var(--space-8)))',
         'min(520px, calc(100dvh - var(--space-8)))'
-      ]],
-      [versionsPageSource, 'VersionsPage.vue', '.modal', undefined, [
-        'calc(100vh - var(--space-8))',
-        'calc(100dvh - var(--space-8))'
       ]]
     ]
     for (const [source, filename, selector, mediaQuery, expected] of overlayContracts) {

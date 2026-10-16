@@ -84,7 +84,7 @@ const formattedValue = computed(() => {
   display: flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 0.5rem;
+  gap: var(--space-2);
   min-width: 0;
   flex: 1;
 }

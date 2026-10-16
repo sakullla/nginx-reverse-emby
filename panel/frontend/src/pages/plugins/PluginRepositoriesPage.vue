@@ -177,6 +177,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { sanitizePluginText } from '../../api/pluginSecurity'
 import {
   createRepositorySource,
@@ -191,10 +192,15 @@ import EmptyState from '../../components/base/EmptyState.vue'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
+import { repositorySourceStatus, repositoryStatusBadgeTone } from '../../utils/pluginSourceStatus'
 import { messageStore } from '../../stores/messages'
 
+const route = useRoute()
 const sources = ref([])
 const selectedId = ref('')
+// Preview demo sources are only populated through the explicit ?preview=1 entry;
+// a real read failure surfaces an error block with retry instead of fake data.
+const isMockPreview = computed(() => route?.query?.preview === '1')
 const loading = ref(false)
 const saving = ref(false)
 const refreshingId = ref('')
@@ -218,8 +224,14 @@ async function loadSources(preferredId = selectedId.value) {
     selectedId.value = keep
     if (keep && inspectVisible.value) inspectVisible.value = true
   } catch (cause) {
-    applyPreviewSources()
-    loadError.value = ''
+    if (isMockPreview.value) {
+      // Explicit preview entry (?preview=1): populate demo sources instead of an error.
+      applyPreviewSources()
+      loadError.value = ''
+    } else {
+      sources.value = []
+      loadError.value = sanitizePluginText(cause?.message || '读取仓库源失败，请稍后重试')
+    }
   } finally {
     loading.value = false
   }
@@ -348,19 +360,12 @@ function sourceKindLabel(source) {
   return isOfficial(source) ? '官方来源' : '自定义来源'
 }
 
-function statusBadgeTone(source) {
-  const tone = statusOf(source).tone
-  if (tone === 'current') return 'success'
-  if (tone === 'error') return 'danger'
-  if (tone === 'pending') return 'warning'
-  return 'neutral'
+function statusOf(source) {
+  return repositorySourceStatus(source, { refreshing: refreshingId.value === source?.id })
 }
 
-function statusOf(source) {
-  if (refreshingId.value === source?.id) return { label: '刷新中', tone: 'pending' }
-  if (source?.last_error) return { label: '刷新失败', tone: 'error' }
-  if (source?.current_resolved_oid) return { label: source.last_result && source.last_result !== 'succeeded' ? `当前 · ${source.last_result}` : '当前可用', tone: 'current' }
-  return { label: source?.last_result || '等待首次刷新', tone: 'pending' }
+function statusBadgeTone(source) {
+  return repositoryStatusBadgeTone(statusOf(source))
 }
 
 function formatInterval(value) {
@@ -416,8 +421,8 @@ function formatDate(value) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
   gap: 0.75rem;
-  padding: 4px 4px 12px;
-  margin: -4px -4px -4px;
+  padding: var(--space-1) var(--space-1) var(--space-3);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) calc(-1 * var(--space-1));
 }
 
 .repository-card :deep(.base-list-card__header-left) {

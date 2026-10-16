@@ -29,7 +29,7 @@ func scopedSecretFixture(t *testing.T, roots ...string) (*PluginCapabilityManage
 	if len(roots) != 0 {
 		root = roots[0]
 	}
-	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local", TrafficStatsEnabled: true})
+	store, err := newServiceSQLiteStore(t, root)
 	if err != nil {
 		t.Fatal(err)
 	}

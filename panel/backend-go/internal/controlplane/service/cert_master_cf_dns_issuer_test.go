@@ -22,6 +22,9 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func TestMasterCFDNSConstructorPreservesTokenAliasesAndScope(t *testing.T) {
@@ -528,6 +531,333 @@ func (fakeMasterDNS01Solver) Present(context.Context, acmeflow.Challenge) error 
 }
 func (fakeMasterDNS01Solver) Wait(context.Context, acmeflow.Challenge) error { return nil }
 func (fakeMasterDNS01Solver) Cleanup(context.Context, acmeflow.Challenge) error {
+	return nil
+}
+
+type invokingMasterACMEEngine struct {
+	inner      *fakeMasterACMEEngine
+	cleanupErr error
+	presentErr error
+}
+
+func (engine *invokingMasterACMEEngine) Issue(ctx context.Context, request acmeflow.IssueRequest) (acmeflow.IssueResult, error) {
+	challenge := acmeflow.Challenge{
+		Type:       acmeflow.ChallengeDNS01,
+		Identifier: request.Identifiers[0],
+		DNSValue:   "challenge-digest",
+	}
+	if err := request.Solver.Present(ctx, challenge); err != nil {
+		return acmeflow.IssueResult{}, err
+	}
+	if err := request.Solver.Wait(ctx, challenge); err != nil {
+		return acmeflow.IssueResult{}, err
+	}
+	if err := request.Solver.Cleanup(ctx, challenge); err != nil || engine.cleanupErr != nil {
+		if err == nil {
+			err = engine.cleanupErr
+		}
+		return acmeflow.IssueResult{}, err
+	}
+	return engine.inner.Issue(ctx, request)
+}
+
+type scriptedDNSRecords struct {
+	byDomain  map[string]DNSCredential
+	err       error
+	domainErr map[string]error
+	ensureErr error
+	deleteErr error
+	ensured   []scriptedDNSCall
+	deleted   []scriptedDNSCall
+}
+
+type scriptedDNSCall struct {
+	domain, recordType, name, content string
+	ttl                               int
+}
+
+func (s *scriptedDNSRecords) ResolveCredential(_ context.Context, domain string) (DNSCredential, error) {
+	if s.err != nil {
+		return DNSCredential{}, s.err
+	}
+	if err := s.domainErr[domain]; err != nil {
+		return DNSCredential{}, err
+	}
+	if credential, ok := s.byDomain[domain]; ok {
+		return credential, nil
+	}
+	return DNSCredential{}, fmt.Errorf("%w: %s", errDNSCredentialUnavailable, domain)
+}
+
+func (s *scriptedDNSRecords) EnsureRecord(_ context.Context, domain, recordType, name, content string, ttl int) error {
+	s.ensured = append(s.ensured, scriptedDNSCall{domain, recordType, name, content, ttl})
+	return s.ensureErr
+}
+
+func (s *scriptedDNSRecords) DeleteRecord(_ context.Context, domain, recordType, name, content string) error {
+	s.deleted = append(s.deleted, scriptedDNSCall{domain: domain, recordType: recordType, name: name, content: content})
+	return s.deleteErr
+}
+
+func TestDomesticMappingIssuesThroughPluginWithoutCloudflareSolver(t *testing.T) {
+	records := &scriptedDNSRecords{byDomain: map[string]DNSCredential{
+		"*.example.cn":  {Provider: pluginhost.DNSProviderAliyun, Mapped: true},
+		"ok.example.cn": {Provider: pluginhost.DNSProviderTencentDNS, Mapped: true},
+	}}
+	propagation := &fakePluginDNSPropagation{}
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		directoryURL: "https://ca.example/directory",
+		email:        "ops@example.com",
+		dataDir:      t.TempDir(),
+		engine:       &invokingMasterACMEEngine{inner: &fakeMasterACMEEngine{now: now}},
+		openState: func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		},
+		newSolver: func(masterACMEStateStore, string, string) (acmeflow.ChallengeSolver, error) {
+			t.Fatal("domestic mapping used the Cloudflare solver")
+			return nil, errors.New("cloudflare solver")
+		},
+		records:     records,
+		propagation: propagation,
+		now:         func() time.Time { return now },
+	}
+	issued, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "*.example.cn", IssuerMode: "master_cf_dns"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !issued.Changed || len(records.ensured) != 1 || len(records.deleted) != 1 {
+		t.Fatalf("issued=%v ensured=%+v deleted=%+v", issued.Changed, records.ensured, records.deleted)
+	}
+	if records.ensured[0].domain != "example.cn" || records.ensured[0].recordType != "TXT" || records.ensured[0].name != "_acme-challenge.example.cn" || records.ensured[0].content != "challenge-digest" || records.ensured[0].ttl != 120 {
+		t.Fatalf("ensure = %+v", records.ensured[0])
+	}
+	if records.deleted[0].name != "_acme-challenge.example.cn" || records.deleted[0].content != "challenge-digest" {
+		t.Fatalf("delete = %+v", records.deleted[0])
+	}
+	if len(propagation.waited) != 1 || !strings.Contains(propagation.waited[0], "_acme-challenge.example.cn") {
+		t.Fatalf("wait = %+v", propagation.waited)
+	}
+
+	records.ensureErr = errors.New("permission denied token=super-secret-dns-token")
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "ok.example.cn"}); err == nil || !strings.Contains(err.Error(), "permission denied") || strings.Contains(err.Error(), "super-secret-dns-token") {
+		t.Fatalf("provider failure = %v", err)
+	}
+	records.ensureErr = nil
+	records.deleteErr = errors.New("cleanup refused")
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "ok.example.cn"}); err == nil || !strings.Contains(err.Error(), "cleanup refused") {
+		t.Fatalf("cleanup failure = %v", err)
+	}
+}
+
+func TestDomesticSubmissionDoesNotRequireCloudflareEnv(t *testing.T) {
+	records := &scriptedDNSRecords{byDomain: map[string]DNSCredential{
+		"www.example.cn":  {Provider: pluginhost.DNSProviderDNSPodCom, Mapped: true},
+		"www.example.com": {Provider: pluginhost.DNSProviderCloudflare, Token: "env-token"},
+	}}
+	service := &certificateService{renewalIssuer: &masterCFDNSManagedCertificateIssuer{records: records}}
+	if err := service.assertManagedDNSSubmissionAllowed(context.Background(), "www.example.cn"); err != nil {
+		t.Fatal(err)
+	}
+	err := service.assertManagedDNSSubmissionAllowed(context.Background(), "www.example.com")
+	if err == nil || !strings.Contains(err.Error(), "ACME_DNS_PROVIDER=cf") || strings.Contains(err.Error(), "env-token") {
+		t.Fatalf("cloudflare submit without switch err = %v", err)
+	}
+	typed := service.renewalIssuer.(*masterCFDNSManagedCertificateIssuer)
+	typed.cloudflareEnabled = true
+	if err := service.assertManagedDNSSubmissionAllowed(context.Background(), "www.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	records.byDomain = nil
+	err = service.assertManagedDNSSubmissionAllowed(context.Background(), "missing.example")
+	if err == nil || !strings.Contains(err.Error(), "ACME_DNS_PROVIDER=cf") {
+		t.Fatalf("unmapped submit err = %v", err)
+	}
+}
+
+func TestCloudflareMappingStillUsesExistingSolver(t *testing.T) {
+	var gotToken string
+	records := &scriptedDNSRecords{byDomain: map[string]DNSCredential{
+		"www.example.com": {Provider: pluginhost.DNSProviderCloudflare, Token: "mapped-token", Mapped: true},
+	}}
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		directoryURL: "https://ca.example/directory",
+		dataDir:      t.TempDir(),
+		engine:       &fakeMasterACMEEngine{now: now},
+		openState: func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		},
+		newSolver: func(_ masterACMEStateStore, dnsToken, _ string) (acmeflow.ChallengeSolver, error) {
+			gotToken = dnsToken
+			return fakeMasterDNS01Solver{}, nil
+		},
+		records:           records,
+		cloudflareEnabled: true,
+		now:               func() time.Time { return now },
+	}
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "www.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotToken != "mapped-token" || len(records.ensured) != 0 {
+		t.Fatalf("token=%q ensured=%d", gotToken, len(records.ensured))
+	}
+}
+
+func TestCloudflareCredentialDoesNotIssueWithoutProviderSwitch(t *testing.T) {
+	const secret = "super-secret-dns-token"
+	records := &scriptedDNSRecords{byDomain: map[string]DNSCredential{
+		"www.example.com": {Provider: pluginhost.DNSProviderCloudflare, Token: secret, Mapped: true},
+	}}
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		records: records,
+		newSolver: func(masterACMEStateStore, string, string) (acmeflow.ChallengeSolver, error) {
+			t.Fatal("cloudflare solver used without ACME_DNS_PROVIDER=cf")
+			return nil, errors.New("cloudflare solver")
+		},
+	}
+	_, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "www.example.com", IssuerMode: "master_cf_dns"})
+	if err == nil || !strings.Contains(err.Error(), "ACME_DNS_PROVIDER=cf") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("issue err = %v", err)
+	}
+	records.byDomain = nil
+	records.err = fmt.Errorf("vault unavailable token=%s", secret)
+	_, err = issuer.Issue(context.Background(), ManagedCertificate{Domain: "www.example.cn", IssuerMode: "master_cf_dns"})
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("resolution err = %v", err)
+	}
+}
+
+func TestManagedDNSResolutionFailureIsPersisted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite-backed managed DNS scenarios run in the full test tier")
+	}
+	const secret = "super-secret-dns-token"
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	records := &scriptedDNSRecords{err: fmt.Errorf("vault unavailable token=%s", secret)}
+	issuer := &masterCFDNSManagedCertificateIssuer{records: records}
+	store := openManagedDNSTestStore(t)
+	issuing := ManagedCertificate{
+		ID: 11, Domain: "www.example.cn", Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		CertificateType: "acme", Status: "issuing", Revision: 1,
+	}
+	if err := store.SaveManagedCertificates(context.Background(), []storage.ManagedCertificateRow{managedCertificateToRow(issuing)}); err != nil {
+		t.Fatal(err)
+	}
+	service := newManagedDNSTestService(store, issuer, now)
+	_, err := service.issueManagedCertificateInBackground(context.Background(), nil, 0, issuing, 1)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("issue err = %v", err)
+	}
+	failed := mustManagedCertificate(t, store, issuing.ID)
+	if failed.Status != "error" || failed.LastError == "" || strings.Contains(failed.LastError, secret) || !strings.Contains(failed.LastError, "unavailable") {
+		t.Fatalf("issuing certificate = %+v", failed)
+	}
+
+	renewStore := openManagedDNSTestStore(t)
+	solverCalls := 0
+	renewRecords := &scriptedDNSRecords{
+		byDomain: map[string]DNSCredential{
+			"www.example.com": {Provider: pluginhost.DNSProviderCloudflare, Token: secret, Mapped: true},
+		},
+		domainErr: map[string]error{
+			"broken.example.cn": fmt.Errorf("%w token=%s", pluginhost.ErrDNSProviderUnavailable, secret),
+		},
+	}
+	renewIssuer := &masterCFDNSManagedCertificateIssuer{
+		records: renewRecords,
+		newSolver: func(masterACMEStateStore, string, string) (acmeflow.ChallengeSolver, error) {
+			solverCalls++
+			return nil, errors.New("cloudflare solver")
+		},
+	}
+	renewAt := now.Add(-time.Hour).Format(time.RFC3339)
+	if err := renewStore.SaveManagedCertificates(context.Background(), []storage.ManagedCertificateRow{
+		managedCertificateToRow(ManagedCertificate{
+			ID: 1, Domain: "broken.example.cn", Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+			CertificateType: "acme", Status: "active", Revision: 1,
+			ACMEInfo: ManagedCertificateACMEInfo{Renew: renewAt},
+		}),
+		managedCertificateToRow(ManagedCertificate{
+			ID: 2, Domain: "www.example.com", Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+			CertificateType: "acme", Status: "active", Revision: 2,
+			ACMEInfo: ManagedCertificateACMEInfo{Renew: renewAt},
+		}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	renewService := newManagedDNSTestService(renewStore, renewIssuer, now)
+	err = renewService.RunRenewalPass(context.Background())
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("renewal err = %v", err)
+	}
+	broken := mustManagedCertificate(t, renewStore, 1)
+	if broken.Status != "error" || broken.LastError == "" || strings.Contains(broken.LastError, secret) || !strings.Contains(broken.LastError, "unavailable") {
+		t.Fatalf("renewed certificate = %+v", broken)
+	}
+	cloudflare := mustManagedCertificate(t, renewStore, 2)
+	if cloudflare.Status != "active" || cloudflare.LastError != "" || solverCalls != 0 || len(renewRecords.ensured) != 0 {
+		t.Fatalf("cloudflare certificate = %+v solver=%d ensured=%d", cloudflare, solverCalls, len(renewRecords.ensured))
+	}
+
+	issueStore := openManagedDNSTestStore(t)
+	cloudflareIssuing := ManagedCertificate{
+		ID: 3, Domain: "www.example.com", Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		CertificateType: "acme", Status: "issuing", Revision: 1,
+	}
+	if err := issueStore.SaveManagedCertificates(context.Background(), []storage.ManagedCertificateRow{managedCertificateToRow(cloudflareIssuing)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newManagedDNSTestService(issueStore, renewIssuer, now).issueManagedCertificateInBackground(context.Background(), nil, 0, cloudflareIssuing, 1)
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "ACME_DNS_PROVIDER=cf") {
+		t.Fatalf("issuing cloudflare err = %v", err)
+	}
+	stuck := mustManagedCertificate(t, issueStore, cloudflareIssuing.ID)
+	if stuck.Status != "error" || stuck.LastError == "" || strings.Contains(stuck.LastError, secret) {
+		t.Fatalf("issuing cloudflare certificate = %+v", stuck)
+	}
+}
+
+func openManagedDNSTestStore(t *testing.T) *storage.GormStore {
+	t.Helper()
+	store, err := newServiceSQLiteStore(t, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func newManagedDNSTestService(store storage.Store, issuer managedCertificateRenewalIssuer, now time.Time) *certificateService {
+	service := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
+	service.revisionMutation = true
+	service.now = func() time.Time { return now }
+	return service
+}
+
+func mustManagedCertificate(t *testing.T, store storage.Store, id int) ManagedCertificate {
+	t.Helper()
+	rows, err := store.ListManagedCertificates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, _, found := findManagedCertificateByID(rows, id)
+	if !found {
+		t.Fatalf("certificate %d not found", id)
+	}
+	return cert
+}
+
+type fakePluginDNSPropagation struct {
+	waited []string
+}
+
+func (f *fakePluginDNSPropagation) ResolveCNAME(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakePluginDNSPropagation) WaitTXT(_ context.Context, name, value, zone string) error {
+	f.waited = append(f.waited, name+" "+value+" "+zone)
 	return nil
 }
 

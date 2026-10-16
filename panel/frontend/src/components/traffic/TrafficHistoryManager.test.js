@@ -48,7 +48,7 @@ describe('TrafficHistoryManager', () => {
     }
   })
 
-  it('renders with null monthly retention months', () => {
+  it('renders an empty monthly retention as permanent instead of a dash', () => {
     const wrapper = mountManager({
       policy: {
         hourly_retention_days: 30,
@@ -56,6 +56,7 @@ describe('TrafficHistoryManager', () => {
         monthly_retention_months: null
       }
     })
-    expect(wrapper.text()).toContain('月 — 个月')
+    expect(wrapper.text()).toContain('月 永久保留')
+    expect(wrapper.text()).not.toContain('— 个月')
   })
 })

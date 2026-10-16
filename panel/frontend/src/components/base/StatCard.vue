@@ -44,7 +44,7 @@ defineProps({
 <style scoped>
 .stat-card {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-subtle);
+  border: var(--border-width-thin) solid var(--color-border-subtle);
   border-radius: var(--radius-2xl);
   padding: var(--space-5);
   box-shadow: var(--shadow-xs);
@@ -100,8 +100,8 @@ defineProps({
 }
 
 .stat-card__value {
-  font-size: 1.75rem;
-  font-weight: 700;
+  font-size: var(--text-3xl);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0 0 var(--space-1);
   letter-spacing: -0.02em;
@@ -119,14 +119,14 @@ defineProps({
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
   margin: var(--space-1) 0 0;
-  font-weight: 500;
+  font-weight: var(--font-medium);
 }
 
 .stat-card__label {
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   margin: var(--space-1) 0 0;
-  font-weight: 500;
+  font-weight: var(--font-medium);
 }
 
 .stat-card__progress {
@@ -180,8 +180,8 @@ defineProps({
   transform: translateY(-50%);
   width: 6px;
   height: 6px;
-  border-top: 1.5px solid var(--color-text-tertiary);
-  border-right: 1.5px solid var(--color-text-tertiary);
+  border-top: var(--border-width-thick) solid var(--color-text-tertiary);
+  border-right: var(--border-width-thick) solid var(--color-text-tertiary);
   rotate: 45deg;
   opacity: 0;
   transition: opacity var(--duration-normal) var(--ease-default), transform var(--duration-normal) var(--ease-default);
@@ -203,7 +203,7 @@ defineProps({
 
 .stat-card--lg .stat-card__value {
   font-size: var(--text-3xl);
-  font-weight: 600;
+  font-weight: var(--font-semibold);
 }
 
 @media (max-width: 640px) {

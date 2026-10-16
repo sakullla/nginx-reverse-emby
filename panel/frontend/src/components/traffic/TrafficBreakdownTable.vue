@@ -269,7 +269,7 @@ function rowPercentWidth(row) {
 .traffic-breakdown__row--clickable:hover {
   background: var(--color-bg-hover);
   border-color: color-mix(in srgb, var(--color-border-default) 70%, transparent);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+  box-shadow: var(--shadow-xs);
 }
 .traffic-breakdown__name {
   min-width: 0;
@@ -305,7 +305,7 @@ function rowPercentWidth(row) {
 .traffic-breakdown__share-track {
   width: 100%;
   height: 0.35rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-border-muted, var(--color-border-default));
   overflow: hidden;
 }

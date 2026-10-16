@@ -45,7 +45,7 @@ function selectTab(id) {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  border-bottom: 1.5px solid var(--color-border-default);
+  border-bottom: var(--border-width-thick) solid var(--color-border-default);
   padding: 0 var(--space-2);
 }
 
@@ -80,7 +80,7 @@ function selectTab(id) {
 .base-tabs__tab--active::after {
   content: '';
   position: absolute;
-  bottom: -1.5px;
+  bottom: calc(-1 * var(--border-width-thick));
   left: 0;
   right: 0;
   height: 2px;

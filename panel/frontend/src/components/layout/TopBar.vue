@@ -3,9 +3,7 @@
     <div class="topbar__left">
       <div class="topbar__brand">
         <div class="topbar__logo">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-          </svg>
+          <BrandMark />
         </div>
         <div class="topbar__title">
           <span class="topbar__name">Nginx Proxy</span>
@@ -34,6 +32,7 @@
 
       <div ref="accountMenuRef" class="topbar__account">
         <button
+          ref="accountTriggerRef"
           type="button"
           class="topbar__action"
           :class="{ 'topbar__action--open': accountMenuOpen }"
@@ -43,6 +42,8 @@
           :aria-expanded="accountMenuOpen ? 'true' : 'false'"
           aria-controls="topbar-account-menu"
           @click="toggleAccountMenu"
+          @keydown.arrow-down.prevent="openAccountMenu(false)"
+          @keydown.arrow-up.prevent="openAccountMenu(true)"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
@@ -57,6 +58,7 @@
             class="topbar__menu"
             role="menu"
             aria-label="账号"
+            @keydown="onMenuKeydown"
           >
             <div v-if="accountLabel" class="topbar__menu-identity" role="none">
               <span class="topbar__menu-identity-label">当前账号</span>
@@ -84,16 +86,18 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { logout } from '../../api/access'
 import { useAccessControl } from '../../context/useAccessControl'
 import ThemeSelector from '../base/ThemeSelector.vue'
+import BrandMark from '../base/BrandMark.vue'
 
 const router = useRouter()
 const { actor } = useAccessControl()
 
 const accountMenuRef = ref(null)
+const accountTriggerRef = ref(null)
 const accountMenuOpen = ref(false)
 
 const accountLabel = computed(() => {
@@ -105,8 +109,38 @@ function toggleAccountMenu() {
   accountMenuOpen.value = !accountMenuOpen.value
 }
 
-function closeAccountMenu() {
+function closeAccountMenu(restoreFocus = false) {
   accountMenuOpen.value = false
+  if (restoreFocus) accountTriggerRef.value?.focus()
+}
+
+function menuItems() {
+  return [...(accountMenuRef.value?.querySelectorAll('[role="menuitem"]') || [])]
+}
+
+async function openAccountMenu(focusLast = false) {
+  accountMenuOpen.value = true
+  await nextTick()
+  const items = menuItems()
+  items[focusLast ? items.length - 1 : 0]?.focus()
+}
+
+function onMenuKeydown(event) {
+  if (!accountMenuOpen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeAccountMenu(true)
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const items = menuItems()
+  if (!items.length) return
+  const current = items.indexOf(document.activeElement)
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+    : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+  items[index]?.focus()
 }
 
 function onDocumentClick(event) {
@@ -130,7 +164,7 @@ onUnmounted(() => {
 })
 
 async function handleLogout() {
-  closeAccountMenu()
+  closeAccountMenu(true)
   await logout().catch(() => undefined)
   localStorage.removeItem('selected_agent_id')
   await router.replace({ name: 'login' })
@@ -144,8 +178,9 @@ async function handleLogout() {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-5);
-  background: var(--color-bg-surface);
-  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-chrome, var(--color-bg-surface));
+  backdrop-filter: blur(var(--chrome-blur, 0px));
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
@@ -153,19 +188,19 @@ async function handleLogout() {
   box-shadow: var(--shadow-xs);
 }
 
-.topbar__left { display: flex; align-items: center; gap: 1rem; }
+.topbar__left { display: flex; align-items: center; gap: var(--space-4); }
 
-.topbar__brand { display: flex; align-items: center; gap: 0.75rem; }
+.topbar__brand { display: flex; align-items: center; gap: var(--space-3); }
 
 .topbar__logo {
   width: 36px;
   height: 36px;
-  background: var(--color-primary);
+  background: var(--color-brand-bg, var(--color-primary));
   border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
+  color: var(--color-brand-ink, white);
   box-shadow: var(--shadow-md);
   flex-shrink: 0;
   transition: transform var(--duration-fast) var(--ease-bounce);
@@ -175,33 +210,33 @@ async function handleLogout() {
   transform: scale(1.05);
 }
 
-.topbar__title { display: flex; align-items: center; gap: 0.5rem; }
+.topbar__title { display: flex; align-items: center; gap: var(--space-2); }
 
 .topbar__name {
-  font-size: 1rem;
-  font-weight: 700;
+  font-size: var(--text-base);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   letter-spacing: -0.01em;
 }
 
 .topbar__badge {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  background: var(--color-primary);
-  color: white;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  padding: var(--space-0-5) var(--space-2);
+  background: var(--color-badge-bg, var(--color-primary));
+  color: var(--color-badge-ink, white);
   border-radius: var(--radius-full);
 }
 
-.topbar__actions { display: flex; align-items: center; gap: 0.5rem; }
+.topbar__actions { display: flex; align-items: center; gap: var(--space-2); }
 
 .topbar__search {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-1-5);
   height: 36px;
-  padding: 0 0.55rem 0 0.7rem;
-  border: 1px solid var(--color-border-default);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border: var(--border-width-thin) solid var(--color-border-default);
   border-radius: var(--radius-full);
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
@@ -216,19 +251,19 @@ async function handleLogout() {
 }
 
 .topbar__search-label {
-  font-size: 0.8125rem;
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
 }
 
 .topbar__search-kbd {
   font-family: inherit;
-  font-size: 0.6875rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   color: var(--color-text-tertiary);
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   border-radius: var(--radius-sm);
-  padding: 0.05rem 0.35rem;
+  padding: var(--space-0-5) var(--space-1-5);
 }
 
 .topbar__account {
@@ -242,12 +277,12 @@ async function handleLogout() {
 
 .topbar__menu {
   position: absolute;
-  top: calc(100% + 0.5rem);
+  top: calc(100% + var(--space-2));
   right: 0;
-  z-index: 20;
+  z-index: var(--z-dropdown);
   min-width: 11.5rem;
-  padding: 0.35rem;
-  border: 1px solid var(--color-border-subtle);
+  padding: var(--space-1-5);
+  border: var(--border-width-thin) solid var(--color-border-subtle);
   border-radius: var(--radius-xl);
   background: var(--color-bg-surface);
   box-shadow: var(--shadow-lg);
@@ -255,15 +290,15 @@ async function handleLogout() {
 
 .topbar__menu-identity {
   display: grid;
-  gap: 0.1rem;
+  gap: var(--space-0-5);
   min-width: 0;
-  padding: 0.55rem 0.7rem 0.45rem;
+  padding: var(--space-2) var(--space-3) var(--space-2);
 }
 
 .topbar__menu-identity-label {
   color: var(--color-text-tertiary);
-  font-size: 0.6875rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
 }
 
 .topbar__menu-identity-name {
@@ -272,22 +307,22 @@ async function handleLogout() {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
 }
 
 .topbar__menu-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
   min-height: 2.15rem;
-  padding: 0 0.7rem;
+  padding: 0 var(--space-3);
   border: 0;
   border-radius: var(--radius-lg);
   background: transparent;
   color: var(--color-text-primary);
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   text-align: left;
   cursor: pointer;
 }
@@ -308,14 +343,14 @@ async function handleLogout() {
 }
 
 .topbar__menu-sep {
-  height: 1px;
-  margin: 0.3rem 0.4rem;
+  height: var(--border-width-thin);
+  margin: var(--space-1) var(--space-1-5);
   background: var(--color-border-subtle);
 }
 
 .dropdown-enter-active,
 .dropdown-leave-active {
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity var(--duration-fast) var(--ease-default), transform var(--duration-fast) var(--ease-default);
 }
 
 .dropdown-enter-from,

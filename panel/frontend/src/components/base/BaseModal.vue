@@ -9,7 +9,7 @@
       >
         <div
           class="modal"
-          :class="modalSizeClass"
+          :class="[modalSizeClass, { 'modal--fit-mobile': fitContentOnMobile }]"
           tabindex="-1"
           ref="modalRef"
           role="dialog"
@@ -59,6 +59,7 @@ const props = defineProps({
   large: { type: Boolean, default: false },
   showFooter: { type: Boolean, default: false },
   closeOnClickModal: { type: Boolean, default: true },
+  fitContentOnMobile: { type: Boolean, default: false },
   dataTest: { type: String, default: '' },
 })
 
@@ -165,8 +166,8 @@ onUnmounted(() => {
 }
 
 .modal__title {
-  font-size: 1.0625rem;
-  font-weight: 700;
+  font-size: var(--text-lg);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0;
   letter-spacing: -0.02em;
@@ -174,9 +175,9 @@ onUnmounted(() => {
 }
 
 .modal__subtitle {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
-  margin: 0.2rem 0 0;
+  margin: var(--space-1) 0 0;
   line-height: 1.4;
 }
 
@@ -229,6 +230,10 @@ onUnmounted(() => {
     max-height: 100vh;
     max-height: 100dvh;
     border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+  }
+
+  .modal--fit-mobile {
+    height: auto;
   }
 }
 </style>

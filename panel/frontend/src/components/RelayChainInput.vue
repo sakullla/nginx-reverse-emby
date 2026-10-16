@@ -76,6 +76,7 @@
                 :disabled="disabled || layerIndex === 0"
                 @click="moveLayerUp(layerIndex)"
                 title="上移"
+                :aria-label="`上移第 ${layerIndex + 1} 层`"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="18 15 12 9 6 15"/>
@@ -87,6 +88,7 @@
                 :disabled="disabled || layerIndex === displayLayers.length - 1"
                 @click="moveLayerDown(layerIndex)"
                 title="下移"
+                :aria-label="`下移第 ${layerIndex + 1} 层`"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="6 9 12 15 18 9"/>
@@ -98,6 +100,7 @@
                 :disabled="disabled"
                 @click="removeLayer(layerIndex)"
                 title="删除"
+                :aria-label="`删除第 ${layerIndex + 1} 层`"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -121,6 +124,7 @@
                   type="button"
                   class="relay-editor__chip-remove"
                   :disabled="disabled"
+                  :aria-label="`移除监听器 ${listenerName(listenerId) || `#${listenerId}`}`"
                   @click="removeNode(layerIndex, nodeIndex)"
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -140,6 +144,8 @@
                   type="button"
                   class="relay-editor__add-btn"
                   :disabled="disabled || !availableForLayer(layerIndex).length"
+                  :aria-expanded="openDropdownLayer === layerIndex ? 'true' : 'false'"
+                  aria-haspopup="listbox"
                   @click.stop="toggleDropdown(layerIndex)"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -148,7 +154,15 @@
                   <span>{{ availableForLayer(layerIndex).length ? '添加节点' : '无可用节点' }}</span>
                 </button>
 
-                <div v-if="openDropdownLayer === layerIndex" class="relay-editor__dropdown-menu">
+                <div
+                  v-if="openDropdownLayer === layerIndex"
+                  class="relay-editor__dropdown-menu"
+                  role="listbox"
+                  aria-label="可选 Relay 监听器"
+                  tabindex="-1"
+                  :aria-activedescendant="activeDropdownId(layerIndex)"
+                  @keydown="onDropdownKeydown($event, layerIndex)"
+                >
                   <div class="relay-editor__dropdown-search" @click.stop>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -158,12 +172,20 @@
                       type="text"
                       placeholder="搜索监听器..."
                       class="relay-editor__dropdown-search-input"
+                      aria-label="搜索监听器"
+                      @keydown.down.prevent="focusDropdownMenu"
+                      @keydown.enter.prevent
                     >
                   </div>
                   <div
                     v-for="listener in filteredAvailableForLayer(layerIndex)"
                     :key="listener.id"
+                    :id="`relay-option-${layerIndex}-${listener.id}`"
                     class="relay-editor__dropdown-item"
+                    :class="{ 'relay-editor__dropdown-item--active': isActiveOption(layerIndex, listener.id) }"
+                    role="option"
+                    :aria-selected="isActiveOption(layerIndex, listener.id) ? 'true' : 'false'"
+                    tabindex="-1"
                     @click.stop="addNode(layerIndex, listener.id)"
                   >
                     <span class="relay-editor__dropdown-id">#{{ listener.id }}</span>
@@ -237,7 +259,7 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, nextTick, ref, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
@@ -305,6 +327,60 @@ const canAddLayer = computed(() => {
 const openDropdownLayer = ref(-1)
 const showPaths = ref(false)
 const layerSearchQueries = ref({})
+// Keyboard-active option per layer (listbox aria-activedescendant target).
+const activeOptions = ref({})
+
+function activeDropdownId(layerIndex) {
+  const id = activeOptions.value[layerIndex]
+  return id != null ? `relay-option-${layerIndex}-${id}` : undefined
+}
+
+function isActiveOption(layerIndex, listenerId) {
+  return activeOptions.value[layerIndex] === listenerId
+}
+
+function ensureActiveOption(layerIndex) {
+  if (activeOptions.value[layerIndex] != null) return
+  const first = filteredAvailableForLayer(layerIndex)[0]
+  if (first) activeOptions.value[layerIndex] = first.id
+}
+
+function focusDropdownMenu(event) {
+  const menu = event.target.closest('.relay-editor__dropdown-menu')
+  if (menu) menu.focus()
+}
+
+function scrollToActiveOption(layerIndex) {
+  const id = activeOptions.value[layerIndex]
+  if (id == null) return
+  nextTick(() => {
+    document.getElementById(`relay-option-${layerIndex}-${id}`)?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+function onDropdownKeydown(event, layerIndex) {
+  const options = filteredAvailableForLayer(layerIndex)
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    openDropdownLayer.value = -1
+    return
+  }
+  if (!options.length) return
+  ensureActiveOption(layerIndex)
+  const currentId = activeOptions.value[layerIndex]
+  const index = Math.max(0, options.findIndex((listener) => listener.id === currentId))
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    const next = event.key === 'ArrowDown'
+      ? Math.min(index + 1, options.length - 1)
+      : Math.max(index - 1, 0)
+    activeOptions.value[layerIndex] = options[next].id
+    scrollToActiveOption(layerIndex)
+  } else if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+    event.preventDefault()
+    addNode(layerIndex, options[index].id)
+  }
+}
 
 function listenerName(id) {
   const l = listenerMap.value.get(Number(id))
@@ -399,6 +475,7 @@ function toggleDropdown(layerIndex) {
   } else {
     openDropdownLayer.value = layerIndex
     layerSearchQueries.value[layerIndex] = ''
+    ensureActiveOption(layerIndex)
   }
 }
 
@@ -409,6 +486,7 @@ function addNode(layerIndex, listenerId) {
   next[layerIndex] = [...next[layerIndex], id]
   updateLayers(next)
   openDropdownLayer.value = -1
+  activeOptions.value[layerIndex] = null
 }
 
 function removeNode(layerIndex, nodeIndex) {
@@ -488,7 +566,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   background: var(--color-primary);
-  color: white;
+  color: var(--color-text-inverse);
   font-size: 9px;
   font-weight: 700;
   border-radius: var(--radius-full);
@@ -554,18 +632,18 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   background: var(--color-primary);
-  color: white;
-  font-size: 10px;
+  color: var(--color-text-inverse);
+  font-size: var(--text-xs);
   font-weight: 700;
   border-radius: var(--radius-full);
 }
 
 .relay-editor__layer-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   color: var(--color-primary);
   background: var(--color-primary-subtle);
-  padding: 1px 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-full);
 }
 
@@ -673,7 +751,7 @@ onUnmounted(() => {
 
 .relay-editor__chip-remove:hover {
   background: var(--color-primary);
-  color: white;
+  color: var(--color-text-inverse);
 }
 
 /* Add node dropdown */
@@ -715,7 +793,7 @@ onUnmounted(() => {
 
 .relay-editor__dropdown-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-1));
   left: 0;
   z-index: 50;
   min-width: 320px;
@@ -777,8 +855,14 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.relay-editor__dropdown-item:hover {
+.relay-editor__dropdown-item:hover,
+.relay-editor__dropdown-item--active {
   background: var(--color-bg-hover);
+}
+
+.relay-editor__dropdown-menu:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .relay-editor__dropdown-id {
@@ -896,7 +980,7 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: var(--color-text-tertiary);
   background: var(--color-bg-hover);
-  padding: 1px 8px;
+  padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-full);
 }
 
@@ -931,7 +1015,7 @@ onUnmounted(() => {
   justify-content: center;
   background: var(--color-bg-hover);
   border-radius: var(--radius-full);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   color: var(--color-text-secondary);
   flex-shrink: 0;

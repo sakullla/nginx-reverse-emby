@@ -284,8 +284,8 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
 
 .cluster-metrics__bar {
   display: flex;
-  gap: 2px;
-  height: 6px;
+  gap: var(--space-0-5);
+  height: var(--space-1-5);
   border-radius: var(--radius-full);
   overflow: hidden;
   background: var(--color-bg-subtle);
@@ -294,7 +294,7 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
 .cluster-metrics__bar-seg {
   height: 100%;
   border-radius: var(--radius-full);
-  min-width: 4px;
+  min-width: var(--space-1);
   animation: cluster-bar-enter 0.55s var(--ease-default, ease) both;
   transform-origin: left center;
 }
@@ -312,5 +312,34 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
 .cluster-metrics__row--danger .cluster-metrics__row-sub {
   color: var(--color-danger, #ef4444);
   font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .cluster-metrics__ring {
+    width: var(--space-16);
+    height: var(--space-16);
+  }
+
+  .cluster-metrics__rows {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+  }
+
+  .cluster-metrics__row {
+    min-width: 0;
+    margin: 0;
+    padding: var(--space-3) 0;
+  }
+
+  .cluster-metrics__row-head {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .cluster-metrics__row-sub {
+    line-height: 1.5;
+  }
 }
 </style>

@@ -445,6 +445,22 @@ func TestDDNSFailsWhenDomainHasNoToken(t *testing.T) {
 	}
 }
 
+func TestOwnerDDNSDomesticMappingUsesPluginAndNotCloudflare(t *testing.T) {
+	TestDDNSDomesticMappingUsesPluginAndNotCloudflare(t)
+}
+
+func TestOwnerDDNSDomesticGuardrailsDoNotCallPlugin(t *testing.T) {
+	TestDDNSDomesticGuardrailsDoNotCallPlugin(t)
+}
+
+func TestOwnerDDNSCloudflareMappingStillUsesCloudflareClient(t *testing.T) {
+	TestDDNSCloudflareMappingStillUsesCloudflareClient(t)
+}
+
+func TestOwnerManagedCertificateIssuerModeKeepsCloudflareBehindProviderSwitch(t *testing.T) {
+	TestManagedCertificateIssuerModeFollowsDomesticMapping(t)
+}
+
 func TestDDNSMappedUnavailableDoesNotUseEnvToken(t *testing.T) {
 	errCredentialUnavailable := errors.New("mapped credential unavailable")
 	raw, _ := json.Marshal(storage.DDNSConfig{

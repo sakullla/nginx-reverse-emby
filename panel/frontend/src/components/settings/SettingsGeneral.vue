@@ -20,6 +20,7 @@
             type="button"
             class="theme-card"
             :class="{ active: currentTheme === theme.id }"
+            :aria-pressed="currentTheme === theme.id"
             @click="setTheme(theme.id)"
           >
             <span class="theme-card__icon">{{ theme.emoji || '✨' }}</span>
@@ -53,6 +54,7 @@
               type="button"
               class="settings-pref__option"
               :class="{ 'settings-pref__option--active': preferenceValues[pref.key] === option.value }"
+              :aria-pressed="preferenceValues[pref.key] === option.value"
               @click="preferenceValues[pref.key] = option.value"
             >
               {{ option.label }}
@@ -145,8 +147,8 @@ const preferenceValues = reactive(
 
 .settings-pref__control {
   display: inline-flex;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--space-0-5);
+  padding: var(--space-0-5);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);

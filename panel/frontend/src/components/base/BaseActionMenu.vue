@@ -30,6 +30,7 @@
         data-testid="base-action-menu-panel"
         :aria-hidden="open ? 'false' : 'true'"
         :style="panelStyle"
+        @keydown="handleMenuKeydown"
       >
         <button
           v-for="item in items"
@@ -114,6 +115,41 @@ function updatePosition() {
   }
 }
 
+function menuItems() {
+  if (!panelRef.value) return []
+  return Array.from(panelRef.value.querySelectorAll('.base-action-menu__item:not(:disabled)'))
+}
+
+function focusItem(index) {
+  const items = menuItems()
+  if (!items.length) return
+  const clamped = (index + items.length) % items.length
+  items[clamped].focus()
+}
+
+function handleMenuKeydown(e) {
+  const items = menuItems()
+  if (!items.length) return
+  const current = items.indexOf(document.activeElement)
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    focusItem(current + 1)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    focusItem(current <= 0 ? items.length - 1 : current - 1)
+  } else if (e.key === 'Home') {
+    e.preventDefault()
+    focusItem(0)
+  } else if (e.key === 'End') {
+    e.preventDefault()
+    focusItem(items.length - 1)
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    close()
+    triggerEl()?.focus()
+  }
+}
+
 async function openMenu() {
   open.value = true
   await nextTick()
@@ -121,6 +157,7 @@ async function openMenu() {
   // second pass after panel paints so height-based flip is accurate
   await nextTick()
   updatePosition()
+  focusItem(0)
 }
 
 function close() {
@@ -194,14 +231,14 @@ onUnmounted(() => {
 <style>
 .base-action-menu__panel {
   min-width: 8.5rem;
-  padding: 0.25rem;
+  padding: var(--space-1);
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg, 0.5rem);
+  border: var(--border-width-thin) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: var(--space-0-5);
 }
 
 .base-action-menu__item {
@@ -212,12 +249,12 @@ onUnmounted(() => {
   background: transparent;
   color: var(--color-text-primary);
   font: inherit;
-  font-size: var(--text-sm, 0.875rem);
+  font-size: var(--text-sm);
   line-height: 1.35;
-  padding: 0.5rem 0.625rem;
-  border-radius: var(--radius-md, 0.375rem);
+  padding: var(--space-2) var(--space-2-5);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
 }
 
 .base-action-menu__item:hover:not(:disabled),
@@ -227,26 +264,26 @@ onUnmounted(() => {
 }
 
 .base-action-menu__item:disabled {
-  opacity: 0.45;
+  opacity: 0.48;
   cursor: not-allowed;
 }
 
 .base-action-menu__item--danger {
-  color: var(--color-danger, #dc2626);
+  color: var(--color-danger);
 }
 
 .base-action-menu__item--danger:hover:not(:disabled),
 .base-action-menu__item--danger:focus-visible:not(:disabled) {
-  background: var(--color-danger-50, rgba(220, 38, 38, 0.08));
-  color: var(--color-danger, #dc2626);
+  background: var(--color-danger-50);
+  color: var(--color-danger);
 }
 
 .base-action-menu__item--warning {
-  color: var(--color-warning, #d97706);
+  color: var(--color-warning);
 }
 
 .base-action-menu__item--success {
-  color: var(--color-success, #059669);
+  color: var(--color-success);
 }
 
 .base-action-menu__item--primary {

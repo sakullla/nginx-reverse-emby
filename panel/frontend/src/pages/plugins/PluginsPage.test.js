@@ -5,6 +5,7 @@ import PluginsPage from './PluginsPage.vue'
 const mocks = vi.hoisted(() => ({
   fetchPlugins: vi.fn(),
   fetchPluginDetail: vi.fn(),
+  fetchPluginUIRoutes: vi.fn(),
   refreshActor: vi.fn(),
   push: vi.fn(),
   actor: { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
@@ -13,6 +14,7 @@ vi.mock('vue-router', async (original) => {
   const actual = await original()
   return { ...actual, useRouter: () => ({ push: mocks.push }) }
 })
+vi.mock('../../api', () => ({ fetchPluginUIRoutes: mocks.fetchPluginUIRoutes }))
 vi.mock('../../api/plugins', () => ({ fetchPlugins: mocks.fetchPlugins, fetchPluginDetail: mocks.fetchPluginDetail }))
 vi.mock('../../context/useAccessControl', async (original) => {
   const actual = await original()
@@ -85,6 +87,7 @@ beforeEach(() => {
   mocks.fetchPlugins.mockReset().mockResolvedValue([{ plugin_id: 'visible' }, { plugin_id: 'foreign' }])
   mocks.fetchPluginDetail.mockReset().mockImplementation(async (id) => id === 'visible' ? detail(id, 'group-a') : detail(id, 'group-b'))
   mocks.refreshActor.mockReset()
+  mocks.fetchPluginUIRoutes.mockReset().mockRejectedValue(new Error('ui routes unavailable'))
   mocks.push.mockReset()
 })
 
@@ -351,6 +354,83 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.findAll('.plugins-chip').map((chip) => chip.text())).toEqual(['全部', '尚未部署', '待发布', '已可用', '异常'])
+  })
+
+  it('marks task-status chips with aria-pressed instead of a half tablist', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'alpha' }, { plugin_id: 'beta' }])
+    mocks.fetchPluginDetail.mockImplementation(async (id) => (
+      id === 'alpha'
+        ? withHTTPBackend(detail(id, 'group-a', {
+          published_entries: [{
+            rule_id: 8,
+            agent_id: 'edge-a',
+            frontend_url: 'https://alpha.example.com',
+            enabled: true,
+            accessible: true
+          }]
+        }))
+        : detail(id, 'group-a', { instances: [], agent_statuses: [] })
+    ))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('[role="tablist"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="plugins-filter-all"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-test="plugins-filter-available"]').attributes('aria-pressed')).toBe('false')
+    await wrapper.get('[data-test="plugins-filter-available"]').trigger('click')
+    expect(wrapper.get('[data-test="plugins-filter-available"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-test="plugins-filter-all"]').attributes('aria-pressed')).toBe('false')
+  })
+
+  it('opens the installed plugin detail from the table with the keyboard', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'ready' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('ready', 'group-a', {
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://ready.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('button[title="列表视图"]').trigger('click')
+    const row = wrapper.get('[data-test="installed-plugins-table"] tbody tr')
+    expect(row.attributes('tabindex')).toBe('0')
+    await row.trigger('keydown', { key: 'Enter' })
+    expect(mocks.push).toHaveBeenCalledWith('/plugins/ready')
+    mocks.push.mockClear()
+    await row.trigger('keydown', { key: ' ' })
+    expect(mocks.push).toHaveBeenCalledWith('/plugins/ready')
+  })
+
+  it('keeps inline table actions keyboard-activatable without row navigation', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'managed' }])
+    mocks.fetchPluginDetail.mockResolvedValue(detail('managed', 'group-a', { instances: [], agent_statuses: [], published_entries: [] }))
+    mocks.fetchPluginUIRoutes.mockResolvedValue([{ id: 'managed', href: '/ui/managed/' }])
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {})
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('button[title="列表视图"]').trigger('click')
+    const manage = wrapper.get('[data-test="plugin-open-manage"]')
+
+    // Enter on the inline button must keep its default activation and must not
+    // bubble into the row handler that navigates to the plugin detail.
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    manage.element.dispatchEvent(enter)
+    expect(enter.defaultPrevented).toBe(false)
+    expect(mocks.push).not.toHaveBeenCalled()
+
+    // The browser-level Enter activation (click) runs the manage action itself.
+    await manage.trigger('click')
+    expect(openSpy).toHaveBeenCalledWith('/ui/managed/', '_blank', 'noopener')
+    expect(mocks.push).not.toHaveBeenCalled()
+
+    // Row-level keyboard navigation still works when focus is on the row itself.
+    openSpy.mockRestore()
+    const row = wrapper.get('[data-test="installed-plugins-table"] tbody tr')
+    await row.trigger('keydown', { key: 'Enter' })
+    expect(mocks.push).toHaveBeenCalledWith('/plugins/managed')
   })
 
   it('switches the installed catalog to a list table', async () => {

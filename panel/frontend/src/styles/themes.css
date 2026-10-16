@@ -11,6 +11,7 @@
   --space-2-5: 0.625rem;   /* 10px */
   --space-3: 0.75rem;      /* 12px */
   --space-4: 1rem;         /* 16px */
+  --space-4-5: 1.125rem;   /* 18px */
   --space-5: 1.25rem;      /* 20px */
   --space-6: 1.5rem;       /* 24px */
   --space-8: 2rem;         /* 32px */
@@ -18,6 +19,18 @@
   --space-12: 3rem;        /* 48px */
   --space-16: 4rem;        /* 64px */
   --space-20: 5rem;        /* 80px */
+
+  /* Control heights (buttons, icon buttons, dense table/list actions) */
+  --control-height-dense: 1.65rem;
+  --control-height-sm: 2rem;
+  --control-height-md: 2.375rem;
+  --control-height-lg: 2.75rem;
+  --control-height-icon: 2.25rem;
+  --control-height-icon-sm: 1.85rem;
+
+  /* Button icon sizing */
+  --icon-size-btn: 0.95rem;
+  --icon-size-btn-sm: 0.85rem;
 
   /* Radius */
   --radius-none: 0;
@@ -29,6 +42,11 @@
   --radius-2xl: 1.25rem;   /* 20px */
   --radius-3xl: 1.5rem;    /* 24px */
   --radius-full: 9999px;
+  --radius-dense: 0.45rem;  /* compact table/list action buttons */
+
+  /* Dense table/list action sizing */
+  --space-dense-block: 0.16rem;
+  --space-dense-inline: 0.55rem;
 
   /* Fonts */
   --font-sans: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -71,7 +89,96 @@
   --sidebar-width: 220px;
   --header-height: 56px;
 
-  /* Dashboard metric tiles — per-theme overrides below */
+  /* Border widths & focus outline */
+  --border-width-thin: 1px;
+  --border-width-thick: 1.5px;
+  --focus-outline-width: 2px;
+
+  /* Shadow system — shared geometry lives here; themes only tune the
+     color/intensity params below (no per-theme shadow geometry).
+     --shadow-color is an RGB triplet consumed as rgb(var(--shadow-color) / <alpha>). */
+  --shadow-color: 15 23 42;
+  --shadow-alpha-xs: 0.04;
+  --shadow-alpha-sm: 0.06;
+  --shadow-alpha-sm-2: 0.04;
+  --shadow-alpha-md: 0.06;
+  --shadow-alpha-md-2: 0.04;
+  --shadow-alpha-lg: 0.07;
+  --shadow-alpha-lg-2: 0.04;
+  --shadow-alpha-xl: 0.08;
+  --shadow-alpha-xl-2: 0.04;
+  --shadow-alpha-2xl: 0.10;
+  --shadow-alpha-inner: 0.04;
+  --shadow-focus-color: var(--color-primary-subtle);
+
+  --shadow-xs: 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-xs));
+  --shadow-sm:
+    0 1px 3px rgb(var(--shadow-color) / var(--shadow-alpha-sm)),
+    0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-sm-2));
+  --shadow-md:
+    0 4px 6px rgb(var(--shadow-color) / var(--shadow-alpha-md)),
+    0 2px 4px rgb(var(--shadow-color) / var(--shadow-alpha-md-2));
+  --shadow-lg:
+    0 10px 15px rgb(var(--shadow-color) / var(--shadow-alpha-lg)),
+    0 4px 6px rgb(var(--shadow-color) / var(--shadow-alpha-lg-2));
+  --shadow-xl:
+    0 20px 25px rgb(var(--shadow-color) / var(--shadow-alpha-xl)),
+    0 8px 10px rgb(var(--shadow-color) / var(--shadow-alpha-xl-2));
+  --shadow-2xl: 0 24px 48px rgb(var(--shadow-color) / var(--shadow-alpha-2xl));
+  --shadow-focus: 0 0 0 3px var(--shadow-focus-color);
+  --shadow-focus-danger: 0 0 0 3px var(--color-danger-50);
+  /* Decorative halo for non-focus dots (timeline/path chips) — do not use for focus */
+  --shadow-dot-ring: 0 0 0 3px var(--color-primary-subtle);
+  --shadow-inner: inset 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-inner));
+  /* Deep drop under modal dialogs — single shared geometry, tuned per theme via --shadow-color */
+  --shadow-modal-deep: 0 28px 60px -28px rgb(var(--shadow-color) / 0.28);
+
+  /* Modal geometry */
+  --modal-width-sm: 400px;
+  --modal-width-md: 500px;
+  --modal-width-lg: 760px;
+  --modal-width-xl: 980px;
+  --modal-pad-block: 0.9rem;
+  --modal-pad-block-footer: 0.85rem;
+  --modal-pad-inline: 1.15rem;
+
+  /* Status dot (breathing indicator) */
+  --status-dot-size: 7px;
+
+  /* Modal overlay scrim — themes may tint or darken */
+  --color-overlay: rgb(15 23 42 / 0.42);
+
+  /* Theme identity tokens — neutral defaults derived from generic tokens so no
+     consumer fallback chains are needed; sakura themes override below. */
+  --color-bg-chrome: var(--color-bg-surface);
+  --color-bg-sidebar: var(--color-bg-surface);
+  --color-bg-panel: var(--color-bg-surface);
+  --color-bg-atmosphere: var(--color-bg-canvas);
+  --color-brand-bg: var(--color-primary);
+  --color-brand-ink: var(--color-text-inverse);
+  --color-badge-bg: var(--color-primary-subtle);
+  --color-badge-ink: var(--color-primary);
+  /* Agent badge — purple family, per-theme overrides below */
+  --color-badge-agent-bg: rgba(124, 58, 237, 0.10);
+  --color-badge-agent-ink: #7c3aed;
+  --color-nav-selected: var(--color-primary-subtle);
+  --color-button-bg:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary) 92%, white) 0%,
+      var(--color-primary) 100%
+    );
+  --color-button-hover-bg:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 90%, white) 0%,
+      var(--color-primary-hover, var(--color-primary)) 100%
+    );
+  --chrome-blur: 0px;
+  --sakura-decoration-display: none;
+  --sakura-decoration-opacity: 0;
+
+  /* Dashboard metric tiles — colors per theme below; shadow fixed to one shared level */
   --color-dashboard-tile-bg: var(--color-bg-subtle);
   --color-dashboard-tile-border: var(--color-border-default);
   --color-dashboard-tile-header-bg: rgba(255, 255, 255, 0.25);
@@ -89,6 +196,8 @@
    low-saturation green tints so content, not the wash, carries the theme.
    ============================================= */
 [data-theme="fresh-green"] {
+  color-scheme: light;
+
   --color-primary: #059669;
   --color-primary-hover: #047857;
   --color-primary-active: #065f46;
@@ -104,8 +213,8 @@
 
   --color-text-primary: #122019;
   --color-text-secondary: #40584c;
-  --color-text-tertiary: #66806f;
-  --color-text-muted: #9db3a5;
+  --color-text-tertiary: #526c5c;
+  --color-text-muted: #5d7365;
   --color-text-inverse: #ffffff;
 
   --color-bg-canvas: #f6f9f7;
@@ -138,152 +247,226 @@
   --color-dashboard-tile-bg: #f0f7f3;
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: rgba(5, 150, 105, 0.05);
-  --color-dashboard-tile-shadow: var(--shadow-xs);
 
-  --shadow-xs: 0 1px 2px rgba(18, 32, 25, 0.04);
-  --shadow-sm: 0 1px 3px rgba(18, 32, 25, 0.05), 0 1px 2px rgba(18, 32, 25, 0.03);
-  --shadow-md: 0 4px 6px rgba(18, 32, 25, 0.05), 0 2px 4px rgba(18, 32, 25, 0.03);
-  --shadow-lg: 0 10px 18px rgba(18, 32, 25, 0.07), 0 4px 6px rgba(18, 32, 25, 0.03);
-  --shadow-xl: 0 20px 25px rgba(18, 32, 25, 0.08), 0 8px 10px rgba(18, 32, 25, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(18, 32, 25, 0.10);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(18, 32, 25, 0.04);
+  /* Agent badge — purple, distinct from the green primary */
+  --color-badge-agent-bg: rgba(124, 58, 237, 0.10);
+  --color-badge-agent-ink: #6d28d9;
+
+  /* Shadow quality params (geometry lives in the shared block) */
+  --shadow-color: 18 32 25;
+  --shadow-alpha-sm: 0.05;
+  --shadow-alpha-sm-2: 0.03;
+  --shadow-alpha-md: 0.05;
+  --shadow-alpha-md-2: 0.03;
+  --shadow-alpha-lg-2: 0.03;
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(18 32 25 / 0.42);
 }
 
 /* =============================================
-   Theme: 昼樱 (sakura-day) — Light anime
+   Theme: 昼樱 (sakura-day) — Sakura rose and airy lilac
+   Cool white surfaces over a soft petal-light canvas.
    ============================================= */
 [data-theme="sakura-day"] {
-  --color-primary: #ec4899;
-  --color-primary-hover: #db2777;
-  --color-primary-active: #be185d;
-  --color-primary-subtle: rgba(236, 72, 153, 0.08);
-  --color-primary-50: rgba(236, 72, 153, 0.04);
-  --color-primary-100: rgba(236, 72, 153, 0.10);
-  --color-primary-200: rgba(236, 72, 153, 0.18);
-  --color-primary-300: rgba(236, 72, 153, 0.28);
+  color-scheme: light;
 
-  --color-accent: #f472b6;
-  --color-accent-hover: #ec4899;
-  --color-accent-subtle: rgba(244, 114, 182, 0.08);
+  --color-primary: #b83f73;
+  --color-primary-hover: #a53165;
+  --color-primary-active: #892653;
+  --color-primary-subtle: #fbeaf2;
+  --color-primary-50: #fff5fa;
+  --color-primary-100: #fbeaf2;
+  --color-primary-200: #f2cde1;
+  --color-primary-300: #e4a6c7;
 
-  --color-text-primary: #1f2937;
-  --color-text-secondary: #6b7280;
-  --color-text-tertiary: #9ca3af;
-  --color-text-muted: #d1d5db;
+  --color-accent: #7760b2;
+  --color-accent-hover: #624995;
+  --color-accent-subtle: #f0ecfa;
+
+  --color-text-primary: #292b42;
+  --color-text-secondary: #595d76;
+  --color-text-tertiary: #6d7088;
+  --color-text-muted: #71738c;
   --color-text-inverse: #ffffff;
 
-  --color-bg-canvas: #fafafa;
+  --color-bg-canvas: #f6f7fc;
   --color-bg-surface: #ffffff;
   --color-bg-surface-raised: #ffffff;
-  --color-bg-sunken: #f9fafb;
-  --color-bg-subtle: #fdf2f8;
-  --color-bg-hover: #fce7f3;
-  --color-bg-active: #fbcfe8;
+  --color-bg-sunken: #edf0f8;
+  --color-bg-subtle: #f6f6fb;
+  --color-bg-hover: #efeef8;
+  --color-bg-active: #e5e2f3;
 
-  --color-border-subtle: rgba(0, 0, 0, 0.06);
-  --color-border-default: rgba(0, 0, 0, 0.08);
-  --color-border-strong: rgba(0, 0, 0, 0.12);
-  --color-border-focus: rgba(236, 72, 153, 0.35);
+  --color-border-subtle: #e8e9f2;
+  --color-border-default: #d8daea;
+  --color-border-strong: #a5abc5;
+  --color-border-focus: #be80b3;
 
-  --color-success: #10b981;
-  --color-success-50: rgba(16, 185, 129, 0.08);
-  --color-success-subtle: rgba(16, 185, 129, 0.10);
-  --color-success-glow: rgba(16, 185, 129, 0.20);
-  --color-danger: #ef4444;
-  --color-danger-50: rgba(239, 68, 68, 0.08);
-  --color-danger-subtle: rgba(239, 68, 68, 0.10);
-  --color-danger-glow: rgba(239, 68, 68, 0.20);
-  --color-warning: #f59e0b;
-  --color-warning-50: rgba(245, 158, 11, 0.08);
-  --color-warning-subtle: rgba(245, 158, 11, 0.10);
-  --color-warning-glow: rgba(245, 158, 11, 0.20);
+  --color-success: #23775e;
+  --color-success-50: #eff8f4;
+  --color-success-subtle: #e3f3ec;
+  --color-success-glow: rgba(35, 119, 94, 0.14);
+  --color-danger: #b83b54;
+  --color-danger-50: #fff3f4;
+  --color-danger-subtle: #fce8eb;
+  --color-danger-glow: rgba(184, 59, 84, 0.14);
+  --color-warning: #936021;
+  --color-warning-50: #fff8ec;
+  --color-warning-subtle: #fbefd8;
+  --color-warning-glow: rgba(147, 96, 33, 0.14);
 
   /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #fdf2f8;
-  --color-dashboard-tile-border: var(--color-border-default);
-  --color-dashboard-tile-header-bg: rgba(236, 72, 153, 0.05);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
+  --color-dashboard-tile-bg: #f6f6fb;
+  --color-dashboard-tile-border: var(--color-border-subtle);
+  --color-dashboard-tile-header-bg: #f0edf8;
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.06), 0 4px 6px rgba(0, 0, 0, 0.04);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.08), 0 8px 10px rgba(0, 0, 0, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(0, 0, 0, 0.10);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  /* Shadow quality params — soft petal-light, single-layer look
+     (second-layer alphas at 0; slightly raised alphas compensate the tighter
+     shared geometry versus the former diffuse per-theme shadows). */
+  --shadow-color: 68 31 51;
+  --shadow-alpha-xs: 0.03;
+  --shadow-alpha-sm: 0.05;
+  --shadow-alpha-sm-2: 0;
+  --shadow-alpha-md: 0.07;
+  --shadow-alpha-md-2: 0;
+  --shadow-alpha-lg: 0.10;
+  --shadow-alpha-lg-2: 0;
+  --shadow-alpha-xl: 0.12;
+  --shadow-alpha-xl-2: 0;
+  --shadow-alpha-2xl: 0.15;
+  --shadow-focus-color: rgba(184, 63, 115, 0.16);
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(41 43 66 / 0.40);
+
+  /* Sakura visual identity: translucent chrome, petal light and lilac ink. */
+  --color-bg-chrome: rgba(255, 255, 255, 0.86);
+  --color-bg-sidebar: linear-gradient(180deg, #ffffff 0%, #faf8ff 100%);
+  --color-bg-panel: linear-gradient(145deg, #ffffff 65%, #faf9ff);
+  --color-bg-atmosphere:
+    radial-gradient(ellipse 65% 42% at 5% 0%, rgba(245, 196, 220, 0.32), transparent 72%),
+    radial-gradient(ellipse 55% 45% at 95% 0%, rgba(187, 197, 248, 0.28), transparent 72%),
+    var(--color-bg-canvas);
+  --color-brand-bg: linear-gradient(135deg, #b83f73, #8650ab);
+  --color-brand-ink: #ffffff;
+  --color-badge-bg: var(--color-primary-subtle);
+  --color-badge-ink: var(--color-primary);
+  /* Agent badge — lilac violet, distinct from the rose primary-subtle */
+  --color-badge-agent-bg: #efe9fa;
+  --color-badge-agent-ink: #6d4fa1;
+  --color-nav-selected: linear-gradient(100deg, #fbeaf2, #f0ecfa);
+  --color-button-bg: linear-gradient(115deg, #b83f73, #8650ab);
+  --color-button-hover-bg: linear-gradient(115deg, #a53165, #744394);
+  --chrome-blur: 16px;
+  --sakura-decoration-display: block;
+  --sakura-decoration-opacity: 0.28;
 }
 
 /* =============================================
-   Theme: 夜樱 (sakura-night) — Dark anime
+   Theme: 夜樱 (sakura-night) — Indigo moonlight and sakura
+   Layered blue-violet surfaces with pink and lilac highlights.
    ============================================= */
 [data-theme="sakura-night"] {
-  --color-primary: #f472b6;
-  --color-primary-hover: #ec4899;
-  --color-primary-active: #db2777;
-  --color-primary-subtle: rgba(244, 114, 182, 0.12);
-  --color-primary-50: rgba(244, 114, 182, 0.06);
-  --color-primary-100: rgba(244, 114, 182, 0.14);
-  --color-primary-200: rgba(244, 114, 182, 0.22);
-  --color-primary-300: rgba(244, 114, 182, 0.32);
+  color-scheme: dark;
 
-  --color-accent: #c084fc;
-  --color-accent-hover: #a855f7;
-  --color-accent-subtle: rgba(192, 132, 252, 0.10);
+  --color-primary: #efaccf;
+  --color-primary-hover: #f8c3de;
+  --color-primary-active: #df96c0;
+  --color-primary-subtle: #35283f;
+  --color-primary-50: #242237;
+  --color-primary-100: #35283f;
+  --color-primary-200: #4b3458;
+  --color-primary-300: #6d4b7c;
 
-  --color-text-primary: #f1f5f9;
-  --color-text-secondary: #94a3b8;
-  --color-text-tertiary: #8b9cb3;
-  --color-text-muted: #8b9cb3;
-  --color-text-inverse: #0f172a;
+  --color-accent: #b6acf1;
+  --color-accent-hover: #cec5ff;
+  --color-accent-subtle: #302d4b;
 
-  --color-bg-canvas: #0f0f14;
-  --color-bg-surface: #1a1a24;
-  --color-bg-surface-raised: #22222e;
-  --color-bg-sunken: #0a0a0f;
-  --color-bg-subtle: rgba(244, 114, 182, 0.05);
-  --color-bg-hover: rgba(244, 114, 182, 0.08);
-  --color-bg-active: rgba(244, 114, 182, 0.12);
+  --color-text-primary: #f0eefb;
+  --color-text-secondary: #c0c2dc;
+  --color-text-tertiary: #a2a6c5;
+  --color-text-muted: #9ba1c0;
+  --color-text-inverse: #221a35;
 
-  --color-border-subtle: rgba(255, 255, 255, 0.06);
-  --color-border-default: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.14);
-  --color-border-focus: rgba(244, 114, 182, 0.35);
+  --color-bg-canvas: #101320;
+  --color-bg-surface: #1b1e31;
+  --color-bg-surface-raised: #24283e;
+  --color-bg-sunken: #0c0f1b;
+  --color-bg-subtle: #22263b;
+  --color-bg-hover: #2b2e47;
+  --color-bg-active: #353551;
 
-  --color-success: #34d399;
-  --color-success-50: rgba(52, 211, 153, 0.10);
-  --color-success-subtle: rgba(52, 211, 153, 0.12);
-  --color-success-glow: rgba(52, 211, 153, 0.25);
-  --color-danger: #f87171;
-  --color-danger-50: rgba(248, 113, 113, 0.10);
-  --color-danger-subtle: rgba(248, 113, 113, 0.12);
-  --color-danger-glow: rgba(248, 113, 113, 0.25);
-  --color-warning: #fbbf24;
-  --color-warning-50: rgba(251, 191, 36, 0.10);
-  --color-warning-subtle: rgba(251, 191, 36, 0.12);
-  --color-warning-glow: rgba(251, 191, 36, 0.25);
+  --color-border-subtle: #2c314a;
+  --color-border-default: #3c435f;
+  --color-border-strong: #616b8e;
+  --color-border-focus: #b89bdc;
+
+  --color-success: #85ccb5;
+  --color-success-50: #1b2e2c;
+  --color-success-subtle: #223a32;
+  --color-success-glow: rgba(133, 204, 181, 0.14);
+  --color-danger: #f1a2a7;
+  --color-danger-50: #322433;
+  --color-danger-subtle: #422b38;
+  --color-danger-glow: rgba(241, 162, 167, 0.14);
+  --color-warning: #e4c18a;
+  --color-warning-50: #2d2930;
+  --color-warning-subtle: #3b3336;
+  --color-warning-glow: rgba(228, 193, 138, 0.14);
 
   /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
+  --color-dashboard-tile-bg: #22263b;
   --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: rgba(244, 114, 182, 0.08);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
+  --color-dashboard-tile-header-bg: #2a2841;
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.40), 0 4px 6px rgba(0, 0, 0, 0.30);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.45), 0 8px 10px rgba(0, 0, 0, 0.30);
-  --shadow-2xl: 0 24px 48px rgba(0, 0, 0, 0.55);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(0, 0, 0, 0.20);
+  /* Shadow quality params — same single-layer sakura look, deep indigo ink */
+  --shadow-color: 8 5 12;
+  --shadow-alpha-xs: 0.16;
+  --shadow-alpha-sm: 0.22;
+  --shadow-alpha-sm-2: 0;
+  --shadow-alpha-md: 0.26;
+  --shadow-alpha-md-2: 0;
+  --shadow-alpha-lg: 0.32;
+  --shadow-alpha-lg-2: 0;
+  --shadow-alpha-xl: 0.36;
+  --shadow-alpha-xl-2: 0;
+  --shadow-alpha-2xl: 0.44;
+  --shadow-alpha-inner: 0.20;
+  --shadow-focus-color: rgba(239, 172, 207, 0.18);
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(8 5 12 / 0.55);
+
+  /* The same sakura identity under indigo moonlight. */
+  --color-bg-chrome: rgba(27, 30, 49, 0.88);
+  --color-bg-sidebar: linear-gradient(180deg, #1b1e31 0%, #1d1d33 100%);
+  --color-bg-panel: linear-gradient(145deg, #20243a, #1b1e31 70%);
+  --color-bg-atmosphere:
+    radial-gradient(ellipse 65% 42% at 5% 0%, rgba(117, 70, 123, 0.18), transparent 72%),
+    radial-gradient(ellipse 55% 45% at 95% 0%, rgba(100, 104, 187, 0.18), transparent 72%),
+    var(--color-bg-canvas);
+  --color-brand-bg: linear-gradient(135deg, #efaccf, #bcb0f2);
+  --color-brand-ink: #221a35;
+  --color-badge-bg: var(--color-primary-subtle);
+  --color-badge-ink: var(--color-primary);
+  /* Agent badge — cool violet, distinct from the pink primary badge */
+  --color-badge-agent-bg: #2f2b4d;
+  --color-badge-agent-ink: #c9bcff;
+  --color-nav-selected: linear-gradient(100deg, #35283f, #302d4b);
+  --color-button-bg: linear-gradient(115deg, #efaccf, #bcb0f2);
+  --color-button-hover-bg: linear-gradient(115deg, #f8c3de, #cec5ff);
+  --chrome-blur: 16px;
+  --sakura-decoration-display: block;
+  --sakura-decoration-opacity: 0.20;
 }
 
 /* =============================================
    Theme: 夜猫 (neko-dark) — Deep blue dark
    ============================================= */
 [data-theme="neko-dark"] {
+  color-scheme: dark;
+
   --color-primary: #60a5fa;
   --color-primary-hover: #93c5fd;
   --color-primary-active: #3b82f6;
@@ -300,7 +483,8 @@
   --color-text-primary: #f1f5f9;
   --color-text-secondary: #94a3b8;
   --color-text-tertiary: #8b9cb3;
-  --color-text-muted: #8b9cb3;
+  /* Alias kept for consumers of the old name — same canonical value. */
+  --color-text-muted: var(--color-text-tertiary);
   --color-text-inverse: #0f172a;
 
   --color-bg-canvas: #0f172a;
@@ -333,16 +517,27 @@
   --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: rgba(96, 165, 250, 0.08);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.40), 0 4px 6px rgba(0, 0, 0, 0.30);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.45), 0 8px 10px rgba(0, 0, 0, 0.30);
-  --shadow-2xl: 0 24px 48px rgba(0, 0, 0, 0.55);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(0, 0, 0, 0.20);
+  /* Agent badge — violet, distinct from the blue primary badge */
+  --color-badge-agent-bg: rgba(167, 139, 250, 0.18);
+  --color-badge-agent-ink: #c4b5fd;
+
+  /* Shadow quality params — deep dark, high opacity (geometry in shared block) */
+  --shadow-color: 0 0 0;
+  --shadow-alpha-xs: 0.25;
+  --shadow-alpha-sm: 0.30;
+  --shadow-alpha-sm-2: 0.20;
+  --shadow-alpha-md: 0.35;
+  --shadow-alpha-md-2: 0.25;
+  --shadow-alpha-lg: 0.40;
+  --shadow-alpha-lg-2: 0.30;
+  --shadow-alpha-xl: 0.45;
+  --shadow-alpha-xl-2: 0.30;
+  --shadow-alpha-2xl: 0.55;
+  --shadow-alpha-inner: 0.20;
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(2 6 23 / 0.60);
 }
 
 /* =============================================
@@ -350,6 +545,8 @@
    Primary: Indigo 600 — calm, trustworthy, modern
    ============================================= */
 [data-theme="business"] {
+  color-scheme: light;
+
   /* Primary: Indigo — the gold standard for SaaS (Stripe, Linear, Vercel) */
   --color-primary: #4f46e5;
   --color-primary-hover: #4338ca;
@@ -369,7 +566,8 @@
   --color-text-primary: #0f172a;
   --color-text-secondary: #475569;
   --color-text-tertiary: #64748b;
-  --color-text-muted: #94a3b8;
+  /* Alias kept for consumers of the old name — same canonical value. */
+  --color-text-muted: var(--color-text-tertiary);
   --color-text-inverse: #ffffff;
 
   /* Background: Cool gray — clean, unobtrusive canvas */
@@ -405,15 +603,13 @@
   --color-dashboard-tile-bg: #f1f5f9;
   --color-dashboard-tile-border: var(--color-border-default);
   --color-dashboard-tile-header-bg: rgba(79, 70, 229, 0.04);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
 
-  /* Shadows: slate-tinted for depth cohesion */
-  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 4px 6px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.04);
-  --shadow-lg: 0 10px 15px rgba(15, 23, 42, 0.07), 0 4px 6px rgba(15, 23, 42, 0.04);
-  --shadow-xl: 0 20px 25px rgba(15, 23, 42, 0.08), 0 8px 10px rgba(15, 23, 42, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(15, 23, 42, 0.10);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+  /* Agent badge — purple, distinct from the indigo primary */
+  --color-badge-agent-bg: rgba(147, 51, 234, 0.10);
+  --color-badge-agent-ink: #9333ea;
+
+  /* Shadow quality params match the shared (slate-tinted) defaults exactly. */
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(15 23 42 / 0.42);
 }

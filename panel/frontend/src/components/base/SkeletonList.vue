@@ -58,7 +58,7 @@ defineProps({
 /* Row variant — resembles a list table wrapped in a surface card */
 .skeleton-list--rows {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-subtle);
+  border: var(--border-width-thin) solid var(--color-border-subtle);
   border-radius: var(--radius-xl);
   overflow: hidden;
 }
@@ -66,9 +66,9 @@ defineProps({
 .skeleton-list--rows .skeleton-list__item {
   display: flex;
   align-items: center;
-  gap: 0.875rem;
-  padding: 0.95rem 1.15rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
   animation: fadeInUp var(--duration-normal) var(--ease-default) both;
 }
 
@@ -88,17 +88,17 @@ defineProps({
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: var(--space-2);
 }
 
 .skeleton-list__line {
-  height: 0.625rem;
+  height: var(--space-2-5);
   border-radius: var(--radius-sm);
 }
 
 .skeleton-list__line--title {
   width: min(55%, 22rem);
-  height: 0.75rem;
+  height: var(--space-3);
 }
 
 .skeleton-list--rows .skeleton-list__lines .skeleton-list__line:not(.skeleton-list__line--title) {
@@ -107,7 +107,7 @@ defineProps({
 
 .skeleton-list__tail {
   width: 4.5rem;
-  height: 1.5rem;
+  height: var(--space-6);
   border-radius: var(--radius-md);
   flex-shrink: 0;
 }
@@ -116,23 +116,23 @@ defineProps({
 .skeleton-list--cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1.5rem;
+  gap: var(--space-6);
 }
 
 .skeleton-list--cards .skeleton-list__item {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 1.1rem 1.15rem 1.25rem;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-5);
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-subtle);
+  border: var(--border-width-thin) solid var(--color-border-subtle);
   border-radius: var(--radius-xl);
   animation: fadeInUp var(--duration-normal) var(--ease-default) both;
 }
 
 .skeleton-list__card-head {
   width: 38%;
-  height: 0.875rem;
+  height: var(--text-sm);
   border-radius: var(--radius-sm);
 }
 
@@ -153,7 +153,7 @@ defineProps({
 @media (max-width: 640px) {
   .skeleton-list--cards {
     grid-template-columns: 1fr;
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 }
 </style>

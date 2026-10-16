@@ -4,10 +4,13 @@ const base = process.env.VITEPRESS_BASE || '/nginx-reverse-emby/'
 
 export default defineConfig({
   title: 'Nginx-Reverse-Emby',
-  description: '面向 Emby、Jellyfin、HTTP、L4 与 Relay 的纯 Go 反向代理控制面。',
+  description: '通用 HTTP/HTTPS 反代 + L4 TCP/UDP 转发控制面板：自动证书、Relay 隧道、多节点与流量额度。',
   base,
   lang: 'zh-CN',
   cleanUrls: true,
+  sitemap: {
+    hostname: 'https://sakullla.github.io/nginx-reverse-emby/'
+  },
   lastUpdated: true,
   head: [
     ['meta', { name: 'theme-color', content: '#2563eb' }],
@@ -74,6 +77,7 @@ export default defineConfig({
         text: '操作指南',
         items: [
           { text: 'HTTP 反向代理',    link: '/guides/http-rules' },
+          { text: 'Emby / Jellyfin 反代', link: '/guides/emby-jellyfin' },
           { text: 'L4 端口转发',      link: '/guides/l4-rules' },
           { text: '证书与 HTTPS',     link: '/guides/certificates' },
           { text: 'Agent 节点管理',   link: '/guides/agents' },

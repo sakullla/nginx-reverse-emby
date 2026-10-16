@@ -65,14 +65,18 @@
             <input
               v-model.number="form.listen_port"
               class="input protocol-input-group__port"
+              :class="{ 'input--error': fieldErrors.listen_port }"
               type="number"
               min="1"
               max="65535"
               placeholder="25565"
-              @input="updateAutoTags"
+              :aria-invalid="fieldErrors.listen_port ? 'true' : undefined"
+              :aria-describedby="fieldErrors.listen_port ? 'l4-listen-port-error' : undefined"
+              @input="onListenPortInput"
             >
           </div>
-          <p class="field-hint">一般填 0.0.0.0 表示监听所有网卡</p>
+          <FieldError v-if="fieldErrors.listen_port" id="l4-listen-port-error">{{ fieldErrors.listen_port }}</FieldError>
+          <p v-else class="field-hint">一般填 0.0.0.0 表示监听所有网卡</p>
         </div>
 
         <div v-if="requiresBackends" class="form-group form-group--block">
@@ -110,13 +114,19 @@
                 </svg>
               </div>
 
-              <input
-                v-model="backend.address"
-                class="input backend-address-input"
-                :class="{ 'backend-address-input--flat': form.backends.length === 1 }"
-                placeholder="IP:端口 或 域名:端口"
-                @blur="parseBackendAddress(index)"
-              >
+              <div class="backend-item__main">
+                <input
+                  v-model="backend.address"
+                  class="input backend-address-input"
+                  :class="{ 'backend-address-input--flat': form.backends.length === 1, 'input--error': backendErrors[index] }"
+                  :aria-invalid="backendErrors[index] ? 'true' : undefined"
+                  :aria-describedby="backendErrors[index] ? `l4-backend-${index}-error` : undefined"
+                  placeholder="IP:端口 或 域名:端口"
+                  @input="backendErrors[index] = ''"
+                  @blur="parseBackendAddress(index)"
+                >
+                <FieldError v-if="backendErrors[index]" :id="`l4-backend-${index}-error`">{{ backendErrors[index] }}</FieldError>
+              </div>
 
               <button
                 v-if="form.backends.length > 1"
@@ -158,9 +168,10 @@
               <button
                 type="button"
                 class="tag__remove"
+                :aria-label="`移除标签 ${tag}`"
                 @click="removeTag(index)"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <line x1="18" y1="6" x2="6" y2="18"/>
                   <line x1="6" y1="6" x2="18" y2="18"/>
                 </svg>
@@ -186,7 +197,7 @@
           >
           <span class="toggle__content">
             <span class="toggle__label">启用此规则</span>
-            <span class="toggle__desc">创建后立即生效</span>
+            <span class="toggle__desc">{{ isEdit ? '保存后立即生效' : '创建后立即生效' }}</span>
           </span>
           <span class="toggle__slider" aria-hidden="true"></span>
         </label>
@@ -392,14 +403,15 @@
     </div>
 
     <div class="rule-form__footer">
-      <p v-if="error" class="form-error rule-form__submit-error">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        {{ error }}
-      </p>
+      <FieldError v-if="error" block class="rule-form__submit-error">{{ error }}</FieldError>
+      <button
+        type="button"
+        class="btn btn--secondary"
+        :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
+        @click="emit('cancel')"
+      >
+        取消
+      </button>
       <button
         type="submit"
         class="btn btn--primary rule-form__submit"
@@ -417,6 +429,7 @@ import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import RelayChainInput from './RelayChainInput.vue'
+import FieldError from './base/FieldError.vue'
 import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
 import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
@@ -425,7 +438,7 @@ const props = defineProps({
   l4Rules: { type: Array, default: () => [] },
   agentId: { type: [String, Object], required: true }
 })
-const emit = defineEmits(['success'])
+const emit = defineEmits(['success', 'cancel'])
 
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
@@ -508,7 +521,18 @@ const form = ref(createFormState(props.initialData))
 const activeTab = ref('basic')
 const tagInput = ref('')
 const error = ref('')
+const fieldErrors = ref({ listen_port: '' })
+const backendErrors = ref([])
 const dragState = ref({ from: -1, to: -1 })
+
+function resetBackendErrors() {
+  backendErrors.value = form.value.backends.map(() => '')
+}
+
+function onListenPortInput() {
+  if (fieldErrors.value.listen_port) fieldErrors.value.listen_port = ''
+  updateAutoTags()
+}
 
 function onDragStart(index) {
   dragState.value = { from: index, to: index }
@@ -642,6 +666,8 @@ watch(() => props.initialData, (value) => {
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
+  fieldErrors.value = { listen_port: '' }
+  resetBackendErrors()
 }, { immediate: true })
 
 watch(() => form.value.protocol, (newProto) => {
@@ -716,11 +742,13 @@ function handleStrategyChange() {
 
 function addBackend() {
   form.value.backends.push(createBackend())
+  backendErrors.value.push('')
 }
 
 function removeBackend(index) {
   if (form.value.backends.length > 1) {
     form.value.backends.splice(index, 1)
+    backendErrors.value.splice(index, 1)
   }
 }
 
@@ -852,10 +880,13 @@ function buildPayload() {
 
 async function handleSubmit() {
   error.value = ''
+  fieldErrors.value = { listen_port: '' }
+  backendErrors.value = form.value.backends.map(() => '')
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
   const validBackends = form.value.backends.filter(b => b.host && b.port)
   if (requiresBackends.value && validBackends.length === 0) {
     error.value = '至少需要一个有效的后端服务器'
+    backendErrors.value = form.value.backends.map(() => '请填写有效的 IP:端口 或 域名:端口')
     activeTab.value = 'basic'
     return
   }
@@ -867,6 +898,7 @@ async function handleSubmit() {
   const listenPort = Number(form.value.listen_port)
   if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
     error.value = '监听端口必须在 1-65535 之间'
+    fieldErrors.value.listen_port = '监听端口必须在 1-65535 之间'
     activeTab.value = 'basic'
     return
   }
@@ -910,7 +942,7 @@ async function handleSubmit() {
       var(--color-bg-subtle) 100%
     );
   border: 1px solid color-mix(in srgb, var(--color-border-default) 92%, var(--color-primary) 8%);
-  border-radius: calc(var(--radius-lg) + 2px);
+  border-radius: var(--radius-xl);
   z-index: 2;
   box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent);
 }
@@ -954,7 +986,7 @@ async function handleSubmit() {
   background: var(--color-bg-surface-raised);
   border-color: color-mix(in srgb, var(--color-primary) 16%, transparent);
   font-weight: 700;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+  box-shadow: var(--shadow-xs);
 }
 
 .form-tabs__dot {
@@ -1293,17 +1325,6 @@ async function handleSubmit() {
   text-overflow: ellipsis;
 }
 
-.form-error {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.4rem 0.55rem;
-  border-radius: var(--radius-md);
-  font-size: 0.75rem;
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-}
-
 .input {
   width: 100%;
   min-width: 0;
@@ -1326,6 +1347,10 @@ async function handleSubmit() {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: var(--shadow-focus);
+}
+
+.input--error {
+  border-color: var(--color-danger);
 }
 
 .input::placeholder {
@@ -1491,6 +1516,14 @@ async function handleSubmit() {
   cursor: grabbing;
 }
 
+.backend-item__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
 .backend-address-input {
   flex: 1;
   min-width: 0;
@@ -1555,7 +1588,7 @@ async function handleSubmit() {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  padding: 1px 7px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-primary-subtle);
   border: none;
   border-radius: var(--radius-full);
@@ -1626,7 +1659,7 @@ async function handleSubmit() {
   background: white;
   border-radius: var(--radius-full);
   transition: transform var(--duration-fast) var(--ease-bounce);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-sm);
 }
 
 .toggle__input:checked + .toggle__slider,
@@ -1727,12 +1760,7 @@ async function handleSubmit() {
 }
 
 .rule-form__submit.btn--primary {
-  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  box-shadow: var(--shadow-lg);
 }
 
 .relay-alert {

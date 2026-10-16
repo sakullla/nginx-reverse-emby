@@ -37,6 +37,15 @@ describe('plugin provider presentation', () => {
     expect(wrapper.text()).not.toContain(generation)
   })
 
+  it('opens the editor when the card is clicked', async () => {
+    const wrapper = mount(RuleCard, {
+      props: { rule, providerCatalog }
+    })
+
+    await wrapper.get('.base-list-card').trigger('click')
+    expect(wrapper.emitted('edit')?.[0]).toEqual([rule])
+  })
+
   it('does not expose the internal generation in a rule table tooltip', () => {
     const wrapper = mount(RuleTable, {
       props: { rules: [rule], providerCatalog }

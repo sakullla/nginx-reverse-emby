@@ -13,13 +13,16 @@
         <div class="form-group">
           <label class="form-label form-label--required">名称</label>
           <input
+            id="relay-name"
             v-model="form.name"
             class="input"
             :class="{ 'input--error': errors.name }"
             placeholder="例如 hk-edge-1"
             autocomplete="off"
+            :aria-invalid="errors.name ? 'true' : undefined"
+            :aria-describedby="errors.name ? 'relay-name-error' : undefined"
           >
-          <p v-if="errors.name" class="form-error">{{ errors.name }}</p>
+          <FieldError v-if="errors.name" id="relay-name-error">{{ errors.name }}</FieldError>
         </div>
 
         <div class="form-group">
@@ -38,9 +41,10 @@
                 <button
                   type="button"
                   class="tag__remove"
+                  :aria-label="`移除标签 ${tag}`"
                   @click="removeTag(index)"
                 >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <line x1="18" y1="6" x2="6" y2="18"/>
                     <line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
@@ -71,20 +75,24 @@
           <div class="form-group listen-grid__hosts">
             <label class="form-label form-label--required">绑定地址</label>
             <textarea
+              id="relay-bind-hosts"
               v-model="form.bind_hosts_text"
               class="input textarea textarea--hosts"
               :class="{ 'input--error': errors.bind_hosts }"
               placeholder="0.0.0.0"
               rows="2"
               spellcheck="false"
+              :aria-invalid="errors.bind_hosts ? 'true' : undefined"
+              :aria-describedby="errors.bind_hosts ? 'relay-bind-hosts-error' : undefined"
             ></textarea>
-            <p v-if="errors.bind_hosts" class="form-error">{{ errors.bind_hosts }}</p>
+            <FieldError v-if="errors.bind_hosts" id="relay-bind-hosts-error">{{ errors.bind_hosts }}</FieldError>
             <p v-else class="field-hint">每行一个地址；多地址绑定可继续换行填写</p>
           </div>
 
           <div class="form-group listen-grid__port">
             <label class="form-label form-label--required">监听端口</label>
             <input
+              id="relay-port"
               v-model.number="form.listen_port"
               class="input"
               type="number"
@@ -92,21 +100,26 @@
               max="65535"
               :class="{ 'input--error': errors.listen_port }"
               placeholder="7443"
+              :aria-invalid="errors.listen_port ? 'true' : undefined"
+              :aria-describedby="errors.listen_port ? 'relay-port-error' : undefined"
             >
-            <p v-if="errors.listen_port" class="form-error">{{ errors.listen_port }}</p>
+            <FieldError v-if="errors.listen_port" id="relay-port-error">{{ errors.listen_port }}</FieldError>
           </div>
         </div>
 
         <div class="form-group">
           <label class="form-label">{{ publicEndpointLabel }}</label>
           <input
+            id="relay-endpoint"
             v-model="form.public_endpoint"
             class="input"
             :class="{ 'input--error': errors.public_endpoint }"
             :placeholder="publicEndpointPlaceholder"
             spellcheck="false"
+            :aria-invalid="errors.public_endpoint ? 'true' : undefined"
+            :aria-describedby="errors.public_endpoint ? 'relay-endpoint-error' : undefined"
           >
-          <p v-if="errors.public_endpoint" class="form-error">{{ errors.public_endpoint }}</p>
+          <FieldError v-if="errors.public_endpoint" id="relay-endpoint-error">{{ errors.public_endpoint }}</FieldError>
           <p v-else class="field-hint">{{ publicEndpointHint }}</p>
         </div>
       </section>
@@ -182,16 +195,19 @@
         >
           <label class="form-label" :class="{ 'form-label--required': form.enabled }">绑定监听证书</label>
           <select
+            id="relay-cert"
             v-model="form.certificate_id"
             class="input"
             :class="{ 'input--error': errors.certificate_id }"
+            :aria-invalid="errors.certificate_id ? 'true' : undefined"
+            :aria-describedby="errors.certificate_id ? 'relay-cert-error' : undefined"
           >
             <option :value="null">请选择证书</option>
             <option v-for="cert in certificates" :key="cert.id" :value="cert.id">
               #{{ cert.id }} {{ cert.domain }}
             </option>
           </select>
-          <p v-if="errors.certificate_id" class="form-error">{{ errors.certificate_id }}</p>
+          <FieldError v-if="errors.certificate_id" id="relay-cert-error">{{ errors.certificate_id }}</FieldError>
         </div>
 
         <div
@@ -209,7 +225,7 @@
           <span class="toggle__slider"></span>
           <span class="option-row__content">
             <span class="option-row__label">启用监听器</span>
-            <span class="option-row__desc">创建后立即参与同步与接入</span>
+            <span class="option-row__desc">{{ isEdit ? '保存后立即参与同步与接入' : '创建后立即参与同步与接入' }}</span>
           </span>
         </label>
       </section>
@@ -312,12 +328,20 @@
     </div>
 
     <div class="relay-listener-form__footer">
-      <p v-if="errors.trust_material" class="form-error form-error--block relay-listener-form__submit-error">
+      <FieldError v-if="errors.trust_material" block class="relay-listener-form__submit-error">
         {{ errors.trust_material }}
-      </p>
-      <p v-if="errors.submit" class="form-error form-error--block relay-listener-form__submit-error">
+      </FieldError>
+      <FieldError v-if="errors.submit" block class="relay-listener-form__submit-error">
         {{ errors.submit }}
-      </p>
+      </FieldError>
+      <button
+        type="button"
+        class="btn btn--secondary"
+        :disabled="isLoading"
+        @click="emit('cancel')"
+      >
+        取消
+      </button>
       <button
         type="submit"
         class="btn btn--primary relay-listener-form__submit"
@@ -333,6 +357,7 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import { useCertificates } from '../hooks/useCertificates'
+import FieldError from './base/FieldError.vue'
 import {
   parsePublicEndpoint,
   buildPublicEndpoint,
@@ -345,7 +370,7 @@ const props = defineProps({
   agentId: { type: [String, Object], required: true }
 })
 
-const emit = defineEmits(['success'])
+const emit = defineEmits(['success', 'cancel'])
 
 const createRelayListener = useCreateRelayListener(props.agentId)
 const updateRelayListener = useUpdateRelayListener(props.agentId)
@@ -776,11 +801,7 @@ async function handleSubmit() {
   border-radius: var(--radius-lg);
   font-weight: 700;
   letter-spacing: -0.01em;
-  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
-}
-
-.relay-listener-form__submit:hover:not(:disabled) {
-  filter: brightness(1.02);
+  box-shadow: var(--shadow-lg);
 }
 
 .settings-card {
@@ -795,7 +816,7 @@ async function handleSubmit() {
       var(--color-bg-surface) 42%
     );
   border: 1px solid color-mix(in srgb, var(--color-border-default) 94%, var(--color-primary) 6%);
-  border-radius: calc(var(--radius-lg) + 2px);
+  border-radius: var(--radius-xl);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 65%, transparent);
 }
 
@@ -874,18 +895,6 @@ async function handleSubmit() {
   line-height: 1.4;
 }
 
-.form-error {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-danger);
-}
-
-.form-error--block {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-danger-50);
-}
-
 .input {
   width: 100%;
   min-width: 0;
@@ -952,9 +961,9 @@ async function handleSubmit() {
 .path-chip__dot {
   width: 0.45rem;
   height: 0.45rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 16%, transparent);
+  box-shadow: var(--shadow-dot-ring);
   flex-shrink: 0;
 }
 
@@ -1077,7 +1086,7 @@ async function handleSubmit() {
   border-radius: var(--radius-full);
   background: white;
   transition: transform var(--duration-fast) var(--ease-default);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.16);
+  box-shadow: var(--shadow-xs);
 }
 
 .toggle__input:checked + .toggle__slider {
@@ -1187,7 +1196,7 @@ async function handleSubmit() {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-full);

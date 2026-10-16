@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import AgentDetailPage from './AgentDetailPage.vue'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
+import { fetchAgentStats } from '../api'
 import { recordAcceptedOperation, resetOperations } from '../stores/operations'
 import { messageStore } from '../stores/messages'
 
@@ -19,6 +20,7 @@ const routerPush = vi.fn()
 const mountedPages = new Map()
 const apiCalls = {
   deleteAgent: vi.fn(),
+  applyConfig: vi.fn(),
   fetchTrafficPolicy: vi.fn(),
   fetchTrafficSummary: vi.fn(),
   fetchTrafficTrend: vi.fn(),
@@ -64,7 +66,8 @@ vi.mock('../api', () => ({
   fetchTrafficTrend: (...args) => apiCalls.fetchTrafficTrend(...args),
   calibrateTraffic: (...args) => apiCalls.calibrateTraffic(...args),
   cleanupTraffic: (...args) => apiCalls.cleanupTraffic(...args),
-  deleteAgent: (...args) => apiCalls.deleteAgent(...args)
+  deleteAgent: (...args) => apiCalls.deleteAgent(...args),
+  applyConfig: (...args) => apiCalls.applyConfig(...args)
 }))
 
 vi.mock('../hooks/useAgents', async () => {
@@ -239,6 +242,7 @@ beforeEach(() => {
   apiCalls.cleanupTraffic.mockResolvedValue({})
   apiCalls.deleteAgent.mockResolvedValue({})
   apiCalls.updateAgent.mockResolvedValue({})
+  apiCalls.applyConfig.mockResolvedValue({})
 })
 
 afterEach(() => {
@@ -870,6 +874,73 @@ describe('AgentDetailPage', () => {
       }) }
     })
     expect(successSpy).toHaveBeenCalled()
+  })
+
+  it('keeps the edit modal open when the update fails', async () => {
+    const errorSpy = vi.spyOn(messageStore, 'error')
+    apiCalls.updateAgent.mockRejectedValueOnce(new Error('update rejected'))
+
+    const wrapper = await mountPage()
+    await wrapper.find('[data-testid="detail-action-edit"]').trigger('click')
+    await nextTick()
+
+    await wrapper.find('[data-testid="detail-edit-save"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="detail-edit-modal-body"]').exists()).toBe(true)
+    expect(errorSpy).toHaveBeenCalled()
+  })
+
+  it('offers a push-config action for the current agent from the detail page', async () => {
+    const successSpy = vi.spyOn(messageStore, 'success')
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-action-apply"]').trigger('click')
+    await flushPromises()
+
+    expect(apiCalls.applyConfig).toHaveBeenCalledWith('edge-1')
+    expect(successSpy).toHaveBeenCalled()
+  })
+
+  it('refreshes agents and metrics via the header refresh action', async () => {
+    const wrapper = await mountPage()
+    expect(fetchAgentStats).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('[data-testid="detail-action-refresh"]').trigger('click')
+    await flushPromises()
+
+    expect(fetchAgentStats).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows a metrics error with retry when agent stats fail to load', async () => {
+    fetchAgentStats.mockRejectedValueOnce(new Error('stats down'))
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="detail-metrics-error"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="detail-metrics-retry"]').trigger('click')
+    await flushPromises()
+
+    expect(fetchAgentStats).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="detail-metrics-error"]').exists()).toBe(false)
+  })
+
+  it('shows sync status in a single place: the sync-events section', async () => {
+    agentRecord.last_apply_status = 'success'
+    agentRecord.last_apply_message = 'applied at revision 3'
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '系统信息')
+    await expandSection(wrapper, '同步事件')
+
+    const systemSection = wrapper.findAll('.collapsible-section')
+      .find((section) => section.text().includes('系统信息'))
+    expect(systemSection).toBeTruthy()
+    // The system-info cards no longer duplicate the sync status; the
+    // sync-events section remains its single display point.
+    expect(systemSection.text()).not.toContain('同步状态')
+    expect(wrapper.text()).toContain('已同步')
+    expect(wrapper.text()).toContain('applied at revision 3')
   })
 
 })
