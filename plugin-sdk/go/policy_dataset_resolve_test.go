@@ -145,7 +145,9 @@ func TestPolicyDatasetResolveHostBindsCallerAndEnclosingBudget(t *testing.T) {
 		return PolicyHostCallAuthorization{InstanceID: value.Binding.InstanceID, Generation: value.Binding.Generation, EntryID: "entry", DeclaredScopes: value.DeclaredScopes, GrantedScopes: value.GrantedScopes}
 	}
 	for _, authorization := range []DatasetResolveAuthorization{old, fresh, old} {
-		encoded, err := CallPolicyDatasetResolveHost(t.Context(), host, policyAuth(authorization), frame, budget)
+		encoded, err := admitWithinBudget(t, nil, func() ([]byte, error) {
+			return CallPolicyDatasetResolveHost(t.Context(), host, policyAuth(authorization), frame, budget)
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,13 +159,17 @@ func TestPolicyDatasetResolveHostBindsCallerAndEnclosingBudget(t *testing.T) {
 	before := calls
 	missing := policyAuth(fresh)
 	missing.GrantedScopes = []string{string(CapabilityDatasetQuery)}
-	if _, err := CallPolicyDatasetResolveHost(t.Context(), host, missing, frame, budget); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied || calls != before {
+	if _, err := admitWithinBudget(t, &calls, func() ([]byte, error) {
+		return CallPolicyDatasetResolveHost(t.Context(), host, missing, frame, budget)
+	}); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied || calls != before {
 		t.Fatal("missing resolver grant reached registry", err)
 	}
 	wrong := datasetResolveHostFunc(func(context.Context, DatasetResolveBinding, DatasetResolveRequest) (DatasetReference, error) {
 		return refs[old.Binding], nil
 	})
-	if _, err := CallPolicyDatasetResolveHost(t.Context(), wrong, policyAuth(fresh), frame, budget); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied {
+	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
+		return CallPolicyDatasetResolveHost(t.Context(), wrong, policyAuth(fresh), frame, budget)
+	}); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied {
 		t.Fatal("new generation accepted old reference", err)
 	}
 	wrongInstance := refs[fresh.Binding]
@@ -171,16 +177,22 @@ func TestPolicyDatasetResolveHostBindsCallerAndEnclosingBudget(t *testing.T) {
 	wrong = datasetResolveHostFunc(func(context.Context, DatasetResolveBinding, DatasetResolveRequest) (DatasetReference, error) {
 		return wrongInstance, nil
 	})
-	if _, err := CallPolicyDatasetResolveHost(t.Context(), wrong, policyAuth(fresh), frame, budget); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied {
+	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
+		return CallPolicyDatasetResolveHost(t.Context(), wrong, policyAuth(fresh), frame, budget)
+	}); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied {
 		t.Fatal("foreign instance reference accepted", err)
 	}
 	delete(refs, old.Binding)
-	if _, err := CallPolicyDatasetResolveHost(t.Context(), host, policyAuth(old), frame, budget); PolicySecurityCallStatus(err) != PolicyStatusUnavailable {
+	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
+		return CallPolicyDatasetResolveHost(t.Context(), host, policyAuth(old), frame, budget)
+	}); PolicySecurityCallStatus(err) != PolicyStatusUnavailable {
 		t.Fatal("revoked binding returned success", err)
 	}
 	small := budget
 	small.OutputFrameBytes = 1024
-	if _, err := CallPolicyDatasetResolveHost(t.Context(), host, policyAuth(fresh), frame, small); PolicySecurityCallStatus(err) != PolicyStatusResourceExhausted {
+	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
+		return CallPolicyDatasetResolveHost(t.Context(), host, policyAuth(fresh), frame, small)
+	}); PolicySecurityCallStatus(err) != PolicyStatusResourceExhausted {
 		t.Fatal("resolve exceeded manifest output limit", err)
 	}
 	parent, cancel := context.WithTimeout(t.Context(), time.Millisecond)
@@ -225,7 +237,9 @@ func TestPolicyDatasetResolveInitializationDoesNotRequireConnectionEntry(t *test
 		}
 		return reference, nil
 	})
-	encoded, err := CallPolicyDatasetResolveHost(t.Context(), host, auth, frame, budget)
+	encoded, err := admitWithinBudget(t, &calls, func() ([]byte, error) {
+		return CallPolicyDatasetResolveHost(t.Context(), host, auth, frame, budget)
+	})
 	if err != nil {
 		t.Fatalf("connectionless init could not resolve its dataset: %v", err)
 	}
@@ -244,7 +258,9 @@ func TestPolicyDatasetResolveInitializationDoesNotRequireConnectionEntry(t *test
 		t.Run(name, func(t *testing.T) {
 			invalid := auth
 			mutate(&invalid)
-			if _, err := CallPolicyDatasetResolveHost(t.Context(), host, invalid, frame, budget); err == nil {
+			if _, err := admitWithinBudget(t, &calls, func() ([]byte, error) {
+				return CallPolicyDatasetResolveHost(t.Context(), host, invalid, frame, budget)
+			}); err == nil {
 				t.Fatal("incomplete init authority accepted")
 			}
 			if calls != 1 {
@@ -273,17 +289,25 @@ func TestPolicyDatasetResolveInitializationDoesNotRequireConnectionEntry(t *test
 	})
 	source := PolicyTrustedSource{InstanceID: auth.InstanceID, Generation: auth.Generation, EntryID: "entry", PeerAddress: netip.MustParseAddr("192.0.2.1"), SourceAddress: netip.MustParseAddr("192.0.2.1"), Authority: PolicySourceSocket}
 	sourceHost := policySourceHostFunc(func(context.Context) (PolicyTrustedSource, error) { sourceCalls++; return source, nil })
-	if _, err := CallPolicyDatasetHost(t.Context(), queryHost, sourceAuth, queryFrame, budget); err == nil || queryCalls != 0 {
+	if _, err := admitWithinBudget(t, &queryCalls, func() ([]byte, error) {
+		return CallPolicyDatasetHost(t.Context(), queryHost, sourceAuth, queryFrame, budget)
+	}); err == nil || queryCalls != 0 {
 		t.Fatal("source query no longer requires an entry")
 	}
-	if _, err := CallPolicyTrustedSourceHost(t.Context(), sourceHost, sourceAuth, nil, budget); err == nil || sourceCalls != 0 {
+	if _, err := admitWithinBudget(t, &sourceCalls, func() ([]byte, error) {
+		return CallPolicyTrustedSourceHost(t.Context(), sourceHost, sourceAuth, nil, budget)
+	}); err == nil || sourceCalls != 0 {
 		t.Fatal("source read no longer requires an entry")
 	}
 	sourceAuth.EntryID = "entry"
-	if _, err := CallPolicyDatasetHost(t.Context(), queryHost, sourceAuth, queryFrame, budget); err != nil {
+	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
+		return CallPolicyDatasetHost(t.Context(), queryHost, sourceAuth, queryFrame, budget)
+	}); err != nil {
 		t.Fatal("valid connected source query regressed", err)
 	}
-	if _, err := CallPolicyTrustedSourceHost(t.Context(), sourceHost, sourceAuth, nil, budget); err != nil {
+	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
+		return CallPolicyTrustedSourceHost(t.Context(), sourceHost, sourceAuth, nil, budget)
+	}); err != nil {
 		t.Fatal("valid connected source read regressed", err)
 	}
 }
