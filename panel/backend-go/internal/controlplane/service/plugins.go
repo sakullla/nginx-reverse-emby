@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1817,23 +1818,9 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 	for _, permission := range manifest.Permissions {
 		declared = append(declared, strings.TrimSpace(permission.Name))
 	}
-	granted := make([]string, 0, len(grants))
-	grantSelectors := make(map[string][]string)
-	for _, grant := range grants {
-		granted = append(granted, grant.Name)
-		selector := strings.TrimSpace(grant.ResourceID)
-		if kind := strings.TrimSpace(grant.ResourceKind); kind != "" {
-			selector = kind + ":" + selector
-		}
-		if selector != "" {
-			grantSelectors[grant.Name] = append(grantSelectors[grant.Name], selector)
-		}
-	}
-	for permission := range grantSelectors {
-		sort.Strings(grantSelectors[permission])
-	}
 	sort.Strings(declared)
-	sort.Strings(granted)
+	declared = slices.Compact(declared)
+	granted, grantSelectors := controlPlaneRuntimeGrantProjection(grants)
 	for _, instance := range instances {
 		if !instance.DesiredEnabled {
 			continue
@@ -1899,6 +1886,28 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 		})
 	}
 	return plan, nil
+}
+
+// RPC scopes are capability names, while resource selectors remain separate
+// authorization constraints. Multiple resources must not duplicate a scope.
+func controlPlaneRuntimeGrantProjection(grants []storage.PluginGenerationGrant) ([]string, map[string][]string) {
+	names := make([]string, 0, len(grants))
+	selectors := make(map[string][]string)
+	for _, grant := range grants {
+		names = append(names, grant.Name)
+		selector := strings.TrimSpace(grant.ResourceID)
+		if kind := strings.TrimSpace(grant.ResourceKind); kind != "" {
+			selector = kind + ":" + selector
+		}
+		if selector != "" {
+			selectors[grant.Name] = append(selectors[grant.Name], selector)
+		}
+	}
+	sort.Strings(names)
+	for name := range selectors {
+		sort.Strings(selectors[name])
+	}
+	return slices.Compact(names), selectors
 }
 
 // RecoverControlPlaneRuntimes restores native control-plane plugin processes

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
@@ -37,6 +38,7 @@ const (
 	credentialHeader         = "X-NRE-Docker-Proxy-Credential"
 	maxPayloadBytes          = 3 << 20
 	maxOutputBytes           = 1 << 20
+	maxLogSnapshotBytes      = 256 << 10
 	workspaceTombstonePrefix = "-workspace-gc-"
 )
 
@@ -227,7 +229,19 @@ func (handler *handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		writeResponse(writer, http.StatusBadRequest, Response{Error: err.Error()})
 		return
 	}
-	output, runErr := handler.runner.Run(request.Context(), dir, input.Args...)
+	args := input.Args
+	logs := len(args) >= 3 && args[0] == "compose" && args[1] == "logs"
+	if logs {
+		// The UI polls snapshots. Never read a container's entire log history.
+		args = append(append([]string(nil), args[:3]...), append([]string{"--tail", "200"}, args[3:]...)...)
+	}
+	output, runErr := handler.runner.Run(request.Context(), dir, args...)
+	if logs && len(output) > maxLogSnapshotBytes {
+		output = output[len(output)-maxLogSnapshotBytes:]
+		for len(output) > 0 && !utf8.RuneStart(output[0]) {
+			output = output[1:]
+		}
+	}
 	if len(output) > maxOutputBytes {
 		output = output[:maxOutputBytes]
 		if runErr == nil {
