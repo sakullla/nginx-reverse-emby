@@ -322,6 +322,39 @@ func TestHandlerRunsValidatedCommandAndBoundsErrors(t *testing.T) {
 	}
 }
 
+func TestHandlerReturnsBoundedRecentLogsWithoutLosingANSI(t *testing.T) {
+	for _, service := range []string{"", "web"} {
+		t.Run(service, func(t *testing.T) {
+			colored := "\x1b[1;34m最新日志\x1b[0m\n"
+			runner := &recordingRunner{output: []byte(strings.Repeat("old log\n", maxOutputBytes/4) + colored)}
+			handler := &handler{cookie: "secret", workspaceRoot: t.TempDir(), runner: runner}
+			args := []string{"compose", "logs", "--no-color"}
+			if service != "" {
+				args = append(args, service)
+			}
+			payload, _ := json.Marshal(Request{Args: args, AppID: "media", Compose: "services: {}\n"})
+			request := httptest.NewRequest(http.MethodPost, proxyPath, bytes.NewReader(payload))
+			request.Header.Set(credentialHeader, "secret")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			var result Response
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.ExitCode != 0 || result.Error != "" || len(result.Output) > maxLogSnapshotBytes || !bytes.HasSuffix(result.Output, []byte(colored)) {
+				t.Fatalf("logs status=%d error=%q bytes=%d", result.ExitCode, result.Error, len(result.Output))
+			}
+			want := []string{"compose", "logs", "--no-color", "--tail", "200"}
+			if service != "" {
+				want = append(want, service)
+			}
+			if !reflect.DeepEqual(runner.args, want) {
+				t.Fatalf("logs command = %q, want %q", runner.args, want)
+			}
+		})
+	}
+}
+
 func TestHandlerAllowsDiskCleanupCommands(t *testing.T) {
 	allowed := [][]string{
 		{"system", "df"},
