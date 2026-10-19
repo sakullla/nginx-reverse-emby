@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -281,6 +282,70 @@ func TestPluginUpgradeCompletesDualFaceEmptyTargetsWithoutAgentRuntime(t *testin
 	if instance.CurrentState != "active" || instance.PendingOperationID != "" {
 		t.Fatalf("upgraded instance still applying: %+v", instance)
 	}
+}
+
+func TestPluginUpgradeRecoversSupersededLocalRevisionWithoutRuntimeStatuses(t *testing.T) {
+	fixture := newPluginTargetAuthorityFixture(t, "official.local-upgrade-recovery", false)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+	request := fixture.configureRequest("local", "local-upgrade-instance")
+	if _, err := fixture.service.ConfigureMutation(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	completePluginTargetConfigure(t, fixture, request.InstanceID)
+	previous, _, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := publishFixtureSigningKey()
+	publicKey := base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := marketplace.SignatureTrust{SourceID: "target-authority-fixture", SourceKind: marketplace.SourceKindCustom, KeyID: "test-fixture", PublicKey: publicKey, Fingerprint: fingerprint}
+	candidate := importPackageCandidate(t, fixture.cacheRoot, writePluginTargetAuthorityPackageVersion(t, fixture.pluginID, "1.0.1", false, key, false), fixture.service.validator, trust)
+	upgrade := PluginUpgradeRequest{PluginID: fixture.pluginID, Package: candidate, ActorID: "admin", RiskAccepted: true}
+	staged, err := fixture.service.Upgrade(ctx, upgrade)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := fixture.store.ListPluginAgentRuntimeStatuses(ctx, staged.PendingOperationID)
+	if err != nil || len(statuses) != 0 {
+		t.Fatalf("control-plane runtime statuses = %+v, err=%v", statuses, err)
+	}
+	fixture.service.store = &supersededLocalUpgradeStore{GormStore: fixture.store, revision: storage.AgentRevisionRow{AgentID: "local", OperationID: staged.PendingOperationID, Revision: staged.PendingRevision, State: storage.AgentRevisionStateSuperseded}}
+	if err := fixture.service.RecoverPendingPluginOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.PendingOperationID != "" || recovered.StagedPackageDigest != "" || recovered.ActivePackageDigest != previous.ActivePackageDigest || recovered.CurrentLifecycle != "active" {
+		t.Fatalf("recovered plugin = %+v", recovered)
+	}
+	operation, found, err := fixture.store.GetPluginOperation(ctx, staged.PendingOperationID)
+	if err != nil || !found || operation.Status != "failed" || operation.CompletedAt == nil || !strings.Contains(operation.AgentResultsJSON, "superseded") {
+		t.Fatalf("recovered operation = %+v, err=%v", operation, err)
+	}
+	instance := mustPluginInstanceByID(t, fixture.store, request.InstanceID)
+	if instance.PendingOperationID != "" || instance.CurrentState != "active" {
+		t.Fatalf("recovered instance = %+v", instance)
+	}
+	fixture.service.store = fixture.store
+	retry, err := fixture.service.Upgrade(ctx, upgrade)
+	if err != nil || retry.PendingOperationID == "" || retry.PendingOperationID == staged.PendingOperationID {
+		t.Fatalf("retry = %+v, err=%v", retry, err)
+	}
+}
+
+type supersededLocalUpgradeStore struct {
+	*storage.GormStore
+	revision storage.AgentRevisionRow
+}
+
+func (s *supersededLocalUpgradeStore) ListOperationRevisions(context.Context, string) ([]storage.AgentRevisionRow, error) {
+	return []storage.AgentRevisionRow{s.revision}, nil
 }
 
 func TestPluginUpgradeTerminatesSupersededPendingDisable(t *testing.T) {

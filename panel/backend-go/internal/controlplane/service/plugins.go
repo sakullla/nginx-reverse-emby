@@ -1101,6 +1101,21 @@ func (s *PluginService) completePendingOperationWithoutAgentRuntime(ctx context.
 	default:
 		return nil
 	}
+	// Control-plane-only plugins have coordinator revisions but no Agent RPC
+	// status rows. A superseded revision will never report again, so recover
+	// from its durable terminal state before considering targetless operations.
+	if revisions, ok := s.store.(interface {
+		ListOperationRevisions(context.Context, string) ([]storage.AgentRevisionRow, error)
+	}); ok {
+		rows, err := revisions.ListOperationRevisions(ctx, operation.ID)
+		if err != nil {
+			return err
+		}
+		if len(rows) > 0 {
+			reconciler := &PluginLifecycleReconciler{plugins: s, runtime: s.controlPlaneRuntime}
+			return reconciler.reconcileTrustedRevisions(ctx, operation, rows)
+		}
+	}
 	instances, err := s.store.ListPluginInstances(ctx, installed.PluginID)
 	if err != nil {
 		return err
