@@ -106,6 +106,61 @@ func TestHeartbeatIssuesRevisionWithPreparedRelayIdentity(t *testing.T) {
 	}
 }
 
+type unavailableHeartbeatPKIController struct {
+	AgentPKIController
+}
+
+func (unavailableHeartbeatPKIController) ControlSyncAndPrepare(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest, []storage.RelayListener) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error) {
+	return storage.PKISecuritySnapshot{}, nil, []storage.RelayListener{{ID: 99}}, ErrPKIRuntimeUnavailable
+}
+
+func TestHeartbeatDegradedPKIKeepsRelayListenersNil(t *testing.T) {
+	const agentID = "relay-agent"
+	listener := storage.RelayListener{ID: 2, AgentID: agentID, TLSMode: "pki_mtls", Enabled: true}
+	store := &heartbeatPKIRevisionStore{
+		row: storage.AgentRow{
+			ID: agentID, AgentToken: "test-token", CurrentRevision: 116,
+			LastApplyRevision: 116, LastApplyStatus: "success",
+		},
+		snapshot: storage.Snapshot{Revision: 116, RelayListeners: []storage.RelayListener{listener}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	svc.pki = unavailableHeartbeatPKIController{}
+
+	reply, err := svc.Heartbeat(t.Context(), HeartbeatRequest{
+		AgentID: agentID, CurrentRevision: 116, LastApplyRevision: 116, LastApplyStatus: "success",
+	}, "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.RelayListeners != nil {
+		t.Fatalf("degraded relay listeners = %#v, want nil", reply.RelayListeners)
+	}
+	if reply.PKIStatus == nil || reply.PKIStatus.Status != "degraded" || reply.PKIStatus.Code != "runtime_unavailable" {
+		t.Fatalf("PKI status = %+v", reply.PKIStatus)
+	}
+	if reply.PKISecurity != nil || len(reply.PKICredentials) != 0 {
+		t.Fatal("degraded heartbeat issued PKI material")
+	}
+	body, err := json.Marshal(map[string]any{"relay_listeners": reply.RelayListeners})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"relay_listeners":null}` {
+		t.Fatalf("wire relay listeners = %s", body)
+	}
+	if len(store.snapshot.RelayListeners) != 1 || store.snapshot.RelayListeners[0].ID != listener.ID {
+		t.Fatalf("stored listeners = %+v", store.snapshot.RelayListeners)
+	}
+	var issued storage.Snapshot
+	if err := json.Unmarshal(store.payload, &issued); err != nil {
+		t.Fatal(err)
+	}
+	if len(issued.RelayListeners) != 1 || issued.RelayListeners[0].ID != listener.ID {
+		t.Fatalf("revision artifact listeners = %+v", issued.RelayListeners)
+	}
+}
+
 func TestHeartbeatComparableSnapshotIgnoresRelayPKIRuntimeOverlay(t *testing.T) {
 	base := storage.Snapshot{Revision: 7, RelayListeners: []storage.RelayListener{{ID: 1, AgentID: "relay-agent"}}}
 	decorated := base

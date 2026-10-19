@@ -210,6 +210,11 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		if err := c.cfg.PKIHeartbeatHandler.ApplyHeartbeat(ctx, pkiReply); err != nil {
 			return Snapshot{}, fmt.Errorf("apply PKI heartbeat: %w", err)
 		}
+		if pkiReply.Status != nil && strings.EqualFold(strings.TrimSpace(pkiReply.Status.Status), "degraded") {
+			// Degraded preparation cannot prove that listeners were removed.
+			// Dropping the field keeps the previous listeners instead of fencing them.
+			delete(syncFields, "relay_listeners")
+		}
 	}
 	sanitized := false
 	for _, key := range []string{"version_package", "pki_security", "pki_credentials", "pki_status"} {

@@ -1471,8 +1471,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 			if isPKIControlClientError(controlErr) {
 				return HeartbeatReply{}, controlErr
 			}
+			// A nil list tells the agent to keep its current listeners. An empty
+			// slice is the removal signal and fences live pki_mtls sockets.
 			pkiDegraded = true
-			wireRelayListeners = []storage.RelayListener{}
+			wireRelayListeners = nil
 			wirePKISecurity = nil
 		} else {
 			if pkiSnapshot.PKIDomainID != "" {

@@ -92,6 +92,50 @@ func TestHeartbeatProcessesPKIEnvelopeWithoutOrdinaryRevisionUpdate(t *testing.T
 	}
 }
 
+func TestHeartbeatDegradedPKIDropsRelayListenerRemoval(t *testing.T) {
+	handler := &recordingPKIHeartbeatHandler{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"has_update":false,"desired_revision":7,"relay_listeners":[],"pki_status":{"status":"degraded","code":"runtime_unavailable"}}}`)
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{
+		MasterURL: server.URL, AgentToken: "control-token", AgentID: "agent-1",
+		PKIHeartbeatHandler: handler,
+	}, server.Client())
+	snapshot, err := client.Sync(t.Context(), SyncRequest{CurrentRevision: 7})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if snapshot.RelayListeners != nil {
+		t.Fatalf("degraded relay listeners = %#v, want nil", snapshot.RelayListeners)
+	}
+	if handler.reply.Status == nil || handler.reply.Status.Status != "degraded" {
+		t.Fatalf("PKI status = %+v", handler.reply.Status)
+	}
+}
+
+func TestHeartbeatReadyKeepsExplicitEmptyRelayListeners(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"has_update":false,"desired_revision":7,"relay_listeners":[],"pki_status":{"status":"ready"}}}`)
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{
+		MasterURL: server.URL, AgentToken: "control-token", AgentID: "agent-1",
+		PKIHeartbeatHandler: &recordingPKIHeartbeatHandler{},
+	}, server.Client())
+	snapshot, err := client.Sync(t.Context(), SyncRequest{CurrentRevision: 7})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if snapshot.RelayListeners == nil || len(snapshot.RelayListeners) != 0 {
+		t.Fatalf("ready relay listeners = %#v, want an empty slice", snapshot.RelayListeners)
+	}
+}
+
 func TestHeartbeatDoesNotReturnOrdinarySnapshotWhenPKIApplyFails(t *testing.T) {
 	handler := &recordingPKIHeartbeatHandler{applyErr: errors.New("credential cutover failed")}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
