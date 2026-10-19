@@ -252,3 +252,28 @@ func pluginRuntimeAgentResults(statuses []storage.PluginAgentRuntimeStatusRow) (
 	}
 	return result, nil
 }
+
+func (r *PluginLifecycleReconciler) reconcileTrustedRevisions(ctx context.Context, operation storage.PluginOperationRow, revisions []storage.AgentRevisionRow) error {
+	if len(revisions) == 0 {
+		return storage.ErrPluginGenerationStale
+	}
+	applied := true
+	agentResults := make(map[string]any, len(revisions))
+	for _, revision := range revisions {
+		state := revision.State
+		switch state {
+		case storage.AgentRevisionStateApplied:
+			if operation.Kind == "disable" && revision.DrainState != storage.AgentRevisionDrainStateDrained && revision.DrainState != storage.AgentRevisionDrainStateForced {
+				return nil
+			}
+		case storage.AgentRevisionStateFailed, storage.AgentRevisionStateSuperseded:
+			applied = false
+		default:
+			return nil
+		}
+		agentResults[revision.AgentID] = map[string]any{
+			"state": state, "revision": revision.Revision, "drain_state": revision.DrainState,
+		}
+	}
+	return r.completeTrustedRevisionOperation(ctx, operation, applied, agentResults)
+}

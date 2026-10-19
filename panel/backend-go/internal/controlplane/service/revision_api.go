@@ -949,28 +949,7 @@ func (s *RevisionAPI) reconcilePluginRevisionWithoutRuntimeStatuses(ctx context.
 	if err != nil {
 		return err
 	}
-	if len(revisions) == 0 {
-		return storage.ErrPluginGenerationStale
-	}
-	applied := true
-	agentResults := make(map[string]any, len(revisions))
-	for _, revision := range revisions {
-		state := revision.State
-		switch state {
-		case storage.AgentRevisionStateApplied:
-			if operation.Kind == "disable" && revision.DrainState != storage.AgentRevisionDrainStateDrained && revision.DrainState != storage.AgentRevisionDrainStateForced {
-				return nil
-			}
-		case storage.AgentRevisionStateFailed, storage.AgentRevisionStateSuperseded:
-			applied = false
-		default:
-			return nil
-		}
-		agentResults[revision.AgentID] = map[string]any{
-			"state": state, "revision": revision.Revision, "drain_state": revision.DrainState,
-		}
-	}
-	return s.pluginLifecycle.completeTrustedRevisionOperation(ctx, operation, applied, agentResults)
+	return s.pluginLifecycle.reconcileTrustedRevisions(ctx, operation, revisions)
 }
 
 func (s *RevisionAPI) SaveMutationResponse(ctx context.Context, scope, key, operationID string, response []byte) error {
