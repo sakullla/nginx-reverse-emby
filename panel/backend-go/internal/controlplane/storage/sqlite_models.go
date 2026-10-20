@@ -38,6 +38,49 @@ type AgentRow struct {
 	IsLocal                bool       `gorm:"column:is_local"`
 }
 
+type AccessServiceRow struct {
+	ID                       string `gorm:"column:id;primaryKey"`
+	Name                     string `gorm:"column:name;not null;default:''"`
+	EntryAgentID             string `gorm:"column:entry_agent_id;not null;default:''"`
+	ServiceAgentID           string `gorm:"column:service_agent_id;not null;default:''"`
+	BackendURL               string `gorm:"column:backend_url;not null;default:''"`
+	EntryURL                 string `gorm:"column:entry_url;not null;default:''"`
+	RuleAgentID              string `gorm:"column:rule_agent_id;not null;default:''"`
+	RuleID                   int    `gorm:"column:rule_id;not null;default:0"`
+	PendingRuleAgentID       string `gorm:"column:pending_rule_agent_id;not null;default:''"`
+	PendingRuleID            int    `gorm:"column:pending_rule_id;not null;default:0"`
+	DedicatedListenerAgentID string `gorm:"column:dedicated_listener_agent_id;not null;default:''"`
+	DedicatedListenerID      int    `gorm:"column:dedicated_listener_id;not null;default:0"`
+	SwitchPhase              string `gorm:"column:switch_phase;not null;default:''"`
+	PathMode                 string `gorm:"column:path_mode;not null;default:''"`
+	PathSummary              string `gorm:"column:path_summary;not null;default:''"`
+	ProbeJSON                string `gorm:"column:probes;not null;default:'[]'"`
+	ClientConfirmJSON        string `gorm:"column:client_confirmation;not null;default:''"`
+	BaselineJSON             string `gorm:"column:rule_baseline;not null;default:''"`
+	RelayListenPort          int    `gorm:"column:relay_listen_port;not null;default:0"`
+	RelayPublicHost          string `gorm:"column:relay_public_host;not null;default:''"`
+	DeletionPending          bool   `gorm:"column:deletion_pending;not null;default:false"`
+	DeletionJSON             string `gorm:"column:deletion;not null;default:''"`
+	RetiredRuleAgentID       string `gorm:"column:retired_rule_agent_id;not null;default:''"`
+	RetiredRevision          int    `gorm:"column:retired_revision;not null;default:0"`
+	LastError                string `gorm:"column:last_error;not null;default:''"`
+	CreatedAt                string `gorm:"column:created_at;not null;default:''"`
+	UpdatedAt                string `gorm:"column:updated_at;not null;default:''"`
+}
+
+func (AccessServiceRow) TableName() string { return "access_services" }
+
+type AccessServiceOperationRow struct {
+	IdempotencyKey string `gorm:"column:idempotency_key;primaryKey"`
+	Fingerprint    string `gorm:"column:fingerprint;not null"`
+	ServiceID      string `gorm:"column:service_id;not null;default:'';index:idx_access_service_operations_service"`
+	Operation      string `gorm:"column:operation;not null"`
+	ResponseJSON   string `gorm:"column:response_json;not null"`
+	CreatedAt      string `gorm:"column:created_at;not null"`
+}
+
+func (AccessServiceOperationRow) TableName() string { return "access_service_operations" }
+
 type HTTPRuleRow struct {
 	ID                     int    `gorm:"column:id;primaryKey"`
 	AgentID                string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`

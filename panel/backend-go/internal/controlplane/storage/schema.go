@@ -88,6 +88,8 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&DatasetSourceRow{}, &DatasetVersionRow{}, &DatasetBindingRow{}, &DatasetUploadRow{},
 		&AgentRow{},
 		&HTTPRuleRow{},
+		&AccessServiceRow{},
+		&AccessServiceOperationRow{},
 		&L4RuleRow{},
 		&RelayListenerRow{},
 		&EgressProfileRow{},

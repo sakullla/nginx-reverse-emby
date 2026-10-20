@@ -182,6 +182,8 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 		result, taskErr = s.handlePluginGenerationRevoke(ctx, envelope)
 	case service.TaskTypeChannelEnsure, service.TaskTypeChannelTeardown, service.TaskTypeChannelStatus:
 		result, taskErr = s.handleChannelTask(ctx, envelope)
+	case service.TaskTypeProbeBackendReachability:
+		result, taskErr = probeLocalBackendReachability(ctx, s.agentID, envelope.Payload)
 	default:
 		taskErr = fmt.Errorf("unsupported task type %q", envelope.Type)
 	}

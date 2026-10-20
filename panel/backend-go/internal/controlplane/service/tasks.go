@@ -734,7 +734,8 @@ func (s *TaskService) DispatchAgentTask(ctx context.Context, agentID, taskType s
 func isAllowedTaskType(taskType string) bool {
 	switch strings.TrimSpace(taskType) {
 	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation, TaskTypePluginCall,
-		TaskTypeChannelEnsure, TaskTypeChannelTeardown, TaskTypeChannelStatus, TaskTypePluginGenerationRevoke:
+		TaskTypeChannelEnsure, TaskTypeChannelTeardown, TaskTypeChannelStatus, TaskTypePluginGenerationRevoke,
+		TaskTypeProbeBackendReachability:
 		return true
 	default:
 		return false

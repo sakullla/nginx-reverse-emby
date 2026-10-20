@@ -167,6 +167,20 @@ func (s *relayService) canonicalPKIPresent(ctx context.Context) (bool, error) {
 	return available && state.Settings != nil, err
 }
 
+func (s *relayService) AccessRelaySecurity(ctx context.Context) (AccessRelaySecurity, error) {
+	enabled, err := s.canonicalPKIEnabled(ctx)
+	if err != nil {
+		return AccessRelaySecurity{}, err
+	}
+	if !enabled {
+		return AccessRelaySecurity{
+			Ready:  false,
+			Reason: "internal PKI is not ready for the current relay security mode",
+		}, nil
+	}
+	return AccessRelaySecurity{Ready: true, Mode: "pki_mtls", Transport: "tls_tcp"}, nil
+}
+
 func (s *relayService) canonicalPKIEnabled(ctx context.Context) (bool, error) {
 	state, available, err := s.canonicalPKIState(ctx)
 	return available && state.Settings != nil && state.Settings.UpgradeState == PKIUpgradeStateTunnelMTLSOnly, err

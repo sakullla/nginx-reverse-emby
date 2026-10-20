@@ -43,6 +43,19 @@ type AgentService interface {
 	SubscribeMonitorUpdates(context.Context) (<-chan service.AgentMonitorUpdate, func())
 }
 
+type AccessServiceAPI interface {
+	List(context.Context) ([]service.AccessServiceView, error)
+	Get(context.Context, string) (service.AccessServiceView, error)
+	Create(context.Context, string, []byte, service.AccessServiceInput) (service.AccessServiceView, error)
+	Correct(context.Context, string, string, []byte, service.AccessServiceInput) (service.AccessServiceView, error)
+	Update(context.Context, string, string, []byte, service.AccessServiceInput) (service.AccessServiceView, error)
+	Delete(context.Context, string, string, []byte) (service.AccessServiceView, error)
+	Retire(context.Context, string, string, []byte) (service.AccessServiceView, error)
+	Abandon(context.Context, string, string, []byte) (service.AccessServiceView, error)
+	Retry(context.Context, string, string, []byte) (service.AccessServiceView, error)
+	ConfirmClient(context.Context, string, string, []byte, service.AccessClientConfirmationInput) (service.AccessServiceView, error)
+}
+
 type TrafficService interface {
 	GetPolicy(context.Context, string) (service.TrafficPolicy, error)
 	UpdatePolicy(context.Context, string, service.TrafficPolicy) (service.TrafficPolicy, error)
@@ -208,6 +221,7 @@ type Dependencies struct {
 	BackupService                BackupService
 	PKIService                   PKIService
 	TrafficService               TrafficService
+	AccessService                AccessServiceAPI
 	RevisionService              RevisionService
 	MarketplaceService           MarketplaceAPI
 	PluginService                PluginAPI
@@ -482,6 +496,13 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificates)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificate)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}/issue", resolved.requirePanelToken(http.HandlerFunc(resolved.handleIssueCertificate)))
+		mux.Handle(prefix+"/services", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessServices)))
+		mux.Handle(prefix+"/services/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessService)))
+		mux.Handle(prefix+"/services/{id}/corrections", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessServiceCorrection)))
+		mux.Handle(prefix+"/services/{id}/retry", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessServiceRetry)))
+		mux.Handle(prefix+"/services/{id}/retire", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessServiceRetire)))
+		mux.Handle(prefix+"/services/{id}/abandon", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessServiceAbandon)))
+		mux.Handle(prefix+"/services/{id}/client-confirmation", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessServiceConfirmation)))
 		mux.Handle(prefix+"/http-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleHTTPRulesList)))
 		mux.Handle(prefix+"/l4-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleL4RulesList)))
 		mux.Handle(prefix+"/relay-listeners", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListenersList)))
@@ -810,6 +831,15 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		// owned store when scheduler shutdown must be retried.
 		d.cleanup = joinDependentCleanup(scheduler.Close, d.cleanup)
 	}
+	if d.AccessService == nil {
+		var tasks *service.TaskService
+		if typed, ok := d.TaskService.(*service.TaskService); ok {
+			tasks = typed
+		}
+		if bound := service.BindAccessService(store, d.RuleService, d.L4RuleService, d.RelayListenerService, d.AgentService, d.CertificateService, tasks, d.TrafficService); bound != nil {
+			d.AccessService = bound
+		}
+	}
 
 	initializing = false
 	return d, nil
@@ -927,6 +957,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusConflict, errorPayload(err.Error())
 	case errors.Is(err, service.ErrConflict):
 		return http.StatusConflict, errorPayload(err.Error())
+	case errors.Is(err, service.ErrAccessServiceNotFound):
+		return http.StatusNotFound, errorPayload("access service not found")
 	case errors.Is(err, service.ErrAgentNotFound):
 		return http.StatusNotFound, errorPayload("agent not found")
 	case errors.Is(err, service.ErrRuleNotFound):

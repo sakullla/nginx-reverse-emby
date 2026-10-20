@@ -748,6 +748,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 		}
 	}
 
+	accessSvc := service.NewAccessService(serviceStore, ruleSvc, l4Svc, relaySvc, agentSvc, certSvc, taskSvc, trafficSvc)
 	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
 		SystemService:           systemSvc,
 		AgentService:            agentSvc,
@@ -761,6 +762,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 		PKIService:              pkiHTTPService,
 		TaskService:             taskSvc,
 		TrafficService:          trafficSvc,
+		AccessService:           accessSvc,
 		PluginRuntimeHost:       rpcRuntimeHost,
 		BindPluginSecretService: bindLocalPluginSecrets,
 	})
