@@ -94,7 +94,7 @@ func TestAccessServiceConstrainedPathReusesOneListener(t *testing.T) {
 	h := newAccessHarness(t)
 	shared := RelayListener{
 		ID: 9, AgentID: "service-a", Enabled: true, TLSMode: "pki_mtls", TransportMode: "tls_tcp",
-		ListenPort: 8443, PublicPort: 8443, PublicHost: "0.0.0.0", Revision: 4, Name: "shared",
+		ListenPort: 8443, PublicPort: 8443, PublicHost: accessTestRelayHost, Revision: 4, Name: "shared",
 	}
 	h.relays.items = []RelayListener{shared}
 	input := h.relayInput("http://10.1.2.3:8096", "http://entry.example/emby", 8443)
@@ -198,6 +198,187 @@ func TestAccessServicePublicProbeChoosesPath(t *testing.T) {
 	if pending.Summary != accessSummaryPendingConfirm || pending.RuleID != 0 || h.relays.creates != before {
 		t.Fatalf("insufficient evidence created a path: summary %s rule %d creates %d", pending.Summary, pending.RuleID, h.relays.creates)
 	}
+
+	h.probes.script = map[string]accessProbeScript{
+		"entry-a|backend":   {status: "network_error"},
+		"service-a|backend": {status: "http_status", code: 200},
+		"entry-a|listener":  {status: "untested"},
+	}
+	stuck, err := h.create("public-hop-untested", h.relayInput("http://203.0.113.14:8096", "http://stuck.example/emby", 9543))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stuck.Summary != accessSummaryPendingConfirm || stuck.RuleID != 0 || len(listenerProbes(stuck.Probes)) != 1 {
+		t.Fatalf("untested hop stopped the service: summary %s rule %d probes %#v", stuck.Summary, stuck.RuleID, stuck.Probes)
+	}
+	h.probes.script["entry-a|listener"] = accessProbeScript{status: "connected"}
+	retried, err := h.svc.Retry(context.Background(), stuck.ID, "public-hop-retry", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Path.Mode != accessPathRelay || retried.RuleID == 0 || retried.Summary == accessSummaryFailed {
+		t.Fatalf("retry left the untested hop in place: mode %s rule %d summary %s err %s", retried.Path.Mode, retried.RuleID, retried.Summary, retried.LastError)
+	}
+}
+
+func TestAccessServiceRelayHostStaysUnconfirmedUntilDialable(t *testing.T) {
+	h := newAccessHarness(t)
+	shared := RelayListener{
+		ID: 9, AgentID: "service-a", Enabled: true, TLSMode: "pki_mtls", TransportMode: "tls_tcp",
+		ListenPort: 8443, PublicPort: 8443, PublicHost: "0.0.0.0", Revision: 4, Name: "shared",
+	}
+	h.relays.items = []RelayListener{shared}
+	missing := h.relayInput("http://10.1.2.3:8096", "http://entry.example/emby", 8443)
+	missing.RelayPublicHost = nil
+	view, err := h.create("relay-host-missing", missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Summary != accessSummaryPendingConfirm || view.RuleID != 0 || h.relays.creates != 0 || !strings.Contains(view.LastError, "relay_public_host") {
+		t.Fatalf("empty host created a listener: summary %s rule %d creates %d err %s", view.Summary, view.RuleID, h.relays.creates, view.LastError)
+	}
+	if !relayListenerFieldsEqual(h.relays.items[0], shared) {
+		t.Fatalf("shared listener changed: %#v", h.relays.items[0])
+	}
+	unspecified := "0.0.0.0"
+	missing.RelayPublicHost = &unspecified
+	missingEntry := "http://unspec-host.example/emby"
+	missing.EntryURL = &missingEntry
+	again, err := h.create("relay-host-unspecified", missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Summary != accessSummaryPendingConfirm || again.RuleID != 0 || h.relays.creates != 0 {
+		t.Fatalf("unspecified host created a listener: summary %s rule %d creates %d", again.Summary, again.RuleID, h.relays.creates)
+	}
+	if !relayListenerFieldsEqual(h.relays.items[0], shared) {
+		t.Fatalf("shared listener changed after unspecified host: %#v", h.relays.items[0])
+	}
+	dialable := shared
+	dialable.ID = 11
+	dialable.Name = "dialable"
+	dialable.ListenPort = 9544
+	dialable.PublicPort = 9544
+	dialable.PublicHost = "203.0.113.11"
+	h.relays.items = append(h.relays.items, dialable)
+	reuse := h.relayInput("http://10.8.8.8:8096", "http://reuse-host.example/emby", 9544)
+	reuse.RelayPublicHost = nil
+	reused, err := h.create("relay-host-reuse", reuse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.Path.Mode != accessPathRelay || reused.RuleID == 0 || h.relays.creates != 0 || h.row(t, reused.ID).DedicatedListenerID != 0 {
+		t.Fatalf("dialable listener was not reused: mode %s rule %d creates %d dedicated %d err %s", reused.Path.Mode, reused.RuleID, h.relays.creates, h.row(t, reused.ID).DedicatedListenerID, reused.LastError)
+	}
+	if !relayListenerFieldsEqual(h.relays.items[1], dialable) {
+		t.Fatalf("reused listener changed: %#v", h.relays.items[1])
+	}
+
+	h.probes.script = map[string]accessProbeScript{
+		"entry-a|backend":   {status: "network_error"},
+		"service-a|backend": {status: "http_status", code: 200},
+		"entry-a|listener":  {status: "connected"},
+	}
+	public := h.relayInput("http://203.0.113.20:8096", "http://public-host.example/emby", 8443)
+	public.RelayPublicHost = nil
+	calls := h.probes.calls
+	publicView, err := h.create("relay-host-public-missing", public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publicView.Summary != accessSummaryPendingConfirm || publicView.RuleID != 0 || h.relays.creates != 0 || h.probes.calls != calls+2 {
+		t.Fatalf("public path probed a hop without a host: summary %s rule %d creates %d calls %d", publicView.Summary, publicView.RuleID, h.relays.creates, h.probes.calls)
+	}
+
+	host := "10.2.2.2"
+	createdInput := h.relayInput("http://127.0.0.1:8096", "http://dialable.example/emby", 9443)
+	createdInput.RelayPublicHost = &host
+	created, err := h.create("relay-host-concrete", createdInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Path.Mode != accessPathRelay || created.RuleID == 0 || h.relays.creates != 1 {
+		t.Fatalf("concrete host did not create one listener: mode %s rule %d creates %d err %s", created.Path.Mode, created.RuleID, h.relays.creates, created.LastError)
+	}
+	createdListener := h.relays.items[len(h.relays.items)-1]
+	if createdListener.PublicHost != host || createdListener.PublicHost == "0.0.0.0" || h.row(t, created.ID).DedicatedListenerID != createdListener.ID {
+		t.Fatalf("created listener = %#v dedicated %d", createdListener, h.row(t, created.ID).DedicatedListenerID)
+	}
+	if !relayListenerFieldsEqual(h.relays.items[0], shared) {
+		t.Fatalf("creating a listener modified the shared one: %#v", h.relays.items[0])
+	}
+}
+
+func TestAccessServiceLocalEntryDoesNotRepeatUntestableHop(t *testing.T) {
+	h := newAccessHarness(t)
+	entry := appliedAgent("entry-a", 1)
+	entry.IsLocal = true
+	h.agents.agents["entry-a"] = entry
+	h.agents.agents["service-a"] = appliedAgent("service-a", 1)
+	h.probes.script = map[string]accessProbeScript{
+		"entry-a|backend":   {status: "network_error"},
+		"service-a|backend": {status: "http_status", code: 200},
+		"entry-a|listener":  {status: "connected"},
+	}
+	view, err := h.create("local-hop", h.relayInput("http://203.0.113.21:8096", "http://local-entry.example/emby", 9443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hops := listenerProbes(view.Probes)
+	if view.Summary != accessSummaryPendingConfirm || view.RuleID != 0 || len(hops) != 1 || hops[0].Error != accessLocalHopUntestable || hops[0].Status == "connected" {
+		t.Fatalf("local hop = summary %s rule %d probes %#v", view.Summary, view.RuleID, view.Probes)
+	}
+	calls := h.probes.calls
+	retried, err := h.svc.Retry(context.Background(), view.ID, "local-hop-retry", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.RuleID != 0 || h.probes.calls != calls || len(listenerProbes(retried.Probes)) != 1 {
+		t.Fatalf("retry repeated the local hop: rule %d calls %d probes %#v", retried.RuleID, h.probes.calls, retried.Probes)
+	}
+}
+
+func TestAccessServicePublicRelayWaitsForEntrySnapshot(t *testing.T) {
+	h := newAccessHarness(t)
+	h.agents.agents["entry-a"] = appliedAgent("entry-a", 1)
+	h.agents.agents["service-a"] = appliedAgent("service-a", 1)
+	h.svc.store = &accessSnapshotGate{accessRecordStore: h.store, agents: h.agents}
+	h.probes.script = map[string]accessProbeScript{
+		"entry-a|backend":   {status: "network_error"},
+		"service-a|backend": {status: "http_status", code: 200},
+		"entry-a|listener":  {status: "connected"},
+	}
+	view, err := h.create("snapshot-wait", h.relayInput("http://203.0.113.22:8096", "http://snapshot.example/emby", 9443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := h.svc.store.(*accessSnapshotGate)
+	if view.Summary != accessSummaryPendingConfirm || view.RuleID != 0 || h.relays.creates != 1 || gate.publishes != 1 || len(listenerProbes(view.Probes)) != 0 {
+		t.Fatalf("hop dispatched before apply: summary %s rule %d creates %d publishes %d probes %#v err %s", view.Summary, view.RuleID, h.relays.creates, gate.publishes, view.Probes, view.LastError)
+	}
+	if !strings.Contains(h.row(t, view.ID).ProbeJSON, `"purpose":"snapshot"`) || view.LastError != accessEntryListenerUnapplied {
+		t.Fatalf("snapshot fact or error missing: err %s probes %s", view.LastError, h.row(t, view.ID).ProbeJSON)
+	}
+	for _, probe := range view.Probes {
+		if probe.Purpose == accessProbePurposeSnapshot {
+			t.Fatalf("snapshot fact was shown as a reachability probe: %#v", view.Probes)
+		}
+	}
+	waiting, err := h.svc.Retry(context.Background(), view.ID, "snapshot-wait-retry", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.RuleID != 0 || gate.publishes != 1 || len(listenerProbes(waiting.Probes)) != 0 || h.relays.creates != 1 {
+		t.Fatalf("retry dispatched early: rule %d publishes %d creates %d probes %#v", waiting.RuleID, gate.publishes, h.relays.creates, waiting.Probes)
+	}
+	h.agents.agents["entry-a"] = appliedAgent("entry-a", h.agents.agents["entry-a"].DesiredRevision)
+	ready, err := h.svc.Retry(context.Background(), view.ID, "snapshot-ready", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Path.Mode != accessPathRelay || ready.RuleID == 0 || gate.publishes != 1 || len(listenerProbes(ready.Probes)) != 1 || listenerProbes(ready.Probes)[0].Status != "connected" {
+		t.Fatalf("applied snapshot did not release the hop: mode %s rule %d publishes %d probes %#v err %s", ready.Path.Mode, ready.RuleID, gate.publishes, ready.Probes, ready.LastError)
+	}
 }
 
 func TestAccessServiceCertificateAndApplySummary(t *testing.T) {
@@ -252,6 +433,8 @@ func TestAccessServiceCrossNodeCutoverKeepsOldRule(t *testing.T) {
 	port := 9443
 	nextInput.EntryAgentID = &entry
 	nextInput.RelayListenPort = &port
+	host := accessTestRelayHost
+	nextInput.RelayPublicHost = &host
 	moved, err := h.svc.Update(context.Background(), initial.ID, "cutover-move", mustAccessBody(t, nextInput), nextInput)
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +564,7 @@ func TestAccessServiceDeleteRemovesOnlyOwnedResources(t *testing.T) {
 
 	shared := RelayListener{
 		ID: 4, AgentID: "service-a", Enabled: true, TLSMode: "pki_mtls", TransportMode: "tls_tcp",
-		ListenPort: 8443, PublicPort: 8443, PublicHost: "0.0.0.0", Revision: 2,
+		ListenPort: 8443, PublicPort: 8443, PublicHost: accessTestRelayHost, Revision: 2,
 	}
 	h.relays.items = []RelayListener{shared}
 	h.relays.deletes = nil
@@ -522,6 +705,41 @@ func TestProbeTaskTypeIsDispatchable(t *testing.T) {
 	}
 }
 
+const accessTestRelayHost = "203.0.113.40"
+
+func listenerProbes(probes []AccessProbeFact) []AccessProbeFact {
+	var hops []AccessProbeFact
+	for _, probe := range probes {
+		if probe.Purpose == "listener" && probe.HasListener {
+			hops = append(hops, probe)
+		}
+	}
+	return hops
+}
+
+type accessSnapshotGate struct {
+	accessRecordStore
+	agents    *fakeAccessAgents
+	publishes int
+}
+
+func (g *accessSnapshotGate) PublishEntryRelayListener(_ context.Context, entryAgentID string) (int, error) {
+	g.publishes++
+	agent, ok := g.agents.agents[entryAgentID]
+	if !ok {
+		return 0, fmt.Errorf("entry agent %s was not found", entryAgentID)
+	}
+	if !agent.IsLocal && agent.DesiredRevision <= agent.LastApplyRevision {
+		next := agent.DesiredRevision
+		if next < agent.LastApplyRevision {
+			next = agent.LastApplyRevision
+		}
+		agent.DesiredRevision = next + 1
+		g.agents.agents[entryAgentID] = agent
+	}
+	return agent.DesiredRevision, nil
+}
+
 type accessHarness struct {
 	svc     *AccessService
 	store   *memAccessStore
@@ -568,9 +786,11 @@ func (h *accessHarness) relayInput(backend, entry string, port int) AccessServic
 	input := h.directInput(backend, entry)
 	serviceAgent := "service-a"
 	entryAgent := "entry-a"
+	host := accessTestRelayHost
 	input.ServiceAgentID = &serviceAgent
 	input.EntryAgentID = &entryAgent
 	input.RelayListenPort = &port
+	input.RelayPublicHost = &host
 	return input
 }
 

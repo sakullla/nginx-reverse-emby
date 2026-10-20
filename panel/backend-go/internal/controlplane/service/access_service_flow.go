@@ -74,7 +74,7 @@ func (s *AccessService) converge(ctx context.Context, row *storage.AccessService
 	class := accessAddressClass(backend.Hostname())
 	constrained := accessAddressConstrained(class)
 	if !constrained && row.EntryAgentID != row.ServiceAgentID {
-		if err := s.preparePublicRelayProbe(ctx, row); err != nil {
+		if err := s.preparePublicRelayProbe(ctx, row, retry); err != nil {
 			return err
 		}
 	}
@@ -95,6 +95,12 @@ func (s *AccessService) converge(ctx context.Context, row *storage.AccessService
 	var listenerID int
 	if mode == accessPathRelay {
 		listener, shared, err := s.ensureListener(ctx, row)
+		if errors.Is(err, errAccessRelayHostRequired) {
+			row.PathMode = accessPathPending
+			row.PathSummary = "待确认"
+			row.LastError = err.Error()
+			return nil
+		}
 		if err != nil {
 			row.LastError = err.Error()
 			if !sameEntry {
@@ -144,32 +150,67 @@ func (s *AccessService) converge(ctx context.Context, row *storage.AccessService
 	return nil
 }
 
-func (s *AccessService) preparePublicRelayProbe(ctx context.Context, row *storage.AccessServiceRow) error {
+func (s *AccessService) preparePublicRelayProbe(ctx context.Context, row *storage.AccessServiceRow, retry bool) error {
 	probes := decodeAccessProbes(row.ProbeJSON)
 	entryProbe := latestAccessProbe(probes, row.EntryAgentID, "backend", false)
 	serviceProbe := latestAccessProbe(probes, row.ServiceAgentID, "backend", false)
 	if entryProbe == nil || entryProbe.Status != "network_error" || serviceProbe == nil || !accessProbeReachable(serviceProbe.Status) {
 		return nil
 	}
+	if idx := latestAccessProbeIndex(probes, row.EntryAgentID, "listener", true); idx >= 0 {
+		hop := probes[idx]
+		switch {
+		case accessProbeReachable(hop.Status) || hop.TaskID != "" || hop.Error == accessLocalHopUntestable:
+			return nil
+		case hop.Status == "untested" && hop.TaskID == "":
+			probes = dropAccessProbe(probes, idx)
+		case hop.Status == "network_error" && retry:
+			probes = dropAccessProbe(probes, idx)
+		default:
+			return nil
+		}
+		if err := s.storeAccessProbes(row, probes); err != nil {
+			return err
+		}
+	}
 	listener, _, err := s.ensureListener(ctx, row)
+	if errors.Is(err, errAccessRelayHostRequired) {
+		row.PathMode = accessPathPending
+		row.PathSummary = "待确认"
+		row.LastError = err.Error()
+		return nil
+	}
 	if err != nil {
 		row.LastError = err.Error()
 		return err
 	}
-	if latestAccessProbe(probes, row.EntryAgentID, "listener", true) != nil {
+	agent, err := s.agents.Get(ctx, row.EntryAgentID)
+	if err != nil {
+		return err
+	}
+	if agent.IsLocal {
+		probes = append(probes, AccessProbeFact{
+			AgentID: row.EntryAgentID, Target: row.BackendURL, Purpose: "listener", Status: "untested",
+			HasListener: true, RelayListenerID: listener.ID, Error: accessLocalHopUntestable,
+			CheckedAt: s.now().UTC().Format(time.RFC3339Nano),
+		})
+		return s.storeAccessProbes(row, probes)
+	}
+	ready, err := s.entryListenerApplied(ctx, row, listener.ID)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		row.LastError = accessEntryListenerUnapplied
 		return nil
 	}
+	probes = decodeAccessProbes(row.ProbeJSON)
 	probe, err := s.dispatchProbe(ctx, row.EntryAgentID, row.BackendURL, "listener", listener.ID)
 	if err != nil {
 		return err
 	}
 	probes = append(probes, probe)
-	encoded, err := json.Marshal(probes)
-	if err != nil {
-		return err
-	}
-	row.ProbeJSON = string(encoded)
-	return nil
+	return s.storeAccessProbes(row, probes)
 }
 
 func decideAccessPath(class, entryAgent, serviceAgent string, probes []AccessProbeFact) (string, bool) {
@@ -261,19 +302,6 @@ func (s *AccessService) refreshProbes(ctx context.Context, row *storage.AccessSe
 			probes[idx] = probe
 		} else {
 			probes = append(probes, probe)
-		}
-	}
-	if row.EntryAgentID != row.ServiceAgentID {
-		entryProbe := latestAccessProbe(probes, row.EntryAgentID, "backend", false)
-		serviceProbe := latestAccessProbe(probes, row.ServiceAgentID, "backend", false)
-		if entryProbe != nil && entryProbe.Status == "network_error" && serviceProbe != nil && accessProbeReachable(serviceProbe.Status) {
-			if latestAccessProbe(probes, row.EntryAgentID, "listener", true) == nil && row.DedicatedListenerID > 0 {
-				probe, err := s.dispatchProbe(ctx, row.EntryAgentID, row.BackendURL, "listener", row.DedicatedListenerID)
-				if err != nil {
-					return err
-				}
-				probes = append(probes, probe)
-			}
 		}
 	}
 	encoded, err := json.Marshal(probes)
@@ -419,12 +447,12 @@ func (s *AccessService) ensureListener(ctx context.Context, row *storage.AccessS
 	if row.RelayListenPort <= 0 {
 		return RelayListener{}, false, fmt.Errorf("%w: relay_listen_port is required to create the single service-side listener; existing shared listeners are not modified", ErrInvalidArgument)
 	}
+	if !accessDialableHost(row.RelayPublicHost) {
+		return RelayListener{}, false, errAccessRelayHostRequired
+	}
 	name := "service-" + row.ID
 	port := row.RelayListenPort
-	publicHost := row.RelayPublicHost
-	if publicHost == "" {
-		publicHost = "0.0.0.0"
-	}
+	publicHost := strings.TrimSpace(row.RelayPublicHost)
 	enabled := true
 	mode := security.Mode
 	transport := security.Transport
@@ -441,6 +469,135 @@ func (s *AccessService) ensureListener(ctx context.Context, row *storage.AccessS
 	row.DedicatedListenerID = created.ID
 	row.DedicatedListenerAgentID = created.AgentID
 	return created, false, nil
+}
+
+const (
+	accessProbePurposeSnapshot   = "snapshot"
+	accessLocalHopUntestable     = "local entry has no relay trust material, so it cannot judge the service-side listener"
+	accessEntryListenerUnapplied = "entry node has not applied the service-side listener"
+)
+
+var errAccessRelayHostRequired = errors.New("relay_public_host must be a concrete host the entry node can dial for the single service-side listener; existing shared listeners are not modified")
+
+func accessDialableHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return false
+	}
+	return true
+}
+
+func (s *AccessService) entryListenerApplied(ctx context.Context, row *storage.AccessServiceRow, listenerID int) (bool, error) {
+	publisher, ok := s.store.(accessEntrySnapshotPublisher)
+	if !ok || publisher == nil {
+		return true, nil
+	}
+	probes := keepAccessSnapshotProbe(decodeAccessProbes(row.ProbeJSON), row, listenerID, s.now())
+	if err := s.storeAccessProbes(row, probes); err != nil {
+		return false, err
+	}
+	if err := s.store.SaveAccessService(ctx, *row); err != nil {
+		return false, err
+	}
+	factIdx := accessSnapshotProbeIndex(probes, row.EntryAgentID, listenerID)
+	if factIdx < 0 {
+		return false, fmt.Errorf("access snapshot probe missing")
+	}
+	agent, err := s.agents.Get(ctx, row.EntryAgentID)
+	if err != nil {
+		return false, err
+	}
+	published := probes[factIdx].PublishedRevision
+	if published > 0 {
+		return revisionApplied(agent, published), nil
+	}
+	if agent.DesiredRevision > agent.LastApplyRevision {
+		return false, nil
+	}
+	desired, err := publisher.PublishEntryRelayListener(ctx, row.EntryAgentID)
+	if err != nil {
+		return false, err
+	}
+	probes[factIdx].PublishedRevision = desired
+	if err := s.storeAccessProbes(row, probes); err != nil {
+		return false, err
+	}
+	if err := s.store.SaveAccessService(ctx, *row); err != nil {
+		return false, err
+	}
+	agent, err = s.agents.Get(ctx, row.EntryAgentID)
+	if err != nil {
+		return false, err
+	}
+	return revisionApplied(agent, desired), nil
+}
+
+func keepAccessSnapshotProbe(probes []AccessProbeFact, row *storage.AccessServiceRow, listenerID int, now time.Time) []AccessProbeFact {
+	kept := make([]AccessProbeFact, 0, len(probes)+1)
+	var current *AccessProbeFact
+	for _, probe := range probes {
+		if probe.Purpose == accessProbePurposeSnapshot && probe.AgentID == row.EntryAgentID {
+			if probe.RelayListenerID == listenerID {
+				copyProbe := probe
+				current = &copyProbe
+			}
+			continue
+		}
+		kept = append(kept, probe)
+	}
+	if current == nil {
+		kept = append(kept, AccessProbeFact{
+			AgentID: row.EntryAgentID, Target: row.BackendURL, Purpose: accessProbePurposeSnapshot,
+			Status: "untested", HasListener: true, RelayListenerID: listenerID,
+			CheckedAt: now.UTC().Format(time.RFC3339Nano),
+		})
+	} else {
+		kept = append(kept, *current)
+	}
+	return kept
+}
+
+func accessSnapshotProbeIndex(probes []AccessProbeFact, agentID string, listenerID int) int {
+	for i := range probes {
+		probe := probes[i]
+		if probe.Purpose == accessProbePurposeSnapshot && probe.AgentID == agentID && probe.RelayListenerID == listenerID {
+			return i
+		}
+	}
+	return -1
+}
+
+func visibleAccessProbes(probes []AccessProbeFact) []AccessProbeFact {
+	visible := make([]AccessProbeFact, 0, len(probes))
+	for _, probe := range probes {
+		if probe.Purpose == accessProbePurposeSnapshot {
+			continue
+		}
+		visible = append(visible, probe)
+	}
+	return visible
+}
+
+func dropAccessProbe(probes []AccessProbeFact, index int) []AccessProbeFact {
+	if index < 0 || index >= len(probes) {
+		return probes
+	}
+	return append(probes[:index], probes[index+1:]...)
+}
+
+func (s *AccessService) storeAccessProbes(row *storage.AccessServiceRow, probes []AccessProbeFact) error {
+	if probes == nil {
+		probes = []AccessProbeFact{}
+	}
+	encoded, err := json.Marshal(probes)
+	if err != nil {
+		return err
+	}
+	row.ProbeJSON = string(encoded)
+	return nil
 }
 
 func findAccessListener(listeners []RelayListener, id int) (RelayListener, bool) {
@@ -461,6 +618,9 @@ func accessListenerMatches(listener RelayListener, row *storage.AccessServiceRow
 		transport = "tls_tcp"
 	}
 	if listener.TransportMode != transport || listener.TLSMode != security.Mode {
+		return false
+	}
+	if !accessDialableHost(listener.PublicHost) {
 		return false
 	}
 	if row.RelayListenPort > 0 && listener.ListenPort != row.RelayListenPort && listener.PublicPort != row.RelayListenPort {
@@ -1014,7 +1174,7 @@ func (s *AccessService) present(ctx context.Context, row storage.AccessServiceRo
 		PendingRuleAgentID: row.PendingRuleAgentID, PendingRuleID: row.PendingRuleID, SwitchPhase: row.SwitchPhase,
 		HTTPSReady: cert.HTTPSReady, Advanced: advanced, AdvancedReason: reason, LastError: row.LastError,
 		Path:        AccessPathState{Mode: row.PathMode, Summary: row.PathSummary, Pending: row.PathMode == accessPathPending},
-		Certificate: cert, Probes: decodeAccessProbes(row.ProbeJSON), Rules: rules, Traffic: traffic,
+		Certificate: cert, Probes: visibleAccessProbes(decodeAccessProbes(row.ProbeJSON)), Rules: rules, Traffic: traffic,
 		ClientConfirmation: confirmation, Deletion: deletion, Apply: apply,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}

@@ -124,16 +124,17 @@ type AccessCertificateState struct {
 }
 
 type AccessProbeFact struct {
-	AgentID         string `json:"agent_id"`
-	Target          string `json:"target"`
-	CheckedAt       string `json:"checked_at,omitempty"`
-	Status          string `json:"status"`
-	HTTPStatusCode  int    `json:"http_status_code,omitempty"`
-	RelayListenerID int    `json:"relay_listener_id,omitempty"`
-	HasListener     bool   `json:"has_listener,omitempty"`
-	Purpose         string `json:"purpose,omitempty"`
-	Error           string `json:"error,omitempty"`
-	TaskID          string `json:"task_id,omitempty"`
+	AgentID           string `json:"agent_id"`
+	Target            string `json:"target"`
+	CheckedAt         string `json:"checked_at,omitempty"`
+	Status            string `json:"status"`
+	HTTPStatusCode    int    `json:"http_status_code,omitempty"`
+	RelayListenerID   int    `json:"relay_listener_id,omitempty"`
+	HasListener       bool   `json:"has_listener,omitempty"`
+	Purpose           string `json:"purpose,omitempty"`
+	Error             string `json:"error,omitempty"`
+	TaskID            string `json:"task_id,omitempty"`
+	PublishedRevision int    `json:"published_revision,omitempty"`
 }
 
 type AccessClientConfirmation struct {
@@ -196,6 +197,13 @@ type accessRecordStore interface {
 	DeleteAccessService(context.Context, string) error
 	GetAccessServiceOperation(context.Context, string) (storage.AccessServiceOperationRow, bool, error)
 	SaveAccessServiceOperation(context.Context, storage.AccessServiceOperationRow) error
+}
+
+// accessEntrySnapshotPublisher bumps the entry agent so its next applied
+// snapshot can include a service-side listener before a forwarding rule exists.
+// Stores that do not implement it have no snapshot to wait for.
+type accessEntrySnapshotPublisher interface {
+	PublishEntryRelayListener(context.Context, string) (int, error)
 }
 
 type accessRuleAPI interface {

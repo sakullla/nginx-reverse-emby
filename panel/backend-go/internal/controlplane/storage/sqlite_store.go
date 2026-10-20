@@ -862,6 +862,96 @@ func localAgentStateRowsEqual(a, b LocalAgentStateRow) bool {
 		acknowledgementTimesEqual
 }
 
+// PublishEntryRelayListener asks the entry agent to pull a snapshot after the
+// access-service row already names the service-side listener. A revision that
+// is still ahead of the last apply is left unchanged.
+func (s *GormStore) PublishEntryRelayListener(ctx context.Context, entryAgentID string) (int, error) {
+	entryAgentID = strings.TrimSpace(entryAgentID)
+	if entryAgentID == "" || entryAgentID == s.localAgentID {
+		return 0, nil
+	}
+	var row AgentRow
+	if err := s.db.WithContext(ctx).Where("id = ?", entryAgentID).Limit(1).Find(&row).Error; err != nil {
+		return 0, err
+	}
+	if row.ID == "" {
+		return 0, fmt.Errorf("entry agent %s was not found", entryAgentID)
+	}
+	normalizeAgentRow(&row)
+	if row.IsLocal || row.DesiredRevision > row.LastApplyRevision {
+		return row.DesiredRevision, nil
+	}
+	next := row.DesiredRevision
+	if next < row.CurrentRevision {
+		next = row.CurrentRevision
+	}
+	if next < row.LastApplyRevision {
+		next = row.LastApplyRevision
+	}
+	row.DesiredRevision = next + 1
+	if err := s.SaveAgent(ctx, row); err != nil {
+		return 0, err
+	}
+	return row.DesiredRevision, nil
+}
+
+func (s *GormStore) accessServiceRelayListenerIDs(ctx context.Context, entryAgentID string) ([]int, error) {
+	entryAgentID = strings.TrimSpace(entryAgentID)
+	if entryAgentID == "" || s.db == nil || !s.db.Migrator().HasTable(&AccessServiceRow{}) {
+		return nil, nil
+	}
+	var rows []AccessServiceRow
+	if err := s.db.WithContext(ctx).
+		Where("entry_agent_id = ? AND deletion_pending = ?", entryAgentID, false).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0)
+	seen := make(map[int]struct{})
+	add := func(id int) {
+		if id <= 0 {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, row := range rows {
+		add(row.DedicatedListenerID)
+		for _, id := range accessProbeListenerIDs(row.ProbeJSON) {
+			add(id)
+		}
+	}
+	return ids, nil
+}
+
+func accessProbeListenerIDs(raw string) []int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var probes []struct {
+		RelayListenerID int    `json:"relay_listener_id"`
+		HasListener     bool   `json:"has_listener"`
+		Purpose         string `json:"purpose"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probes); err != nil {
+		return nil
+	}
+	ids := make([]int, 0, len(probes))
+	for _, probe := range probes {
+		if !probe.HasListener || probe.RelayListenerID <= 0 {
+			continue
+		}
+		if probe.Purpose == "snapshot" || probe.Purpose == "listener" {
+			ids = append(ids, probe.RelayListenerID)
+		}
+	}
+	return ids
+}
+
 func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 	normalizeAgentRow(&row)
 	return s.db.WithContext(ctx).
@@ -2260,7 +2350,12 @@ func (s *GormStore) loadRelayListenersForSync(
 
 	syncRows := append([]RelayListenerRow(nil), localRows...)
 	referencedIDs := referencedRelayListenerIDs(httpRows, l4Rows)
-	if len(referencedIDs) == 0 {
+	accessIDs, err := s.accessServiceRelayListenerIDs(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	wantedIDs := append(append([]int{}, referencedIDs...), accessIDs...)
+	if len(wantedIDs) == 0 {
 		return syncRows, nil
 	}
 
@@ -2271,8 +2366,8 @@ func (s *GormStore) loadRelayListenersForSync(
 		}
 	}
 
-	missingIDs := make([]int, 0, len(referencedIDs))
-	for _, listenerID := range referencedIDs {
+	missingIDs := make([]int, 0, len(wantedIDs))
+	for _, listenerID := range wantedIDs {
 		if listenerID <= 0 {
 			continue
 		}
