@@ -46,6 +46,46 @@ describe('plugin provider presentation', () => {
     expect(wrapper.emitted('edit')?.[0]).toEqual([rule])
   })
 
+  it('recognizes a service-created rule and links back to the service', () => {
+    const wrapper = mount(RuleCard, {
+      props: {
+        rule: {
+          ...rule,
+          tags: ['nre-access-service:svc-1'],
+        },
+      },
+      global: {
+        stubs: {
+          RouterLink: { props: ['to'], template: '<a class="service-link" :href="to"><slot /></a>' },
+        },
+      },
+    })
+
+    const link = wrapper.get('a.service-link')
+    expect(link.text()).toContain('服务接入')
+    expect(link.attributes('href')).toBe('/services?id=svc-1')
+    expect(wrapper.text()).toContain('nre-access-service:svc-1')
+  })
+
+  it('recognizes a service-created rule in the rule table', () => {
+    const wrapper = mount(RuleTable, {
+      props: {
+        rules: [{
+          ...rule,
+          tags: ['nre-access-service:svc-9'],
+        }],
+      },
+      global: {
+        stubs: {
+          RouterLink: { props: ['to'], template: '<a class="service-link" :href="to"><slot /></a>' },
+        },
+      },
+    })
+
+    expect(wrapper.get('a.service-link').attributes('href')).toBe('/services?id=svc-9')
+    expect(wrapper.text()).toContain('服务接入')
+  })
+
   it('does not expose the internal generation in a rule table tooltip', () => {
     const wrapper = mount(RuleTable, {
       props: { rules: [rule], providerCatalog }

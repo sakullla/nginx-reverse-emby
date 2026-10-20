@@ -70,14 +70,16 @@
       @click="$emit('traffic-click', rule)"
     />
 
-    <template v-if="hasTags" #footer>
-      <BaseBadge v-for="tag in rule.tags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
+    <template v-if="hasTags || serviceLink" #footer>
+      <BaseBadge v-for="tag in rule.tags || []" :key="tag" tone="primary">{{ tag }}</BaseBadge>
+      <RouterLink v-if="serviceLink" :to="serviceLink.to" class="rule-card__service-link" :title="`服务 ${serviceLink.id}`">服务接入</RouterLink>
     </template>
   </BaseListCard>
 </template>
 
 <script setup>
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
@@ -87,6 +89,7 @@ import { syncStatusLabel, syncStatusTone } from '../../utils/resourceCardStatus.
 import TrafficBar from '../traffic/TrafficBar.vue'
 import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 import { describeHTTPBackends } from '../../utils/httpBackend.js'
+import { ruleServiceLink } from '../../utils/accessService.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
@@ -130,6 +133,7 @@ const showAgentBadge = computed(() => !props.agent)
 const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags.length > 0)
+const serviceLink = computed(() => ruleServiceLink(props.rule))
 
 </script>
 
@@ -203,5 +207,12 @@ const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+}
+
+.rule-card__service-link {
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-decoration: none;
 }
 </style>

@@ -104,6 +104,15 @@ describe('Sidebar navigation semantics', () => {
     localStorage.removeItem('sidebar_open_groups')
   })
 
+  it('offers the service list as a daily entry', () => {
+    pluginRoutes.value = []
+    const sidebar = mount(Sidebar)
+    const link = sidebar.findAll('a').find((item) => item.attributes('href') === '/services')
+    expect(link).toBeTruthy()
+    expect(link.text()).toContain('服务')
+    sidebar.unmount()
+  })
+
   it('links L4 rules under the traffic management group', () => {
     pluginRoutes.value = []
     const sidebar = mount(Sidebar)

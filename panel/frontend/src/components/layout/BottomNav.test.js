@@ -68,6 +68,15 @@ describe('mobile navigation', () => {
     expect(wrapper.find('[role="menu"]').exists()).toBe(false)
   })
 
+  it('lists services in the more menu', async () => {
+    const trigger = render()
+    await trigger.trigger('click')
+    await flushPromises()
+    const link = wrapper.get('a[href="/services"]')
+    expect(link.text()).toContain('服务')
+    expect(link.attributes('role')).toBe('menuitem')
+  })
+
   it('includes plugin links in keyboard navigation', async () => {
     pluginRoutes.value = [{ id: 'plugin-preview', label: '插件页面', href: '/plugin-ui/preview' }]
     const trigger = render()

@@ -52,6 +52,12 @@
       </button>
       <Transition name="more-pop">
         <div v-if="moreOpen" id="mobile-more-menu" class="more-dropdown" role="menu" aria-label="更多导航">
+          <RouterLink to="/services" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/services') }" :aria-current="isMoreItemActive('/services') ? 'page' : undefined" @click.stop="moreOpen = false">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 5h16v5H4z"/><path d="M4 14h16v5H4z"/>
+            </svg>
+            服务
+          </RouterLink>
           <RouterLink to="/l4" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/l4') }" :aria-current="isMoreItemActive('/l4') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
@@ -119,6 +125,7 @@ function isMoreItemActive(to) {
 }
 
 const isMoreActive = computed(() =>
+  route.path.startsWith('/services') ||
   route.path.startsWith('/l4') ||
   route.path.startsWith('/relay-listeners') ||
   route.path.startsWith('/plugins') ||

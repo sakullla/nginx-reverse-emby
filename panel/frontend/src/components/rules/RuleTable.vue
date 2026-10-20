@@ -58,7 +58,8 @@
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
-              <span v-if="!(rule.tags || []).length" class="rules-table__empty-cell">—</span>
+              <RouterLink v-if="serviceLink(rule)" :to="serviceLink(rule).to" class="rules-table__service-link" :title="`服务 ${serviceLink(rule).id}`">服务接入</RouterLink>
+              <span v-if="!(rule.tags || []).length && !serviceLink(rule)" class="rules-table__empty-cell">—</span>
             </div>
           </td>
           <td>
@@ -88,11 +89,13 @@
 
 <script setup>
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import { describeHTTPBackends } from '../../utils/httpBackend.js'
+import { ruleServiceLink } from '../../utils/accessService.js'
 
 const props = defineProps({
   rules: { type: Array, default: () => [] },
@@ -101,6 +104,10 @@ const props = defineProps({
   providerCatalogStatus: { type: String, default: 'ready' }
 })
 defineEmits(['toggle', 'edit', 'delete'])
+
+function serviceLink(rule) {
+  return ruleServiceLink(rule)
+}
 
 // Page-selected agent means every row would repeat the same node badge.
 const showAgentColumn = computed(() => !props.agent)
@@ -239,6 +246,13 @@ function backendTooltip(rule) {
 .rules-table__empty-cell {
   color: var(--color-text-muted);
   font-size: 0.8125rem;
+}
+
+.rules-table__service-link {
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-decoration: none;
 }
 
 .rules-table__actions {

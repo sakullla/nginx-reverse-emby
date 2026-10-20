@@ -2,6 +2,18 @@ import { api, longRunningRequest } from './client'
 import { operationFromEnvelope, preserveMutationEnvelope } from './operations'
 import { recordAcceptedOperation } from '../stores/operations'
 export { consumeAgentMonitorStream } from './agentMonitor'
+export {
+  fetchAccessServices,
+  fetchAccessService,
+  createAccessService,
+  updateAccessService,
+  correctAccessService,
+  retryAccessService,
+  deleteAccessService,
+  confirmAccessServiceClient,
+  retireAccessService,
+  abandonAccessService,
+} from './accessServices.js'
 
 const SUPPORTED_LOAD_BALANCING_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 

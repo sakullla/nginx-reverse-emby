@@ -34,6 +34,12 @@ const routes = [
         meta: { title: '节点详情' }
       },
       {
+        path: 'services',
+        name: 'services',
+        component: () => import('../pages/ServicesPage.vue'),
+        meta: { title: '服务' }
+      },
+      {
         path: 'rules',
         name: 'rules',
         component: () => import('../pages/RulesPage.vue'),

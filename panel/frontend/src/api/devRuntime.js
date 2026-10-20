@@ -68,3 +68,15 @@ export {
 } from './devMocks/index.js'
 
 export { fetchPluginUIRoutes, fetchPluginResourceGroups } from './runtime.js'
+export {
+  fetchAccessServices,
+  fetchAccessService,
+  createAccessService,
+  updateAccessService,
+  correctAccessService,
+  retryAccessService,
+  deleteAccessService,
+  confirmAccessServiceClient,
+  retireAccessService,
+  abandonAccessService,
+} from './devMocks/accessServices.js'
