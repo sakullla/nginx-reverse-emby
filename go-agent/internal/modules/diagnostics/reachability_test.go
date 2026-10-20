@@ -223,9 +223,13 @@ func TestProbeBackendReachabilityDoesNotPromoteHopWithoutDialEvidence(t *testing
 	if result[control.ProbeResultStatus] != control.ProbeStatusUntested {
 		t.Fatalf("status = %#v, want untested", result[control.ProbeResultStatus])
 	}
+	if result[control.ProbeResultError] != relayProbeNoDialEvidence {
+		t.Fatalf("missing dial detail = %#v", result[control.ProbeResultError])
+	}
 
+	const trustFailure = "bind relay tunnel security: trust root is inactive"
 	handler.probeHop = func(context.Context, relay.Hop, relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
-		return nil, errors.New("bind relay tunnel security: trust root is inactive")
+		return nil, errors.New(trustFailure)
 	}
 	result, err = handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskType: control.TaskTypeProbeBackendReachability,
@@ -239,6 +243,9 @@ func TestProbeBackendReachabilityDoesNotPromoteHopWithoutDialEvidence(t *testing
 	}
 	if result[control.ProbeResultStatus] != control.ProbeStatusUntested {
 		t.Fatalf("trust failure status = %#v, want untested", result[control.ProbeResultStatus])
+	}
+	if result[control.ProbeResultError] != trustFailure {
+		t.Fatalf("trust failure detail = %#v", result[control.ProbeResultError])
 	}
 
 	handler.probeHop = func(context.Context, relay.Hop, relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
@@ -298,6 +305,84 @@ func TestRelayHopProbeRequestStaysOnOneHop(t *testing.T) {
 	network, target, chain := relayHopProbeRequest(hop)
 	if network != "tcp" || target != "" || len(chain) != 1 || chain[0].Listener.ID != 12 {
 		t.Fatalf("probe request = %s %q %+v", network, target, chain)
+	}
+}
+
+func TestClassifyRelayHopDialKeepsTrustFailureText(t *testing.T) {
+	cases := []string{
+		"bind relay tunnel security: tunnel security state has no usable trust root",
+		"tls material provider is required",
+		"tunnel credential provider is required for pki_mtls",
+	}
+	for _, message := range cases {
+		status, detail := classifyRelayHopDial(12, nil, errors.New(message))
+		if status != control.ProbeStatusUntested || detail != message {
+			t.Fatalf("classify(%q) = %s %q", message, status, detail)
+		}
+		if detail == relayProbeNoDialEvidence {
+			t.Fatalf("trust failure collapsed to missing dial evidence: %q", message)
+		}
+	}
+
+	status, detail := classifyRelayHopDial(12, []relay.ProbeTiming{{To: "10.0.0.8:8096", LatencyMS: 4}}, nil)
+	if status != control.ProbeStatusUntested || detail != relayProbeNoDialEvidence {
+		t.Fatalf("missing timing = %s %q", status, detail)
+	}
+	status, detail = classifyRelayHopDial(12, nil, errors.New("relay chain is required"))
+	if status != control.ProbeStatusUntested || detail != relayProbeNoDialEvidence {
+		t.Fatalf("setup failure = %s %q", status, detail)
+	}
+}
+
+func TestProbeLiteralHTTPIgnoresEnvironmentProxy(t *testing.T) {
+	proxyHits := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(proxy.Close)
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(target.Close)
+
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("http_proxy", proxy.URL)
+	t.Setenv("https_proxy", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+
+	handler := newProbeHandler(t, "edge-1", model.Snapshot{})
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
+		TaskType:   control.TaskTypeProbeBackendReachability,
+		RawPayload: map[string]any{"target_url": target.URL + "/emby"},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask(loopback) error = %v", err)
+	}
+	if result[control.ProbeResultStatus] != control.ProbeStatusHTTPStatus || result[control.ProbeResultHTTPStatusCode] != http.StatusForbidden {
+		t.Fatalf("loopback result = %#v", result)
+	}
+
+	handler.probeTimeout = 500 * time.Millisecond
+	privateURL := "http://192.0.2.12:9/emby"
+	result, err = handler.HandleTask(context.Background(), control.TaskMessage{
+		TaskType:   control.TaskTypeProbeBackendReachability,
+		RawPayload: map[string]any{"target_url": privateURL},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask(private) error = %v", err)
+	}
+	if proxyHits != 0 {
+		t.Fatalf("environment proxy handled the literal target, hits=%d result=%#v", proxyHits, result)
+	}
+	if result[control.ProbeResultStatus] == control.ProbeStatusHTTPStatus {
+		t.Fatalf("private target recorded an HTTP status without a direct response: %#v", result)
+	}
+	if result[control.ProbeResultTarget] != privateURL {
+		t.Fatalf("target = %#v", result[control.ProbeResultTarget])
 	}
 }
 

@@ -250,10 +250,12 @@ func classifyLiteralDial(observation literalDialObservation) (string, int) {
 	return control.ProbeStatusUntested, 0
 }
 
+const relayProbeNoDialEvidence = "relay probe did not obtain dial evidence"
+
 func classifyRelayHopDial(listenerID int, timings []relay.ProbeTiming, err error) (string, string) {
 	if err != nil {
 		if relayProbeLacksDialEvidence(err) {
-			return control.ProbeStatusUntested, "relay probe did not obtain dial evidence"
+			return control.ProbeStatusUntested, relayUntestedDetail(err)
 		}
 		return control.ProbeStatusNetworkError, err.Error()
 	}
@@ -262,7 +264,39 @@ func classifyRelayHopDial(listenerID int, timings []relay.ProbeTiming, err error
 			return control.ProbeStatusConnected, ""
 		}
 	}
-	return control.ProbeStatusUntested, "relay probe did not obtain dial evidence"
+	return control.ProbeStatusUntested, relayProbeNoDialEvidence
+}
+
+// relayUntestedDetail keeps a trust-binding failure distinguishable from a hop
+// that produced no dial timing. Both stay untested; only the missing timing
+// uses the shared sentence.
+func relayUntestedDetail(err error) string {
+	if relayTrustBindingFailure(err) {
+		if detail := strings.TrimSpace(err.Error()); detail != "" {
+			return detail
+		}
+		return "relay trust binding failed"
+	}
+	return relayProbeNoDialEvidence
+}
+
+func relayTrustBindingFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"bind relay tunnel security",
+		"tls material provider is required",
+		"tunnel trust root",
+		"tunnel credential",
+		"pki_mtls",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func relayProbeLacksDialEvidence(err error) bool {
@@ -297,8 +331,10 @@ func probeLiteralHTTP(ctx context.Context, target *url.URL, timeout time.Duratio
 	}
 	var tcpConnected atomic.Bool
 	dialer := &net.Dialer{Timeout: timeout}
+	// Dial target_url's host and port directly. Control-plane HTTP_PROXY is for
+	// external fetches; a proxy status must not be recorded as this target's HTTP status.
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			conn, err := dialer.DialContext(ctx, network, addr)
 			if err == nil {
