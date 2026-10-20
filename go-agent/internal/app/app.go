@@ -328,6 +328,7 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 	}
 	rpcGenerationModule := pluginrpc.NewGenerationModule(nil)
 	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
+	diagnosticModule.SetNodeID(cfg.AgentID)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
 		Interfaces:         cfg.TrafficInterfaces,
 		Enabled:            cfg.TrafficStatsEnabled,
@@ -714,6 +715,7 @@ func (a *App) snapshotDiagnosticModule(ctx context.Context, snapshot Snapshot) (
 		return nil, err
 	}
 	diagnosticModule := modulediagnostics.NewModule()
+	diagnosticModule.SetNodeID(a.cfg.AgentID)
 	if err := diagnosticModule.Apply(ctx, agentmodule.ApplyRequest{
 		Next:      snapshot,
 		Providers: providers,
