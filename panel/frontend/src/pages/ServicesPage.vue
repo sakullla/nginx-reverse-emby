@@ -48,6 +48,7 @@
             {{ probe.agentId || '未知节点' }}
             <template v-if="probe.purpose"> · {{ probe.purpose }}</template>
             · {{ probe.text }}
+            <template v-if="probe.verification"> · {{ probe.verification }}</template>
             <template v-if="probe.target"> · {{ probe.target }}</template>
             <template v-if="probe.checkedAt"> · {{ probe.checkedAt }}</template>
             <template v-if="probe.error"> · {{ probe.error }}</template>

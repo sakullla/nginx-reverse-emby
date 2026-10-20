@@ -206,6 +206,7 @@ export function probeText(probe) {
   return {
     status,
     text: withCode ? `${status} ${code}` : status,
+    verification: String(probe?.verification || '').trim(),
     agentId: String(probe?.agent_id || ''),
     target: String(probe?.target || ''),
     checkedAt: String(probe?.checked_at || ''),

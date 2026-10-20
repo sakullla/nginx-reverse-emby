@@ -344,6 +344,64 @@ describe('service page', () => {
     expect(text).not.toContain('接入完成')
   })
 
+  it('renders a saved probe and 待验证 when the control plane marks it expired', async () => {
+    stored.push(view({
+      id: 'svc-stale',
+      name: '待验证站点',
+      summary: '待验证',
+      path: { mode: 'direct', summary: '入口直连，由 edge 拨号', pending: false },
+      apply: { pending: false },
+      rules: [{ id: 3, agent_id: 'edge', frontend_url: 'https://media.example.com' }],
+      probes: [
+        {
+          agent_id: 'edge',
+          purpose: 'backend',
+          status: 'http_status',
+          http_status_code: 401,
+          target: 'http://ready.example/emby',
+          checked_at: '2026-10-20T01:02:03Z',
+          verification: 'expired',
+        },
+        {
+          agent_id: 'origin',
+          purpose: 'listener',
+          status: 'connected',
+          target: '203.0.113.10:9443',
+          checked_at: '2026-10-20T01:02:04Z',
+        },
+      ],
+    }))
+    const wrapper = mountPage()
+    await flushPromises()
+    const card = wrapper.get('[data-testid="service-card"]')
+    expect(card.get('[data-testid="service-summary"]').text()).toBe('待验证')
+    const staleProbe = card.findAll('[data-testid="service-probe"]')[0]
+    expect(staleProbe.text()).toContain('http_status 401')
+    expect(staleProbe.text()).toContain('http://ready.example/emby')
+    expect(staleProbe.text()).toContain('2026-10-20T01:02:03Z')
+    expect(staleProbe.text()).toContain('expired')
+    const freshProbe = card.findAll('[data-testid="service-probe"]')[1]
+    expect(freshProbe.text()).toContain('connected')
+    expect(freshProbe.text()).toContain('203.0.113.10:9443')
+    expect(freshProbe.text()).not.toContain('expired')
+    expect(card.text()).not.toContain('接入完成')
+    expect(card.text()).not.toContain('已就绪')
+    await card.findAll('button').find((button) => button.text() === '详情').trigger('click')
+    await flushPromises()
+    const detail = wrapper.get('[data-testid="service-detail"]')
+    const rows = detail.findAll('[data-testid="probe-row"]')
+    expect(rows[0].text()).toContain('http_status 401')
+    expect(rows[0].text()).toContain('expired')
+    expect(rows[0].text()).toContain('http://ready.example/emby')
+    expect(rows[0].text()).toContain('2026-10-20T01:02:03Z')
+    expect(rows[1].text()).toContain('connected')
+    expect(rows[1].text()).toContain('203.0.113.10:9443')
+    expect(rows[1].text()).toContain('2026-10-20T01:02:04Z')
+    expect(rows[1].text()).not.toContain('expired')
+    expect(detail.get('[data-testid="detail-summary"]').text()).toContain('待验证')
+    expect(detail.text()).not.toContain('接入完成')
+  })
+
   it('keeps user confirmation apart from the node probe', async () => {
     stored.push(view({
       summary: '待确认',

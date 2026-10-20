@@ -62,6 +62,27 @@ describe('access service presentation', () => {
     expect(probeText({ status: 'http_status', http_status_code: 403 }).text).toBe('http_status 403')
     expect(probeText({ status: 'http_status', http_status_code: 405 }).text).toBe('http_status 405')
     expect(probeText({ status: 'untested' }).text).toBe('untested')
+    const saved = probeText({
+      status: 'http_status',
+      http_status_code: 401,
+      agent_id: 'edge',
+      target: 'http://ready.example/emby',
+      checked_at: '2026-10-20T01:02:03Z',
+      verification: 'expired',
+    })
+    expect(saved.text).toBe('http_status 401')
+    expect(saved.target).toBe('http://ready.example/emby')
+    expect(saved.checkedAt).toBe('2026-10-20T01:02:03Z')
+    expect(saved.verification).toBe('expired')
+    const connected = probeText({
+      status: 'connected',
+      target: '203.0.113.10:9443',
+      checked_at: '2026-10-20T01:02:04Z',
+      verification: 'expired',
+    })
+    expect(connected.text).toBe('connected')
+    expect(connected.verification).toBe('expired')
+    expect(`${saved.text} ${connected.text}`).not.toContain('接入完成')
     expect(pathText(undefined)).toBe('控制面尚未返回路径')
     expect(pathText({ mode: 'pending', summary: '待确认', pending: true })).toBe('待确认（pending）')
   })
@@ -78,6 +99,14 @@ describe('access service presentation', () => {
     expect(steps).toContain('等待新入口生效')
     expect(steps.join(' ')).not.toContain('已就绪')
     expect(steps.join(' ')).not.toContain('接入完成')
+    const stale = incompleteSteps({
+      summary: '待验证',
+      rules: [{ id: 1, frontend_url: 'https://media.example.com' }],
+      probes: [{ status: 'connected', verification: 'expired', target: '203.0.113.10:9443' }],
+    })
+    expect(stale).toContain('待验证')
+    expect(stale.join(' ')).not.toContain('已就绪')
+    expect(stale.join(' ')).not.toContain('接入完成')
   })
 
   it('lists entries that would stop and shared resources that stay', () => {

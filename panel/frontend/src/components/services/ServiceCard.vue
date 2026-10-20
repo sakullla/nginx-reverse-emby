@@ -35,8 +35,11 @@
       </div>
     </dl>
     <ul v-if="probes.length" class="service-card__probes">
-      <li v-for="(probe, index) in probes" :key="`${probe.agentId}-${probe.purpose}-${index}`">
+      <li v-for="(probe, index) in probes" :key="`${probe.agentId}-${probe.purpose}-${index}`" data-testid="service-probe">
         节点探测 {{ probe.agentId || '未知节点' }} {{ probe.text }}
+        <template v-if="probe.target"> · {{ probe.target }}</template>
+        <template v-if="probe.checkedAt"> · {{ probe.checkedAt }}</template>
+        <template v-if="probe.verification"> · {{ probe.verification }}</template>
       </li>
     </ul>
     <p v-if="service.client_confirmation?.confirmed" class="service-card__confirm">用户确认页面可打开</p>
