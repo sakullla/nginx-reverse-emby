@@ -3,17 +3,26 @@ package diagnostics
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 type DiagnosticHandler struct {
-	store      core.Store
-	httpProber *HTTPProber
-	tcpProber  *TCPProber
+	store        core.Store
+	httpProber   *HTTPProber
+	tcpProber    *TCPProber
+	nodeID       string
+	now          func() time.Time
+	probeTimeout time.Duration
+	probeLiteral func(context.Context, *url.URL, time.Duration) literalDialObservation
+	probeHop     func(context.Context, relay.Hop, relay.TLSMaterialProvider) ([]relay.ProbeTiming, error)
 }
 
 func NewDiagnosticHandler(st core.Store, httpProber *HTTPProber, tcpProber *TCPProber) *DiagnosticHandler {
@@ -24,9 +33,19 @@ func NewDiagnosticHandler(st core.Store, httpProber *HTTPProber, tcpProber *TCPP
 	}
 }
 
+func (h *DiagnosticHandler) SetNodeID(nodeID string) {
+	if h == nil {
+		return
+	}
+	h.nodeID = strings.TrimSpace(nodeID)
+}
+
 func (h *DiagnosticHandler) HandleTask(ctx context.Context, msg control.TaskMessage) (map[string]any, error) {
 	if h == nil || h.store == nil {
 		return nil, fmt.Errorf("diagnostic handler store is required")
+	}
+	if strings.TrimSpace(msg.TaskType) == control.TaskTypeProbeBackendReachability {
+		return h.probeBackendReachability(ctx, msg.RawPayload)
 	}
 	snapshot, err := h.loadSnapshot()
 	if err != nil {

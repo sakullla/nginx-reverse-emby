@@ -599,10 +599,31 @@ func (c *TaskClient) handleTaskMessage(ctx context.Context, task TaskMessage, up
 			"error": err.Error(),
 		})
 	}
+	if strings.TrimSpace(task.TaskType) == TaskTypeProbeBackendReachability {
+		result = withProbeExecutingNode(c.cfg.AgentID, result)
+	}
 	return update(ctx, task.TaskID, map[string]any{
 		"state":  "completed",
 		"result": result,
 	})
+}
+
+// withProbeExecutingNode records the agent that executed a reachability probe.
+// It does not change status: an untested dial must not become connected here.
+func withProbeExecutingNode(agentID string, result map[string]any) map[string]any {
+	agentID = strings.TrimSpace(agentID)
+	if result == nil || agentID == "" {
+		return result
+	}
+	if current, _ := result[ProbeResultAgentID].(string); strings.TrimSpace(current) != "" {
+		return result
+	}
+	stamped := make(map[string]any, len(result)+1)
+	for key, value := range result {
+		stamped[key] = value
+	}
+	stamped[ProbeResultAgentID] = agentID
+	return stamped
 }
 
 func contextWithTaskDeadline(parent context.Context, rawDeadline string) (context.Context, context.CancelFunc) {

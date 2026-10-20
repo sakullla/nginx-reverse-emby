@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
@@ -22,10 +23,11 @@ const providerDiagnosticsHandler module.ProviderRef = "diagnostics.handler"
 type Module struct {
 	mu sync.RWMutex
 
-	handler    Handler
-	httpProber *HTTPProber
-	tcpProber  *TCPProber
-	selector   interface{ ActiveGeneration() *module.GenerationView }
+	handler         Handler
+	httpProber      *HTTPProber
+	tcpProber       *TCPProber
+	executingNodeID string
+	selector        interface{ ActiveGeneration() *module.GenerationView }
 }
 
 type diagnosticsState struct {
@@ -79,7 +81,7 @@ func (m *Module) Prepare(_ context.Context, req module.ApplyRequest) (module.Mod
 		return nil, nil
 	}
 
-	next, err := buildDiagnosticsState(req)
+	next, err := m.buildDiagnosticsState(req)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +132,38 @@ func (t *diagnosticsTransaction) Rollback() error {
 	return nil
 }
 
-func buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
+func (m *Module) SetNodeID(nodeID string) {
+	if m == nil {
+		return
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	m.mu.Lock()
+	m.executingNodeID = nodeID
+	handler := m.handler
+	m.mu.Unlock()
+	setDiagnosticNodeID(handler, nodeID)
+	if provider := m.activeProvider(); provider != nil {
+		setDiagnosticNodeID(provider.Handler(), nodeID)
+	}
+}
+
+func (m *Module) nodeID() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.executingNodeID
+}
+
+func setDiagnosticNodeID(handler Handler, nodeID string) {
+	setter, ok := handler.(interface{ SetNodeID(string) })
+	if ok {
+		setter.SetNodeID(nodeID)
+	}
+}
+
+func (m *Module) buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
 	relayProvider := relayProviderFromResolver(req.Providers)
 	httpProber := NewHTTPProber(HTTPProberConfig{
 		Attempts:             5,
@@ -152,6 +185,7 @@ func buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
 		return diagnosticsState{}, err
 	}
 	handler := NewDiagnosticHandler(mem, httpProber, tcpProber)
+	handler.SetNodeID(m.nodeID())
 	return diagnosticsState{handler: handler, httpProber: httpProber, tcpProber: tcpProber}, nil
 }
 
@@ -285,7 +319,9 @@ func (m *Module) HandleSnapshotTask(ctx context.Context, snapshot model.Snapshot
 	if err := mem.SaveDesiredSnapshot(snapshot); err != nil {
 		return nil, err
 	}
-	return NewDiagnosticHandler(mem, httpProber, tcpProber).HandleTask(ctx, msg)
+	handler := NewDiagnosticHandler(mem, httpProber, tcpProber)
+	handler.SetNodeID(m.nodeID())
+	return handler.HandleTask(ctx, msg)
 }
 
 type diagnosticsCacheSource interface {
