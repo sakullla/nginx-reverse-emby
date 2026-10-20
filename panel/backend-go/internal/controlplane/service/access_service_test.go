@@ -338,6 +338,91 @@ func TestAccessServiceLocalEntryDoesNotRepeatUntestableHop(t *testing.T) {
 	}
 }
 
+func TestAccessServiceOfflineNodeKeepsProbeAndWithholdsReady(t *testing.T) {
+	h := newAccessHarness(t)
+	entry := appliedAgent("entry-a", 1)
+	entry.Status = "online"
+	h.agents.agents["entry-a"] = entry
+	h.probes.script = map[string]accessProbeScript{
+		"entry-a|backend": {status: "http_status", code: 401},
+	}
+	ready, err := h.create("offline-direct", h.directInput("http://203.0.113.30:8096", "http://ready.example/emby"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Summary != accessSummaryReady || len(ready.Probes) != 1 || ready.Probes[0].Status != "http_status" || ready.Probes[0].Verification != "" {
+		t.Fatalf("online service = summary %s probes %#v", ready.Summary, ready.Probes)
+	}
+	saved := ready.Probes[0]
+	stored := h.row(t, ready.ID).ProbeJSON
+
+	entry.Status = "offline"
+	h.agents.agents["entry-a"] = entry
+	stale, err := h.svc.Get(context.Background(), ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Summary == accessSummaryReady || stale.Summary != accessSummaryPendingVerify {
+		t.Fatalf("offline summary = %s", stale.Summary)
+	}
+	if len(stale.Probes) != 1 {
+		t.Fatalf("offline probes = %#v", stale.Probes)
+	}
+	got := stale.Probes[0]
+	if got.Status != saved.Status || got.Target != saved.Target || got.CheckedAt != saved.CheckedAt || got.HTTPStatusCode != 401 || got.Verification != accessProbeExpired {
+		t.Fatalf("offline probe = %#v, saved %#v", got, saved)
+	}
+	if h.row(t, ready.ID).ProbeJSON != stored || strings.Contains(stored, "verification") {
+		t.Fatalf("offline rewrote stored probes: %s", h.row(t, ready.ID).ProbeJSON)
+	}
+
+	service := appliedAgent("service-a", 1)
+	service.Status = "online"
+	entry.Status = "online"
+	h.agents.agents["entry-a"] = entry
+	h.agents.agents["service-a"] = service
+	h.probes.script = map[string]accessProbeScript{
+		"entry-a|backend":   {status: "network_error"},
+		"service-a|backend": {status: "http_status", code: 200},
+		"entry-a|listener":  {status: "connected"},
+	}
+	relay, err := h.create("offline-relay", h.relayInput("http://203.0.113.31:8096", "http://relay-ready.example/emby", 9443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relay.Summary != accessSummaryReady || relay.Path.Mode != accessPathRelay {
+		t.Fatalf("relay before offline = summary %s mode %s err %s", relay.Summary, relay.Path.Mode, relay.LastError)
+	}
+	relayStored := h.row(t, relay.ID).ProbeJSON
+	service.Status = "offline"
+	h.agents.agents["service-a"] = service
+	degraded, err := h.svc.Get(context.Background(), relay.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if degraded.Summary != accessSummaryPendingVerify || degraded.Path.Mode != accessPathRelay {
+		t.Fatalf("relay offline = summary %s mode %s", degraded.Summary, degraded.Path.Mode)
+	}
+	var entryProbe, serviceProbe AccessProbeFact
+	for _, probe := range degraded.Probes {
+		if probe.Purpose != "backend" {
+			continue
+		}
+		if probe.AgentID == "entry-a" {
+			entryProbe = probe
+		}
+		if probe.AgentID == "service-a" {
+			serviceProbe = probe
+		}
+	}
+	if entryProbe.Status != "network_error" || entryProbe.Verification != "" || serviceProbe.Status != "http_status" || serviceProbe.Target == "" || serviceProbe.CheckedAt == "" || serviceProbe.Verification != accessProbeExpired {
+		t.Fatalf("relay probes = %#v", degraded.Probes)
+	}
+	if h.row(t, relay.ID).ProbeJSON != relayStored {
+		t.Fatal("relay offline rewrote stored probes")
+	}
+}
+
 func TestAccessServicePublicRelayWaitsForEntrySnapshot(t *testing.T) {
 	h := newAccessHarness(t)
 	h.agents.agents["entry-a"] = appliedAgent("entry-a", 1)

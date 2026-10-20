@@ -32,6 +32,8 @@ const (
 	accessSummaryFailed         = "失败"
 	accessSummaryPartial        = "部分完成"
 	accessSummaryReady          = "已就绪"
+	accessSummaryPendingVerify  = "待验证"
+	accessProbeExpired          = "expired"
 
 	accessTrafficRule        = "http_rule"
 	accessTrafficEntryAgent  = "entry_agent"
@@ -108,6 +110,7 @@ type AccessServiceView struct {
 	Apply              AccessApplyState          `json:"apply"`
 	CreatedAt          string                    `json:"created_at"`
 	UpdatedAt          string                    `json:"updated_at"`
+	nodesOffline       bool                      `json:"-"`
 }
 
 type AccessPathState struct {
@@ -135,6 +138,8 @@ type AccessProbeFact struct {
 	Error             string `json:"error,omitempty"`
 	TaskID            string `json:"task_id,omitempty"`
 	PublishedRevision int    `json:"published_revision,omitempty"`
+	// Verification is view-only. An offline node keeps status, target, and checked_at.
+	Verification string `json:"verification,omitempty"`
 }
 
 type AccessClientConfirmation struct {

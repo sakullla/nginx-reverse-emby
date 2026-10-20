@@ -1184,8 +1184,89 @@ func (s *AccessService) present(ctx context.Context, row storage.AccessServiceRo
 	if view.Probes == nil {
 		view.Probes = []AccessProbeFact{}
 	}
+	if err := s.markOfflineProbes(ctx, &view); err != nil {
+		return AccessServiceView{}, err
+	}
 	view.Summary = accessSummary(view, hasPrimary)
 	return view, nil
+}
+
+func (s *AccessService) markOfflineProbes(ctx context.Context, view *AccessServiceView) error {
+	if s.agents == nil || view == nil {
+		return nil
+	}
+	required := map[string]struct{}{}
+	for _, id := range accessRequiredAgentIDs(*view) {
+		required[id] = struct{}{}
+	}
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, len(required)+len(view.Probes))
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for id := range required {
+		add(id)
+	}
+	for _, probe := range view.Probes {
+		add(probe.AgentID)
+	}
+	offline := map[string]bool{}
+	for _, id := range ids {
+		agent, err := s.agents.Get(ctx, id)
+		if err != nil {
+			if errors.Is(err, ErrAgentNotFound) {
+				offline[id] = true
+				continue
+			}
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(agent.Status), "offline") {
+			offline[id] = true
+		}
+	}
+	for i := range view.Probes {
+		if !offline[strings.TrimSpace(view.Probes[i].AgentID)] {
+			continue
+		}
+		view.Probes[i].Verification = accessProbeExpired
+		view.nodesOffline = true
+	}
+	for id := range required {
+		if offline[id] {
+			view.nodesOffline = true
+			break
+		}
+	}
+	return nil
+}
+
+func accessRequiredAgentIDs(view AccessServiceView) []string {
+	ids := make([]string, 0, 2)
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		for _, existing := range ids {
+			if existing == id {
+				return
+			}
+		}
+		ids = append(ids, id)
+	}
+	add(view.EntryAgentID)
+	if view.Path.Mode != accessPathDirect {
+		add(view.ServiceAgentID)
+	}
+	return ids
 }
 
 func accessChosenProbeFailed(view AccessServiceView) bool {
@@ -1223,6 +1304,9 @@ func accessSummary(view AccessServiceView, hasRule bool) string {
 	}
 	if !hasRule {
 		return accessSummaryFailed
+	}
+	if view.nodesOffline {
+		return accessSummaryPendingVerify
 	}
 	return accessSummaryReady
 }
