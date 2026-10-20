@@ -5,8 +5,10 @@ import {
   certificateText,
   deletionImpact,
   incompleteSteps,
+  errorRequestsRelayInput,
   isNameOnlyChange,
   pathText,
+  simplifiedForwardingChanged,
   probeText,
   reuseIdempotencyKey,
   ruleBackendLabels,
@@ -109,6 +111,9 @@ describe('access service presentation', () => {
     const service = draft()
     expect(isNameOnlyChange(service, draft({ name: '新名称' }))).toBe(true)
     expect(isNameOnlyChange(service, draft({ backend_url: 'http://10.9.0.3:8096' }))).toBe(false)
+    expect(errorRequestsRelayInput('relay_public_host must be a concrete host')).toBe(true)
+    expect(simplifiedForwardingChanged(service, draft({ relay_public_host: '203.0.113.10' }))).toBe(false)
+    expect(simplifiedForwardingChanged(service, draft({ backend_url: 'http://10.9.0.3:8096' }))).toBe(true)
     const errors = validateServiceDraft(draft({
       backend_url: 'ftp://files.example',
       service_agent_id: 'missing',

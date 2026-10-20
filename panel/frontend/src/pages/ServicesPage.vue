@@ -15,7 +15,7 @@
 
     <ServiceWizard
       v-if="wizard"
-      :key="wizard.service?.id || 'new'"
+      :key="wizard.session || wizard.service?.id || 'new'"
       :service="wizard.service"
       :agents="agents"
       :submitting="submitting"
@@ -82,7 +82,7 @@
       </section>
 
       <div class="services-page__actions">
-        <button v-if="selected.summary === '失败' || selected.summary === '待确认'" type="button" class="btn btn-secondary" :disabled="submitting" @click="retrySelected">重试</button>
+        <button v-if="showRetry" type="button" class="btn btn-secondary" :disabled="submitting" @click="retrySelected">重试</button>
         <button v-if="selected.switch_phase === '退役旧入口'" type="button" class="btn btn-secondary" :disabled="submitting" @click="retireSelected">退役旧入口</button>
         <button v-if="selected.switch_phase === '准备新入口' || selected.switch_phase === '等待新入口生效'" type="button" class="btn btn-secondary" :disabled="submitting" @click="abandonSelected">放弃这次切换</button>
         <button type="button" class="btn btn-secondary" @click="startEdit(selected)">修改</button>
@@ -166,6 +166,7 @@ import {
   errorRequestsRelayInput,
   forwardingChanged,
   incompleteSteps,
+  simplifiedForwardingChanged,
   newIdempotencyKey,
   pathText,
   probeText,
@@ -197,6 +198,7 @@ const submitting = ref(false)
 const actionError = ref('')
 const copyNotice = ref('')
 const idempotency = ref({})
+let wizardSerial = 0
 
 const selectedId = computed(() => String(route.query.id || ''))
 const selected = computed(() => services.value.find((service) => service.id === selectedId.value) || null)
@@ -205,6 +207,11 @@ const detailCertificate = computed(() => certificateText(selected.value?.certifi
 const detailTraffic = computed(() => serviceTrafficText(selected.value?.traffic))
 const detailProbes = computed(() => (Array.isArray(selected.value?.probes) ? selected.value.probes : []).map((probe) => probeText(probe)))
 const selectedHref = computed(() => safeHttpHref(selected.value?.entry_url))
+const relayHostMissing = computed(() => errorRequestsRelayInput(selected.value?.last_error))
+const showRetry = computed(() => {
+  if (!selected.value || relayHostMissing.value) return false
+  return selected.value.summary === '失败' || selected.value.summary === '待确认'
+})
 const deleteImpact = computed(() => deletionImpact(deleting.value || {}))
 const applyText = computed(() => {
   const apply = selected.value?.apply || {}
@@ -256,7 +263,8 @@ function startCreate() {
   actionError.value = ''
   persistedId.value = ''
   deleting.value = null
-  wizard.value = { service: null }
+  wizardSerial += 1
+  wizard.value = { service: null, session: `create-${wizardSerial}` }
   if (route.query.id) router.replace({ query: {} })
 }
 
@@ -264,7 +272,16 @@ function startEdit(service) {
   actionError.value = ''
   persistedId.value = service.id
   deleting.value = null
-  wizard.value = { service }
+  wizardSerial += 1
+  wizard.value = { service, session: `edit-${service.id}-${wizardSerial}` }
+}
+
+function holdRelayFollowUp(saved) {
+  if (!errorRequestsRelayInput(saved?.last_error)) return false
+  actionError.value = String(saved.last_error)
+  persistedId.value = saved.id
+  wizard.value = { session: wizard.value?.session, service: saved }
+  return true
 }
 
 function closeWizard() {
@@ -320,26 +337,38 @@ async function runMutation(work) {
 }
 
 async function submitWizard({ payload, intent }) {
-  const serviceId = wizard.value?.service?.id || persistedId.value
+  const current = wizard.value?.service
+  if (current?.advanced === true && (intent === 'correct' || simplifiedForwardingChanged(current, payload))) {
+    actionError.value = current.advanced_reason
+      ? `简化转发编辑已禁用。${current.advanced_reason}`
+      : '简化转发编辑已禁用。请到高级规则页修改。'
+    return
+  }
+  const serviceId = current?.id || persistedId.value
   if (!serviceId) {
     const operation = 'create'
     const key = keyFor(operation, payload)
     const created = await runMutation(() => createAccessService(payload, key))
     if (!created) return
     dropKey(operation)
+    if (holdRelayFollowUp(created)) return
     wizard.value = null
     router.replace({ query: { id: created.id } })
     return
   }
-  const nameOnly = wizard.value?.service && !forwardingChanged(wizard.value.service, payload)
-  const operation = `${intent === 'correct' && !nameOnly ? 'correct' : 'update'}:${serviceId}`
+  const nameOnly = current && !forwardingChanged(current, payload)
+  const supplyingRelay = Boolean(errorRequestsRelayInput(current?.last_error)
+    && (payload.relay_public_host || payload.relay_listen_port))
+  const useCorrect = current?.advanced !== true && ((intent === 'correct' && !nameOnly) || supplyingRelay)
+  const operation = `${useCorrect ? 'correct' : 'update'}:${serviceId}`
   const key = keyFor(operation, payload)
-  const request = intent === 'correct' && !nameOnly
+  const request = useCorrect
     ? correctAccessService(serviceId, payload, key)
     : updateAccessService(serviceId, payload, key)
   const saved = await runMutation(() => request)
   if (!saved) return
   dropKey(operation)
+  if (holdRelayFollowUp(saved)) return
   wizard.value = null
   router.replace({ query: { id: saved.id } })
 }
@@ -366,6 +395,10 @@ async function confirmOpen() {
 
 async function retrySelected() {
   if (!selected.value?.id) return
+  if (errorRequestsRelayInput(selected.value.last_error)) {
+    startEdit(selected.value)
+    return
+  }
   const operation = `retry:${selected.value.id}`
   const key = idempotency.value[operation]?.key || newIdempotencyKey()
   idempotency.value = { ...idempotency.value, [operation]: { key, body: '{}' } }

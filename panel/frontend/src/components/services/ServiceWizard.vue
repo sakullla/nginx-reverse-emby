@@ -110,6 +110,10 @@
         <div v-if="draft.relay_public_host"><dt>已填写的拨号主机</dt><dd>{{ draft.relay_public_host }}</dd></div>
       </dl>
       <p>提交前不会创建或启用入口。路径由控制面在提交后返回，本页不事先判断直连或 Relay。</p>
+      <div v-if="forwardingLocked" data-testid="advanced-confirm">
+        <p>简化转发编辑已禁用。名称以外的转发改动请到高级规则页。</p>
+        <a v-for="link in advancedLinks" :key="`confirm-${link.href}`" :href="link.href">在高级规则页查看</a>
+      </div>
       <p v-if="formError" class="service-wizard__error" role="alert">{{ formError }}</p>
       <div class="service-wizard__actions">
         <button type="button" class="btn btn-secondary" data-testid="service-back" @click="step = 'edit'">返回</button>
@@ -148,11 +152,18 @@ const errors = reactive({})
 const step = ref('edit')
 const relayForced = ref(false)
 
-watch(() => props.formError, (message) => {
-  if (!errorRequestsRelayInput(message)) return
+function relayInputRequested() {
+  return errorRequestsRelayInput(props.formError) || errorRequestsRelayInput(props.service?.last_error)
+}
+
+function revealRelayInput() {
+  if (!relayInputRequested()) return
   relayForced.value = true
   step.value = 'edit'
-})
+}
+
+watch([() => props.formError, () => props.service?.last_error], revealRelayInput)
+revealRelayInput()
 
 const forwardingLocked = computed(() => props.service?.advanced === true)
 const showRelay = computed(() => relayForced.value || String(draft.relay_listen_port || '').trim() !== '' || String(draft.relay_public_host || '').trim() !== '')
@@ -161,7 +172,7 @@ const advancedLinks = computed(() => (Array.isArray(props.service?.rules) ? prop
   href: advancedRuleHref(rule),
 })))
 const canCorrect = computed(() => {
-  if (!props.service) return false
+  if (!props.service || props.service.advanced === true) return false
   if (isNameOnlyChange(props.service, draft)) return false
   const summary = String(props.service.summary || '')
   return summary === '失败' || summary === '待确认' || Boolean(props.service.last_error)
@@ -191,6 +202,7 @@ function goConfirm() {
 }
 
 function submit(intent) {
+  if (props.service?.advanced === true && intent === 'correct') return
   emit('submit', { payload: servicePayload(draft), intent: props.service ? intent : 'create' })
 }
 </script>

@@ -123,6 +123,15 @@ export function forwardingChanged(before, draft) {
   return JSON.stringify(forwardingSnapshot(before)) !== JSON.stringify(forwardingSnapshot(draft))
 }
 
+export function simplifiedForwardingChanged(before, draft) {
+  const left = forwardingSnapshot(before)
+  const right = forwardingSnapshot(draft)
+  return left.backend_url !== right.backend_url
+    || left.entry_url !== right.entry_url
+    || left.entry_agent_id !== right.entry_agent_id
+    || left.service_agent_id !== right.service_agent_id
+}
+
 export function isNameOnlyChange(service, draft) {
   if (!service) return false
   const nameChanged = String(draft?.name || '').trim() !== String(service?.name || '').trim()

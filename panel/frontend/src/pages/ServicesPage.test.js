@@ -175,6 +175,67 @@ describe('service page', () => {
     expect(wrapper.text()).not.toContain('入口直连')
   })
 
+  it('keeps the wizard open when a saved service still needs a relay host', async () => {
+    const relayError = 'relay_public_host must be a concrete host the entry node can dial'
+    api.createAccessService.mockImplementation(async (payload) => view({
+      id: 'svc-relay',
+      name: payload.name,
+      backend_url: payload.backend_url,
+      entry_url: payload.entry_url,
+      entry_agent_id: payload.entry_agent_id,
+      service_agent_id: payload.service_agent_id,
+      summary: '待确认',
+      last_error: relayError,
+    }))
+    api.correctAccessService.mockImplementation(async (_id, payload) => view({
+      id: 'svc-relay',
+      name: payload.name,
+      backend_url: payload.backend_url,
+      entry_url: payload.entry_url,
+      summary: '待确认',
+    }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('.page-header__right button').trigger('click')
+    await fillDraft(wrapper)
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('[data-testid="service-confirm"] button.btn-primary').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="service-detail"]').exists()).toBe(false)
+    expect(wrapper.get('#relay-host').exists()).toBe(true)
+    expect(wrapper.get('#service-backend-url').element.value).toBe('http://10.1.0.8:8096')
+    expect(wrapper.get('#service-entry-url').element.value).toBe('https://media.example.com')
+    expect(wrapper.text()).toContain(relayError)
+    expect(api.retryAccessService).not.toHaveBeenCalled()
+    await wrapper.get('#relay-host').setValue('203.0.113.10')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('[data-testid="service-confirm"] button.btn-primary').trigger('click')
+    await flushPromises()
+    expect(api.updateAccessService).not.toHaveBeenCalled()
+    expect(api.correctAccessService).toHaveBeenCalledTimes(1)
+    expect(api.correctAccessService.mock.calls[0][1].relay_public_host).toBe('203.0.113.10')
+    expect(api.correctAccessService.mock.calls[0][1].backend_url).toBe('http://10.1.0.8:8096')
+  })
+
+  it('collects a relay host from the saved last_error when editing again', async () => {
+    stored.push(view({
+      summary: '待确认',
+      last_error: 'relay_public_host must be a concrete host the entry node can dial',
+    }))
+    api.correctAccessService.mockImplementation(async () => view({ summary: '待确认' }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('[data-testid="service-card"]').findAll('button').find((button) => button.text() === '修改').trigger('click')
+    expect(wrapper.get('#relay-host').exists()).toBe(true)
+    await wrapper.get('#relay-host').setValue('203.0.113.10')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('[data-testid="service-confirm"] button.btn-primary').trigger('click')
+    await flushPromises()
+    expect(api.retryAccessService).not.toHaveBeenCalled()
+    expect(api.updateAccessService).not.toHaveBeenCalled()
+    expect(api.correctAccessService.mock.calls[0][1].relay_public_host).toBe('203.0.113.10')
+  })
+
   it('shows progress after submit and again after leaving the page', async () => {
     api.createAccessService.mockImplementation(async (payload) => {
       const service = view({
@@ -336,6 +397,8 @@ describe('service page', () => {
     stored.push(view({
       advanced: true,
       advanced_reason: 'multiple backends',
+      summary: '失败',
+      last_error: 'simplified forwarding edit is disabled (multiple backends)',
       backend_url: 'http://10.1.0.8:8096',
       rules: [{
         id: 9,
@@ -359,6 +422,13 @@ describe('service page', () => {
     expect(wrapper.get('#service-entry-url').attributes('disabled')).toBeDefined()
     expect(advanced.get('a').attributes('href')).toContain('/rules?')
     expect(advanced.get('a').attributes('href')).toContain('agentId=edge')
+    await wrapper.get('form').trigger('submit')
+    const confirm = wrapper.get('[data-testid="service-confirm"]')
+    expect(confirm.text()).not.toContain('修正')
+    expect(confirm.get('[data-testid="advanced-confirm"]').text()).toContain('在高级规则页查看')
+    await confirm.get('button.btn-primary').trigger('click')
+    await flushPromises()
+    expect(api.correctAccessService).not.toHaveBeenCalled()
   })
 
   it('explains stopped entries and retained resources before deleting', async () => {
