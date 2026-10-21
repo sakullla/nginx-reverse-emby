@@ -1349,7 +1349,12 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 		if !recorded {
 			return
 		}
-		if !h.notifyOwned(instance, control, true) {
+		// A failed health write used to abandon this loop while the dead
+		// instance stayed active. Boot recovery then treats that generation
+		// as already running, so the plugin UI keeps serving and its API
+		// stays unavailable. Keep restarting only when this owner is still
+		// current and the observer actually rejected the status.
+		if !h.notifyOwned(instance, control, true) && !h.restartAfterUnpersistedStatus(instance, control) {
 			return
 		}
 		if !retry {
@@ -1516,6 +1521,22 @@ func (h *Host) ownsRuntime(instance *Instance, control *runtimeControl) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return !h.closed && control.ctx.Err() == nil && h.active[instance.ID] == instance
+}
+
+// restartAfterUnpersistedStatus is true only after notifyOwned recorded a
+// status-persistence failure for a runtime this host still owns. A missing
+// observer, a canceled owner, or a replaced generation must not restart.
+func (h *Host) restartAfterUnpersistedStatus(instance *Instance, control *runtimeControl) bool {
+	if instance == nil || control == nil {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.observer == nil || h.closed || control.ctx.Err() != nil || h.active[instance.ID] != instance {
+		return false
+	}
+	_, failed := h.observerErrors[instance.ID]
+	return failed
 }
 
 func (h *Host) notifyOwned(instance *Instance, control *runtimeControl, consumeExit bool) bool {
