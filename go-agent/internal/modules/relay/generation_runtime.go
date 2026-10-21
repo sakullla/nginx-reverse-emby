@@ -468,7 +468,7 @@ func prepareRelayGenerationRuntime(ctx context.Context, generationID string, lis
 			server.bindingKeys = append(server.bindingKeys, lease.binding.key)
 			if lease.packet != nil {
 				server.packetEndpoints[lease.binding.key] = lease.packet
-				handle, err := startQUICListenerOnPacket(ctx, provider, listener, lease.packet, lease.binding.quicClassifier)
+				handle, err := server.startQUICListenerOnPacket(ctx, provider, listener, lease.packet, lease.binding.quicClassifier)
 				if err != nil {
 					_ = server.Close()
 					return nil, err

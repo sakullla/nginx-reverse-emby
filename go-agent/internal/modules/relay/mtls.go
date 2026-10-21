@@ -529,17 +529,25 @@ func cloneTunnelSecurityState(source TunnelSecurityState) TunnelSecurityState {
 	return cloned
 }
 
+type tunnelFenceMode int
+
+const (
+	tunnelFenceNone tunnelFenceMode = iota
+	tunnelFenceSessions
+	tunnelFenceListeners
+)
+
 func tunnelSecurityRequiresFence(previous, next TunnelSecurityState) bool {
+	return tunnelSecurityFenceMode(previous, next) != tunnelFenceNone
+}
+
+func tunnelSecurityFenceMode(previous, next TunnelSecurityState) tunnelFenceMode {
 	if previous.Snapshot.PKIDomainID == "" {
-		return false
+		return tunnelFenceNone
 	}
 	if previous.Snapshot.PKIDomainID != next.Snapshot.PKIDomainID || previous.Snapshot.PKIEpoch != next.Snapshot.PKIEpoch ||
 		next.Snapshot.SecurityRevision < previous.Snapshot.SecurityRevision {
-		return true
-	}
-	if containsNewTunnelSecurityValue(previous.Snapshot.RevokedIdentityIDs, next.Snapshot.RevokedIdentityIDs) ||
-		containsNewTunnelSecurityValue(previous.Snapshot.RevokedSerials, next.Snapshot.RevokedSerials) {
-		return true
+		return tunnelFenceListeners
 	}
 	nextRoots := make(map[int64]model.PKITrustRoot, len(next.Snapshot.TrustRoots))
 	for _, root := range next.Snapshot.TrustRoots {
@@ -553,10 +561,14 @@ func tunnelSecurityRequiresFence(previous, next TunnelSecurityState) bool {
 		if !ok || candidate.AuthorityID != root.AuthorityID ||
 			normalizeTunnelFingerprint(candidate.FingerprintSHA256) != normalizeTunnelFingerprint(root.FingerprintSHA256) ||
 			!tunnelTrustRootUsable(candidate.Status) {
-			return true
+			return tunnelFenceListeners
 		}
 	}
-	return false
+	if containsNewTunnelSecurityValue(previous.Snapshot.RevokedIdentityIDs, next.Snapshot.RevokedIdentityIDs) ||
+		containsNewTunnelSecurityValue(previous.Snapshot.RevokedSerials, next.Snapshot.RevokedSerials) {
+		return tunnelFenceSessions
+	}
+	return tunnelFenceNone
 }
 
 func containsNewTunnelSecurityValue(previous, next []string) bool {

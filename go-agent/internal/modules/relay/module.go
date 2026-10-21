@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"strings"
 	"sync"
@@ -360,9 +361,11 @@ func (m *Module) SetTunnelCredentialProvider(provider TunnelCredentialProvider) 
 }
 
 // ReconcileTunnelSecurity observes the independently delivered PKI security
-// generation. Ordinary relay configuration revisions do not own this signal:
-// a revocation, emergency trust change, or unusable local credential fences
-// every affected listener and pooled session immediately.
+// generation. Ordinary relay configuration revisions do not own this signal.
+// An unusable local credential or a trust-domain change fences every listener.
+// A revocation of some other identity only drops sessions that were accepted
+// under the previous generation; listeners whose own credentials remain valid
+// stay bound, and the next handshake checks the updated revocation list.
 func (m *Module) ReconcileTunnelSecurity(ctx context.Context) error {
 	if m == nil {
 		return nil
@@ -396,10 +399,45 @@ func (m *Module) ReconcileTunnelSecurity(ctx context.Context) error {
 	m.tunnelState = cloneTunnelSecurityState(next)
 	m.tunnelReady = true
 	m.mu.Unlock()
-	if fencePending || (hadPrevious && tunnelSecurityRequiresFence(previous, next)) {
+	if fencePending {
 		return m.FenceTunnelListeners(ctx, nil, "tunnel security generation requires an emergency fence")
 	}
-	return nil
+	if !hadPrevious {
+		return nil
+	}
+	switch tunnelSecurityFenceMode(previous, next) {
+	case tunnelFenceListeners:
+		return m.FenceTunnelListeners(ctx, nil, "tunnel security generation requires an emergency fence")
+	case tunnelFenceSessions:
+		log.Printf("[relay] tunnel security revocation dropped active sessions; listeners stay bound")
+		return m.refreshTunnelSessions()
+	default:
+		return nil
+	}
+}
+
+// refreshTunnelSessions retires pooled and accepted relay sessions without
+// closing the listen sockets. New handshakes load the current security snapshot.
+func (m *Module) refreshTunnelSessions() error {
+	if m == nil {
+		return nil
+	}
+	closeErr := fenceGlobalRelayPoolScope()
+	m.mu.Lock()
+	tracked := make([]*Server, 0, len(m.runtimes))
+	for runtime := range m.runtimes {
+		tracked = append(tracked, runtime)
+	}
+	m.mu.Unlock()
+	for _, runtime := range tracked {
+		if runtime == nil {
+			continue
+		}
+		closeErr = errors.Join(closeErr, runtime.fenceOutboundPoolScope())
+		runtime.closeConns()
+		runtime.closeQUICConns()
+	}
+	return closeErr
 }
 
 // FenceTunnelListeners closes the complete runtime containing any selected

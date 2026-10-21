@@ -48,7 +48,7 @@ type quicListenerHandle struct {
 	packet    net.PacketConn
 }
 
-func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listener Listener, address string) (*quicListenerHandle, error) {
+func (s *Server) startQUICListener(ctx context.Context, provider TLSMaterialProvider, listener Listener, address string) (*quicListenerHandle, error) {
 	tlsConfig, err := serverQUICTLSConfig(ctx, provider, listener)
 	if err != nil {
 		return nil, err
@@ -63,6 +63,7 @@ func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listen
 	}
 	model.TuneUDPBuffers(packetConn)
 	transport := &quic.Transport{Conn: packetConn}
+	s.configureQUICSecurityAdmission(transport)
 	ln, err := transport.Listen(tlsConfig, newRelayQUICConfig())
 	if err != nil {
 		_ = packetConn.Close()
@@ -75,7 +76,7 @@ func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listen
 	}, nil
 }
 
-func startQUICListenerOnPacket(ctx context.Context, provider TLSMaterialProvider, listener Listener, packetConn net.PacketConn, classifiers ...*relayQUICClassifier) (*quicListenerHandle, error) {
+func (s *Server) startQUICListenerOnPacket(ctx context.Context, provider TLSMaterialProvider, listener Listener, packetConn net.PacketConn, classifiers ...*relayQUICClassifier) (*quicListenerHandle, error) {
 	tlsConfig, err := serverQUICTLSConfig(ctx, provider, listener)
 	if err != nil {
 		return nil, err
@@ -86,6 +87,7 @@ func startQUICListenerOnPacket(ctx context.Context, provider TLSMaterialProvider
 			return nil, err
 		}
 	}
+	s.configureQUICSecurityAdmission(transport)
 	ln, err := transport.Listen(tlsConfig, newRelayQUICConfig())
 	if err != nil {
 		return nil, err
@@ -109,7 +111,12 @@ func (s *Server) acceptQUICLoop(ln *quic.Listener, listener Listener, releaseAss
 			continue
 		}
 
-		s.trackQUICConn(conn)
+		if !s.trackQUICConn(conn) {
+			if len(releaseAssociation) > 0 && releaseAssociation[0] != nil {
+				releaseAssociation[0](conn)
+			}
+			continue
+		}
 		parent := s.sessions.start(relayListenerEntityID(listener), "quic-connection", true, func() error {
 			return conn.CloseWithError(0, "relay generation drained")
 		})
@@ -259,24 +266,50 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
 }
 
-func (s *Server) trackQUICConn(conn *quic.Conn) {
+type quicSecurityGenerationKey struct{}
+
+// ConnContext runs before TLS starts. Preserve the ingress classifier's context
+// callback while binding every handshake to the current session-fence generation.
+func (s *Server) configureQUICSecurityAdmission(transport *quic.Transport) {
+	previous := transport.ConnContext
+	transport.ConnContext = func(ctx context.Context, info *quic.ClientInfo) (context.Context, error) {
+		s.mu.Lock()
+		generation, closing := s.quicSecurityGeneration, s.closing
+		s.mu.Unlock()
+		if closing {
+			return nil, errors.New("relay shutting down")
+		}
+		if previous != nil {
+			var err error
+			ctx, err = previous(ctx, info)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return context.WithValue(ctx, quicSecurityGenerationKey{}, generation), nil
+	}
+}
+
+func (s *Server) trackQUICConn(conn *quic.Conn) bool {
 	if conn == nil {
-		return
+		return false
 	}
 
+	generation, hasGeneration := conn.Context().Value(quicSecurityGenerationKey{}).(uint64)
 	s.mu.Lock()
-	if s.quicConns == nil {
-		s.quicConns = make(map[*quic.Conn]struct{})
-	}
-	closing := s.closing
-	if !closing {
+	admitted := !s.closing && hasGeneration && generation == s.quicSecurityGeneration
+	if admitted {
+		if s.quicConns == nil {
+			s.quicConns = make(map[*quic.Conn]struct{})
+		}
 		s.quicConns[conn] = struct{}{}
 	}
 	s.mu.Unlock()
 
-	if closing {
-		_ = conn.CloseWithError(0, "relay shutting down")
+	if !admitted {
+		_ = conn.CloseWithError(0, "relay security generation retired or shutting down")
 	}
+	return admitted
 }
 
 func (s *Server) untrackQUICConn(conn *quic.Conn) {
@@ -291,6 +324,9 @@ func (s *Server) untrackQUICConn(conn *quic.Conn) {
 
 func (s *Server) closeQUICConns() {
 	s.mu.Lock()
+	// Admission and generation advancement share the lock: a handshake either
+	// enters this sweep or is rejected before it can serve streams.
+	s.quicSecurityGeneration++
 	conns := s.quicConns
 	s.quicConns = nil
 	s.mu.Unlock()

@@ -73,22 +73,23 @@ type Server struct {
 
 	wg sync.WaitGroup
 
-	mu               sync.Mutex
-	bindingKeys      []string
-	listeners        []net.Listener
-	quicListeners    []*quicListenerHandle
-	conns            map[net.Conn]struct{}
-	quicConns        map[*quic.Conn]struct{}
-	closing          bool
-	draining         atomic.Bool
-	sessions         *relaySessionTracker
-	ingressLeases    []*relayIngressLease
-	streamEndpoints  map[string]*ingress.StreamEndpoint
-	packetEndpoints  map[string]*ingress.PacketEndpoint
-	tunnelListeners  map[int]struct{}
-	poolScope        *relayPoolScope
-	poolLease        *relayPoolLease
-	outboundProxyURL string
+	mu                     sync.Mutex
+	bindingKeys            []string
+	listeners              []net.Listener
+	quicListeners          []*quicListenerHandle
+	conns                  map[net.Conn]struct{}
+	quicConns              map[*quic.Conn]struct{}
+	quicSecurityGeneration uint64
+	closing                bool
+	draining               atomic.Bool
+	sessions               *relaySessionTracker
+	ingressLeases          []*relayIngressLease
+	streamEndpoints        map[string]*ingress.StreamEndpoint
+	packetEndpoints        map[string]*ingress.PacketEndpoint
+	tunnelListeners        map[int]struct{}
+	poolScope              *relayPoolScope
+	poolLease              *relayPoolLease
+	outboundProxyURL       string
 
 	trafficBlockState trafficBlockStateValue
 }
@@ -230,7 +231,7 @@ func (s *Server) startListener(listener Listener) error {
 		addr := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
 		switch transportMode {
 		case ListenerTransportModeQUIC:
-			ln, err := startQUICListener(s.ctx, s.provider, listener, addr)
+			ln, err := s.startQUICListener(s.ctx, s.provider, listener, addr)
 			if err != nil {
 				return err
 			}
