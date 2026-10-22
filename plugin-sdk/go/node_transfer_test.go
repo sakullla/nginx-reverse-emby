@@ -1,6 +1,10 @@
 package pluginsdk
 
-import "testing"
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+)
 
 func TestNodeTransferRequestValidateSend(t *testing.T) {
 	t.Parallel()
@@ -68,5 +72,42 @@ func TestNodeTransferResponseValidate(t *testing.T) {
 	}
 	if err := (NodeTransferResponse{TransferID: "nt-abc", State: NodeTransferStateFailed, LastError: "boom\n"}).Validate(); err == nil {
 		t.Fatal("unsafe last error accepted")
+	}
+}
+
+func TestChannelNodeTransferManifestDeclarationPassesSchemaAndGate(t *testing.T) {
+	t.Parallel()
+	var schema struct {
+		Defs map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(PluginManifestSchemaV1(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, permission := range schema.Defs["permission_name"].Enum {
+		if permission == PermissionChannelNodeTransfer {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("manifest schema omits channel.node-transfer")
+	}
+	if err := CapabilityChannelNodeTransfer.Validate(); err != nil {
+		t.Fatalf("capability not canonical: %v", err)
+	}
+	manifest := Manifest{Runtime: Runtime{Kind: RuntimeRPCService}, Permissions: []Permission{{Name: PermissionChannelNodeTransfer}}}
+	if err := ValidateManifestManagedCapabilities(manifest, nil); err != nil {
+		t.Fatalf("manifest declaration rejected: %v", err)
+	}
+	if features := RequiredRPCFeatures([]string{PermissionChannelNodeTransfer}); len(features) != 0 {
+		t.Fatalf("node transfer must not force an RPC feature, got %v", features)
+	}
+	if got := ValidateHostCapabilityGrant(CapabilityChannelNodeTransfer, []string{PermissionChannelNodeTransfer}, []string{PermissionChannelNodeTransfer}); got != nil {
+		t.Fatalf("declared+granted authorization rejected: %v", got)
+	}
+	if reflect.DeepEqual(ValidateHostCapabilityGrant(CapabilityChannelNodeTransfer, []string{PermissionChannelNodeTransfer}, nil), nil) {
+		t.Fatal("grant alone authorized node transfer")
 	}
 }
