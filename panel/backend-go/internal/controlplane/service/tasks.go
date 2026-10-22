@@ -21,6 +21,10 @@ const (
 	TaskTypeChannelEnsure          = "channel.ensure"
 	TaskTypeChannelTeardown        = "channel.teardown"
 	TaskTypeChannelStatus          = "channel.status"
+	TaskTypeNodeTransferServe      = "node-transfer.serve"
+	TaskTypeNodeTransferReceive    = "node-transfer.receive"
+	TaskTypeNodeTransferStatus     = "node-transfer.status"
+	TaskTypeNodeTransferClose      = "node-transfer.close"
 )
 
 const taskDeadlineExceededError = "task deadline exceeded"
@@ -735,6 +739,7 @@ func isAllowedTaskType(taskType string) bool {
 	switch strings.TrimSpace(taskType) {
 	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation, TaskTypePluginCall,
 		TaskTypeChannelEnsure, TaskTypeChannelTeardown, TaskTypeChannelStatus, TaskTypePluginGenerationRevoke,
+		TaskTypeNodeTransferServe, TaskTypeNodeTransferReceive, TaskTypeNodeTransferStatus, TaskTypeNodeTransferClose,
 		TaskTypeProbeBackendReachability:
 		return true
 	default:

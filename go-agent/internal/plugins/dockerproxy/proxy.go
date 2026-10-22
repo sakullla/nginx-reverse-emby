@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const (
@@ -42,18 +44,10 @@ const (
 	workspaceTombstonePrefix = "-workspace-gc-"
 )
 
-type Request struct {
-	Args    []string `json:"args"`
-	AppID   string   `json:"app_id,omitempty"`
-	Compose string   `json:"compose,omitempty"`
-	Env     string   `json:"env,omitempty"`
-}
-
-type Response struct {
-	Output   []byte `json:"output,omitempty"`
-	ExitCode int    `json:"exit_code,omitempty"`
-	Error    string `json:"error,omitempty"`
-}
+// Request and Response alias the SDK wire contract: the SDK projection is the
+// single authority for the plugin-facing proxy protocol.
+type Request = pluginsdk.DockerProxyRequest
+type Response = pluginsdk.DockerProxyResponse
 
 type Runner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
@@ -224,6 +218,15 @@ func (handler *handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		writeResponse(writer, http.StatusOK, Response{})
 		return
 	}
+	if volumeRequest(input.Args) {
+		response, err := handler.volumeOp(request.Context(), input)
+		if err != nil {
+			writeResponse(writer, http.StatusBadRequest, Response{Error: err.Error()})
+			return
+		}
+		writeResponse(writer, http.StatusOK, response)
+		return
+	}
 	dir, err := handler.prepare(input)
 	if err != nil {
 		writeResponse(writer, http.StatusBadRequest, Response{Error: err.Error()})
@@ -301,6 +304,75 @@ func (handler *handler) removeWorkspace(input Request) error {
 
 func workspaceRemoveRequest(args []string) bool {
 	return len(args) == 2 && args[0] == "workspace" && args[1] == "remove"
+}
+
+func volumeRequest(args []string) bool {
+	return len(args) == 3 && args[0] == "volume" && (args[1] == "archive" || args[1] == "restore")
+}
+
+// volumeOp runs one host-mediated volume tar operation. Every helper-container
+// argument is constructed here; plugin input only selects archive/restore and
+// a validated volume name. Archives stage inside the calling app's workspace,
+// so no path outside a managed workspace is read or written.
+func (handler *handler) volumeOp(ctx context.Context, input Request) (Response, error) {
+	if err := validateArgs(input.Args); err != nil {
+		return Response{}, err
+	}
+	name := input.Args[2]
+	if !validIdentity(name) {
+		return Response{}, errors.New("Docker volume name is invalid")
+	}
+	if !validIdentity(input.AppID) || input.Compose != "" || input.Env != "" {
+		return Response{}, errors.New("Docker volume request is invalid")
+	}
+	workspace := filepath.Join(handler.workspaceRoot, input.AppID)
+	if filepath.Dir(workspace) != handler.workspaceRoot {
+		return Response{}, errors.New("Docker compose workspace escapes the managed root")
+	}
+	staging := filepath.Join(workspace, filepath.FromSlash(pluginsdk.DockerVolumeStagingDir))
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		return Response{}, errors.New("Docker volume staging could not be prepared")
+	}
+	if err := chownIfSandbox(staging, handler.sandboxUID); err != nil {
+		return Response{}, err
+	}
+	archiveFile := filepath.Join(staging, name+".tar")
+	mount := "type=volume,source=" + name + ",target=/volume"
+	switch input.Args[1] {
+	case "archive":
+		if _, err := handler.runner.Run(ctx, "", "volume", "inspect", name); err != nil {
+			return Response{}, fmt.Errorf("Docker volume %q was not found", name)
+		}
+		args := []string{"run", "--rm", "--mount", mount, "-v", staging + ":/archive", pluginsdk.DockerVolumeHelperImage, "tar", "cf", "/archive/" + name + ".tar", "-C", "/volume", "."}
+		output, runErr := handler.runner.Run(ctx, "", args...)
+		if len(output) > maxOutputBytes {
+			output = output[:maxOutputBytes]
+		}
+		if runErr != nil {
+			return Response{Output: output, ExitCode: 1, Error: boundedError(runErr)}, nil
+		}
+		if err := chownIfSandbox(archiveFile, handler.sandboxUID); err != nil {
+			return Response{}, err
+		}
+		return Response{Output: output, ArchivePath: path.Join(input.AppID, pluginsdk.DockerVolumeStagingDir, name+".tar")}, nil
+	case "restore":
+		if _, err := os.Stat(archiveFile); err != nil {
+			return Response{}, fmt.Errorf("Docker volume archive for %q is missing", name)
+		}
+		if _, err := handler.runner.Run(ctx, "", "volume", "create", name); err != nil {
+			return Response{}, errors.New("Docker volume could not be created")
+		}
+		args := []string{"run", "--rm", "--mount", mount, "-v", staging + ":/archive:ro", pluginsdk.DockerVolumeHelperImage, "tar", "xf", "/archive/" + name + ".tar", "-C", "/volume"}
+		output, runErr := handler.runner.Run(ctx, "", args...)
+		if len(output) > maxOutputBytes {
+			output = output[:maxOutputBytes]
+		}
+		if runErr != nil {
+			return Response{Output: output, ExitCode: 1, Error: boundedError(runErr)}, nil
+		}
+		return Response{Output: output}, nil
+	}
+	return Response{}, errors.New("Docker volume operation is not allowed")
 }
 
 func cleanupWorkspaceTombstones(root string) error {
@@ -408,6 +480,10 @@ func validateArgs(args []string) error {
 		}
 	case "workspace":
 		if workspaceRemoveRequest(args) {
+			return nil
+		}
+	case "volume":
+		if volumeRequest(args) && validIdentity(args[2]) {
 			return nil
 		}
 	case "system":
@@ -636,7 +712,7 @@ func RunCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	request := Request{Args: append([]string(nil), args...)}
-	if len(args) > 0 && (args[0] == "compose" || args[0] == "workspace") {
+	if len(args) > 0 && (args[0] == "compose" || args[0] == "workspace" || args[0] == "volume") {
 		cwd, err := os.Getwd()
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, err)

@@ -173,6 +173,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 			string(pluginsdk.CapabilityHTTPRule),
 			string(pluginsdk.CapabilityL4Rule),
 			string(pluginsdk.CapabilityChannelReverse),
+			string(pluginsdk.CapabilityChannelNodeTransfer),
 			string(pluginsdk.CapabilityUIDynamic),
 			string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),

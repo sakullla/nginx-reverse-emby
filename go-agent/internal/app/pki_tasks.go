@@ -23,10 +23,22 @@ type remoteAgentTaskHandler struct {
 
 	channelMu sync.RWMutex
 	channels  control.ChannelManager
+
+	transferMu sync.RWMutex
+	transfers  control.NodeTransferManager
 }
 
 func newRemoteAgentTaskHandler(diagnostics control.TaskHandler, pki *remotePKIHeartbeatHandler) *remoteAgentTaskHandler {
 	return &remoteAgentTaskHandler{diagnostics: diagnostics, pki: pki}
+}
+
+func (h *remoteAgentTaskHandler) setNodeTransferManager(manager control.NodeTransferManager) {
+	if h == nil {
+		return
+	}
+	h.transferMu.Lock()
+	h.transfers = manager
+	h.transferMu.Unlock()
 }
 
 func (h *remoteAgentTaskHandler) setTunnelSecurityReconciler(reconcile func(context.Context) error) {
@@ -49,6 +61,8 @@ func (h *remoteAgentTaskHandler) HandleTask(ctx context.Context, task control.Ta
 		return h.handlePKIForceRotation(ctx, task.RawPayload)
 	case control.TaskTypeChannelEnsure, control.TaskTypeChannelTeardown, control.TaskTypeChannelStatus:
 		return h.handleChannelTask(ctx, task)
+	case control.TaskTypeNodeTransferServe, control.TaskTypeNodeTransferReceive, control.TaskTypeNodeTransferStatus, control.TaskTypeNodeTransferClose:
+		return h.handleNodeTransferTask(ctx, task)
 	default:
 		if h.diagnostics == nil {
 			return nil, fmt.Errorf("unsupported task type %q", task.TaskType)

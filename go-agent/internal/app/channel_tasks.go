@@ -103,6 +103,23 @@ func (h *remoteAgentTaskHandler) handleChannelTask(ctx context.Context, task con
 	return control.HandleChannelTask(ctx, manager, task)
 }
 
+func (h *remoteAgentTaskHandler) nodeTransferManager() control.NodeTransferManager {
+	if h == nil {
+		return nil
+	}
+	h.transferMu.RLock()
+	defer h.transferMu.RUnlock()
+	return h.transfers
+}
+
+func (h *remoteAgentTaskHandler) handleNodeTransferTask(ctx context.Context, task control.TaskMessage) (map[string]any, error) {
+	manager := h.nodeTransferManager()
+	if manager == nil {
+		return nil, errors.New("node transfer manager is unavailable")
+	}
+	return control.HandleNodeTransferTask(ctx, manager, task)
+}
+
 // HandleChannelTask executes one reverse channel session task against the
 // app's channel manager. It backs the embedded runtime's in-process task
 // bridge used by the co-located control plane.

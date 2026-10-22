@@ -115,6 +115,8 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostL4Rule(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeChannelReverse:
 		payload, err = manager.pluginHostChannelReverse(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeNodeTransfer:
+		payload, err = manager.pluginHostNodeTransfer(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeInstanceConfig:
 		payload, err = manager.pluginHostInstanceConfig(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeEventList:
@@ -168,6 +170,8 @@ func pluginHostOperationPermission(operation string) string {
 		return pluginsdk.PermissionL4Rule
 	case pluginsdk.HostRuntimeChannelReverse:
 		return pluginsdk.PermissionChannelReverse
+	case pluginsdk.HostRuntimeNodeTransfer:
+		return pluginsdk.PermissionChannelNodeTransfer
 	case pluginsdk.HostRuntimeInstanceConfig:
 		return pluginsdk.PermissionStorageWrite
 	case pluginsdk.HostRuntimeEventList:
@@ -267,6 +271,11 @@ func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
 	if call.Operation == pluginsdk.HostRuntimeChannelReverse {
 		return !pluginHostChannelReverseIsLookup(call)
 	}
+	// node.transfer status is read-only the same way; send is durable and
+	// idempotent through the operation outcome cache.
+	if call.Operation == pluginsdk.HostRuntimeNodeTransfer {
+		return !pluginHostNodeTransferIsLookup(call)
+	}
 	if call.Operation != "http.secret-request" {
 		return false
 	}
@@ -286,6 +295,17 @@ func pluginHostChannelReverseIsLookup(call pluginsdk.HostRuntimeCall) bool {
 		return false
 	}
 	return input.Action == pluginsdk.ChannelReverseActionStatus
+}
+
+func pluginHostNodeTransferIsLookup(call pluginsdk.HostRuntimeCall) bool {
+	if call.Operation != pluginsdk.HostRuntimeNodeTransfer {
+		return false
+	}
+	var input pluginsdk.NodeTransferRequest
+	if decodePluginHostPayload(call.Payload, &input) != nil {
+		return false
+	}
+	return input.Action == pluginsdk.NodeTransferActionStatus
 }
 
 type pluginHostDurableOutcome struct {

@@ -31,6 +31,9 @@ type fakeChannelTaskDispatcher struct {
 	started     chan struct{}
 	startedOnce sync.Once
 	tasks       []recordedAgentTask
+	// jsonRoundTrip replays every result through a JSON decode so numeric
+	// fields surface as float64, matching real task result storage.
+	jsonRoundTrip bool
 }
 
 func (f *fakeChannelTaskDispatcher) DispatchAgentTask(ctx context.Context, agentID, taskType string, payload map[string]any) (map[string]any, error) {
@@ -62,9 +65,28 @@ func (f *fakeChannelTaskDispatcher) DispatchAgentTask(ctx context.Context, agent
 		return nil, fail
 	}
 	if ok {
+		if f.jsonRoundTrip {
+			return decodeJSONTaskResult(result), nil
+		}
 		return result, nil
 	}
-	return map[string]any{"session_id": payload["session_id"], "state": pluginsdk.ChannelReverseStateOffline, "last_error": "no session"}, nil
+	fallback := map[string]any{"session_id": payload["session_id"], "state": pluginsdk.ChannelReverseStateOffline, "last_error": "no session"}
+	if f.jsonRoundTrip {
+		return decodeJSONTaskResult(fallback), nil
+	}
+	return fallback, nil
+}
+
+func decodeJSONTaskResult(result map[string]any) map[string]any {
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		panic(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		panic(err)
+	}
+	return decoded
 }
 
 func (f *fakeChannelTaskDispatcher) dispatchedTo(agentID, taskType string) []map[string]any {

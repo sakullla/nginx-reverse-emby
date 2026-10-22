@@ -18,6 +18,7 @@ import (
 	modulehostmetrics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics"
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
+	modulenodetransfer "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/nodetransfer"
 	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
@@ -74,6 +75,7 @@ type App struct {
 	runtime                *core.Runtime
 	taskClient             *control.TaskClient
 	channelManager         *modulechannel.Manager
+	nodeTransfers          *modulenodetransfer.Service
 	moduleRegistry         *agentmodule.Registry
 	diagnosticModule       *modulediagnostics.Module
 	trafficReports         core.TrafficReporter
@@ -515,6 +517,14 @@ func New(cfg Config) (*App, error) {
 	}
 	app.channelManager = channelManager
 	taskHandler.setChannelManager(newChannelSessionManager(channelManager))
+	nodeTransferService, transferErr := modulenodetransfer.NewService(modulenodetransfer.Config{
+		WorkspaceRoot: filepath.Join(cfg.DataDir, "plugin-resources", "docker-compose"),
+	})
+	if transferErr != nil {
+		return nil, fmt.Errorf("initialize node transfer service: %w", transferErr)
+	}
+	app.nodeTransfers = nodeTransferService
+	taskHandler.setNodeTransferManager(newNodeTransferManager(nodeTransferService))
 	taskHandler.setTunnelSecurityReconciler(app.reconcileTunnelSecurityAfterTask)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
@@ -1123,6 +1133,13 @@ func (a *App) closeLocalRuntimes() error {
 			errs = append(errs, err)
 		} else {
 			a.channelManager = nil
+		}
+	}
+	if a.nodeTransfers != nil {
+		if err := a.nodeTransfers.Shutdown(); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.nodeTransfers = nil
 		}
 	}
 	if a.generations != nil {
