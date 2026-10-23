@@ -280,6 +280,131 @@ func TestScopedSecretRotationWaitsForExactFenceAndRecovers(t *testing.T) {
 	}
 }
 
+func TestScopedSecretRevocationSchedulesSuccessorAfterRetirement(t *testing.T) {
+	manager, store, candidate, request := scopedSecretFixture(t)
+	created, failure := callScopedSecret(t, manager, candidate, request)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	read := request
+	read.Action, read.Reference, read.Material = pluginsdk.ScopedSecretRead, created.Reference, nil
+	if err := store.SecurityTransaction(t.Context(), func(tx *storage.GormStore) error {
+		vault, _ := manager.secretVault.WithStore(tx)
+		response, err := executePluginScopedSecret(t.Context(), tx, vault, candidate, read, scopedSecretRecipient{AgentID: "agent-a", ProviderGenerationID: strings.Repeat("a", 64), Revision: 7})
+		response.Material.Close()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewTaskService(TaskServiceConfig{TaskTTL: time.Second})
+	t.Cleanup(func() { _ = tasks.Close() })
+	manager.SetTaskService(tasks)
+	session := &scopedSecretTaskSession{tasks: tasks, check: func(TaskEnvelope) {}}
+	if err := tasks.RegisterSession(TaskSessionRegistration{AgentID: "agent-a", SessionID: "session-a", Session: session}); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := make(chan string, 1)
+	manager.successorDelay = 20 * time.Millisecond
+	manager.successorOverride = func(_ context.Context, instanceID string) error {
+		scheduled <- instanceID
+		return nil
+	}
+	request.Action, request.Reference, request.Material = pluginsdk.ScopedSecretRevoke, created.Reference, nil
+	revoked, failure := callScopedSecret(t, manager, candidate, request)
+	if failure != nil || !revoked.Revoked {
+		t.Fatalf("revocation did not finish: %v", failure)
+	}
+	select {
+	case instanceID := <-scheduled:
+		if instanceID != candidate.InstanceID {
+			t.Fatalf("successor instance = %s", instanceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retired secret did not schedule a successor generation")
+	}
+}
+
+func TestScopedSecretRevocationDoesNotScheduleSuccessorOnFailedFence(t *testing.T) {
+	manager, store, candidate, request := scopedSecretFixture(t)
+	created, failure := callScopedSecret(t, manager, candidate, request)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	read := request
+	read.Action, read.Reference, read.Material = pluginsdk.ScopedSecretRead, created.Reference, nil
+	if err := store.SecurityTransaction(t.Context(), func(tx *storage.GormStore) error {
+		vault, _ := manager.secretVault.WithStore(tx)
+		response, err := executePluginScopedSecret(t.Context(), tx, vault, candidate, read, scopedSecretRecipient{AgentID: "agent-a", ProviderGenerationID: strings.Repeat("a", 64), Revision: 7})
+		response.Material.Close()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewTaskService(TaskServiceConfig{TaskTTL: time.Second})
+	t.Cleanup(func() { _ = tasks.Close() })
+	manager.SetTaskService(tasks)
+	session := &scopedSecretTaskSession{tasks: tasks, badACK: true, check: func(TaskEnvelope) {}}
+	if err := tasks.RegisterSession(TaskSessionRegistration{AgentID: "agent-a", SessionID: "session-a", Session: session}); err != nil {
+		t.Fatal(err)
+	}
+	manager.successorDelay = 20 * time.Millisecond
+	manager.successorOverride = func(context.Context, string) error {
+		t.Error("failed fence scheduled a successor")
+		return nil
+	}
+	request.Action, request.Reference, request.Material = pluginsdk.ScopedSecretRevoke, created.Reference, nil
+	if _, failure := callScopedSecret(t, manager, candidate, request); failure == nil {
+		t.Fatal("wrong fence acknowledgement released revocation")
+	}
+	time.Sleep(80 * time.Millisecond)
+}
+
+func TestScopedSecretSuccessorRequestKeepsDesiredInstanceOnly(t *testing.T) {
+	root := t.TempDir()
+	_, store, candidate, _ := scopedSecretFixture(t, root)
+	db, err := gorm.Open(sqlite.Open(filepath.Join(root, "panel.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	installed := storage.InstalledPluginRow{PluginID: candidate.Identity.PluginID, DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`}
+	instance := storage.PluginInstanceRow{ID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, ResourceGroupID: "default", TargetJSON: `["agent-a"]`, PolicyChainsJSON: `["chain-a"]`, BindingsJSON: `[]`, ConfigJSON: `{"generation":"old"}`, SecretHandlesJSON: `[]`, StatusSummaryJSON: `{}`, DesiredEnabled: true, CurrentState: "active"}
+	if err := db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewPluginService(store, t.TempDir())
+	request, ok, err := service.scopedSecretSuccessorRequest(t.Context(), candidate.InstanceID)
+	if err != nil || !ok {
+		t.Fatalf("desired instance was not republished: ok=%v err=%v", ok, err)
+	}
+	if string(request.Config) != `{}` || request.PolicyChains != nil || request.Bindings != nil || request.InstanceID != candidate.InstanceID || request.ActorID != scopedSecretSuccessorActor || !request.Actor.Bootstrap {
+		t.Fatalf("successor request = %+v", request)
+	}
+	targets, _ := request.Targets.([]string)
+	if len(targets) != 1 || targets[0] != "agent-a" {
+		t.Fatalf("targets = %#v", request.Targets)
+	}
+	if err := db.Model(&storage.PluginInstanceRow{}).Where("id = ?", candidate.InstanceID).Update("desired_enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := service.scopedSecretSuccessorRequest(t.Context(), candidate.InstanceID); err != nil || ok {
+		t.Fatalf("disabled instance scheduled a successor: ok=%v err=%v", ok, err)
+	}
+	if err := db.Model(&storage.PluginInstanceRow{}).Where("id = ?", candidate.InstanceID).Update("desired_enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&storage.InstalledPluginRow{}).Where("plugin_id = ?", candidate.Identity.PluginID).Update("pending_operation_id", "pluginop-pending").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := service.scopedSecretSuccessorRequest(t.Context(), candidate.InstanceID); err != nil || ok {
+		t.Fatalf("pending operation scheduled another successor: ok=%v err=%v", ok, err)
+	}
+}
+
 func callScopedSecret(t *testing.T, manager *PluginCapabilityManager, candidate pluginhost.Candidate, request pluginsdk.ScopedSecretRequest) (pluginsdk.ScopedSecretResponse, *pluginsdk.RuntimeError) {
 	t.Helper()
 	wire, err := pluginsdk.EncodeScopedSecretRequest(request)

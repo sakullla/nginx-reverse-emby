@@ -4041,6 +4041,54 @@ func ensureNoPendingOperation(installed storage.InstalledPluginRow) error {
 	return nil
 }
 
+const scopedSecretSuccessorActor = "system:scoped-secret-revocation"
+
+// republishAfterScopedSecretRevocation replaces a generation that secret
+// revocation has stopped. Empty config omits the host-injected generation, so
+// configure mints a new unfenced id and refills the rest from the current
+// instance. Policy chains and bindings are left unset so the stored values stay.
+func (s *PluginService) republishAfterScopedSecretRevocation(ctx context.Context, instanceID string) error {
+	request, ok, err := s.scopedSecretSuccessorRequest(ctx, instanceID)
+	if err != nil || !ok {
+		return err
+	}
+	ctx = WithSystemMutationPrincipal(ctx, scopedSecretSuccessorActor)
+	if _, err = s.ConfigureMutation(ctx, request); err != nil && !errors.Is(err, ErrPluginConflict) {
+		return err
+	}
+	return nil
+}
+
+func (s *PluginService) scopedSecretSuccessorRequest(ctx context.Context, instanceID string) (PluginConfigureRequest, bool, error) {
+	if s == nil || s.store == nil {
+		return PluginConfigureRequest{}, false, nil
+	}
+	instance, found, err := s.store.GetPluginInstance(ctx, strings.TrimSpace(instanceID))
+	if err != nil || !found || !instance.DesiredEnabled {
+		return PluginConfigureRequest{}, false, err
+	}
+	installed, found, err := s.store.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found || installed.DesiredLifecycle != "enabled" {
+		return PluginConfigureRequest{}, false, err
+	}
+	if ensureNoPendingOperation(installed) != nil || strings.TrimSpace(instance.PendingOperationID) != "" {
+		return PluginConfigureRequest{}, false, nil
+	}
+	rawTargets := strings.TrimSpace(instance.TargetJSON)
+	if rawTargets == "" {
+		rawTargets = "[]"
+	}
+	var targets []string
+	if err := json.Unmarshal([]byte(rawTargets), &targets); err != nil {
+		return PluginConfigureRequest{}, false, err
+	}
+	return PluginConfigureRequest{
+		PluginID: instance.PluginID, InstanceID: instance.ID, ResourceGroupID: instance.ResourceGroupID,
+		Targets: targets, Config: json.RawMessage(`{}`), ActorID: scopedSecretSuccessorActor,
+		Actor: authz.Actor{ID: scopedSecretSuccessorActor, Bootstrap: true, Permissions: []string{authz.PermissionAll}},
+	}, true, nil
+}
+
 func pendingUpgradeMatches(installed storage.InstalledPluginRow, digest string) bool {
 	return strings.EqualFold(strings.TrimSpace(installed.PendingKind), "upgrade") &&
 		strings.EqualFold(strings.TrimSpace(installed.PendingTargetDigest), strings.TrimSpace(digest)) &&

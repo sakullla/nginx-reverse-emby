@@ -78,6 +78,7 @@ func (s *PluginService) RedeemAgentPluginSecrets(ctx context.Context, agentID st
 		return err
 	})
 	if err == nil && pending != nil {
+		instanceID := pending.candidate.InstanceID
 		if s.scopedSecretManager == nil || s.scopedSecretManager.finishScopedSecretRevocation(ctx, pending.operation) != nil {
 			return PluginSecretRedemptionResponse{}, errPluginHostUnavailable
 		}
@@ -99,6 +100,9 @@ func (s *PluginService) RedeemAgentPluginSecrets(ctx context.Context, agentID st
 			response.Scoped, err = pluginsdk.EncodeScopedSecretResponse(decoded, result)
 			return err
 		})
+		if err == nil {
+			s.scopedSecretManager.scheduleScopedSecretSuccessor(instanceID)
+		}
 	}
 	return response, err
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -86,10 +87,14 @@ func (manager *PluginCapabilityManager) dispatchPluginScopedSecret(ctx context.C
 	}
 	err = transactions.SecurityTransaction(ctx, execute)
 	if err == nil && pending != nil {
+		instanceID := pending.candidate.InstanceID
 		err = manager.finishScopedSecretRevocation(ctx, pending.operation)
 		if err == nil {
 			pending = nil
 			err = transactions.SecurityTransaction(ctx, execute)
+			if err == nil && pending == nil {
+				manager.scheduleScopedSecretSuccessor(instanceID)
+			}
 		}
 	}
 	defer response.Material.Close()
@@ -332,4 +337,60 @@ func (manager *PluginCapabilityManager) finishScopedSecretRevocation(ctx context
 		}
 	}
 	return nil
+}
+
+const scopedSecretSuccessorDelay = time.Second
+
+func (manager *PluginCapabilityManager) scheduleScopedSecretSuccessor(instanceID string) {
+	if manager == nil {
+		return
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" || (manager.successorOverride == nil && manager.plugins == nil) {
+		return
+	}
+	delay := manager.successorDelay
+	if delay <= 0 {
+		delay = scopedSecretSuccessorDelay
+	}
+	manager.successorMu.Lock()
+	defer manager.successorMu.Unlock()
+	if manager.successors == nil {
+		manager.successors = map[string]*scopedSecretSuccessorSlot{}
+	}
+	slot := manager.successors[instanceID]
+	if slot == nil {
+		slot = &scopedSecretSuccessorSlot{}
+		manager.successors[instanceID] = slot
+	}
+	slot.generation++
+	generation := slot.generation
+	if slot.timer != nil {
+		slot.timer.Stop()
+	}
+	slot.timer = time.AfterFunc(delay, func() {
+		manager.successorMu.Lock()
+		current := manager.successors[instanceID]
+		if current == nil || current.generation != generation {
+			manager.successorMu.Unlock()
+			return
+		}
+		delete(manager.successors, instanceID)
+		manager.successorMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := manager.runScopedSecretSuccessor(ctx, instanceID); err != nil {
+			log.Printf("[plugin-runtime] successor generation after secret revocation failed instance=%q: %v", instanceID, err)
+		}
+	})
+}
+
+func (manager *PluginCapabilityManager) runScopedSecretSuccessor(ctx context.Context, instanceID string) error {
+	if manager.successorOverride != nil {
+		return manager.successorOverride(ctx, instanceID)
+	}
+	if manager.plugins == nil {
+		return nil
+	}
+	return manager.plugins.republishAfterScopedSecretRevocation(ctx, instanceID)
 }

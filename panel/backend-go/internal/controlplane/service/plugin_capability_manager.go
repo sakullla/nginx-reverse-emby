@@ -85,6 +85,19 @@ type PluginCapabilityManager struct {
 	secretVault        *secrets.Vault
 	trafficSummary     PluginCapabilityTrafficSummaryProvider
 	datasets           *DatasetService
+	successorMu        sync.Mutex
+	successors         map[string]*scopedSecretSuccessorSlot
+	successorDelay     time.Duration
+	successorOverride  func(context.Context, string) error
+}
+
+// A secret revocation stops every generation that read the secret. Those
+// generations stay fenced. One listen deletion revokes several secrets a few
+// milliseconds apart, so the replacement configure waits until that burst is
+// quiet and then mints one new generation for a still-desired instance.
+type scopedSecretSuccessorSlot struct {
+	timer      *time.Timer
+	generation uint64
 }
 
 type pluginCapabilityOperationLock struct {
