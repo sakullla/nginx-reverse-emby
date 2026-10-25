@@ -61,13 +61,16 @@ var relayHopCache = model.NewCache(model.BackendCacheConfig{})
 
 func newRelayTCPDialer() net.Dialer {
 	var dialer net.Dialer
-	dialer.SetMultipathTCP(true)
+	// Plain TCP. Forcing MPTCP completes a multipath handshake with the
+	// backend listener, and that listener closes the flow before the payload
+	// is read.
+	dialer.SetMultipathTCP(false)
 	return dialer
 }
 
 func newRelayTCPListenConfig() net.ListenConfig {
 	var listenConfig net.ListenConfig
-	listenConfig.SetMultipathTCP(true)
+	listenConfig.SetMultipathTCP(false)
 	return listenConfig
 }
 

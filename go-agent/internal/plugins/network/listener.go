@@ -47,7 +47,7 @@ func (owner *Owner) listen(request sdk.ManagedNetworkRequest) (sdk.ManagedNetwor
 		shared = &listener{manager: manager, key: key, instanceID: owner.authority.InstanceID, owners: map[*Owner]*resource{}, flows: map[string]*resource{}, writeGate: make(chan struct{}, 1)}
 		var err error
 		if request.Protocol == "tcp" {
-			shared.tcp, err = net.Listen("tcp", endpointString(*request.Endpoint))
+			shared.tcp, err = listenManagedTCP(endpointString(*request.Endpoint))
 		} else {
 			var address *net.UDPAddr
 			address, err = net.ResolveUDPAddr("udp", endpointString(*request.Endpoint))
@@ -85,6 +85,19 @@ func (owner *Owner) listen(request sdk.ManagedNetworkRequest) (sdk.ManagedNetwor
 		shared.active = record
 	}
 	return sdk.ManagedNetworkResponse{Handle: &record.handle}, nil
+}
+
+func listenManagedTCP(address string) (net.Listener, error) {
+	listenConfig := managedTCPListenConfig()
+	return listenConfig.Listen(context.Background(), "tcp", address)
+}
+
+func managedTCPListenConfig() net.ListenConfig {
+	var listenConfig net.ListenConfig
+	// Go enables MPTCP on listeners unless this is cleared. A completed MPTCP
+	// handshake on a plugin socket is closed before the payload is read.
+	listenConfig.SetMultipathTCP(false)
+	return listenConfig
 }
 
 func (shared *listener) remove(record *resource) {
