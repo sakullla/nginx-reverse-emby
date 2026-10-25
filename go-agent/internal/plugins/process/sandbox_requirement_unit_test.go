@@ -111,6 +111,24 @@ func TestNewSandboxRequirementKeepsChannelReversePermissionHostMediated(t *testi
 	}
 }
 
+func TestNewSandboxRequirementKeepsChannelNodeTransferPermissionHostMediated(t *testing.T) {
+	t.Parallel()
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest: strings.Repeat("7", 64),
+		Permissions:   []SandboxPermission{PermissionChannelNodeTransfer},
+		ResourceBudget: ManifestResourceBudget{
+			TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1,
+			InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("channel.node-transfer sandbox requirement = %v", err)
+	}
+	if requirement.RequiresPrivilegeBoundary() || requirement.RequiresFilesystemBoundary() || requirement.Budget().Network {
+		t.Fatal("channel.node-transfer permission gained ambient privilege, filesystem, or network authority")
+	}
+}
+
 func TestNewSandboxRequirementKeepsRuntimeIdentityHostMediated(t *testing.T) {
 	t.Parallel()
 	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{

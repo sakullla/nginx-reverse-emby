@@ -30,6 +30,7 @@ const (
 	PermissionHTTPRule                       SandboxPermission = SandboxPermission(pluginsdk.CapabilityHTTPRule)
 	PermissionL4Rule                         SandboxPermission = SandboxPermission(pluginsdk.CapabilityL4Rule)
 	PermissionChannelReverse                 SandboxPermission = SandboxPermission(pluginsdk.CapabilityChannelReverse)
+	PermissionChannelNodeTransfer            SandboxPermission = SandboxPermission(pluginsdk.PermissionChannelNodeTransfer)
 	PermissionUIDynamic                      SandboxPermission = SandboxPermission(pluginsdk.CapabilityUIDynamic)
 	PermissionDNSManage                      SandboxPermission = "dns.manage"
 	PermissionPolicyAtomicState              SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyAtomicState)
@@ -99,7 +100,8 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 			requirement.privileged = true
 		case PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions,
-			PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic, PermissionRuntimeIdentity:
+			PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionChannelNodeTransfer,
+			PermissionUIDynamic, PermissionRuntimeIdentity:
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.
 		}
@@ -181,7 +183,7 @@ func knownSandboxPermission(value SandboxPermission) bool {
 	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond, PermissionHTTPOutbound, PermissionNetworkFull,
 		PermissionL4Inspect, PermissionL4Respond, PermissionPolicyRead, PermissionPolicyWrite, PermissionSecretUse,
 		PermissionStorageRead, PermissionStorageWrite, PermissionDNSManage,
-		PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic,
+		PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionChannelNodeTransfer, PermissionUIDynamic,
 		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions, PermissionRuntimeIdentity:
 		return true
