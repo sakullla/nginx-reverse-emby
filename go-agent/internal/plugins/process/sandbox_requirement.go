@@ -190,8 +190,20 @@ func knownSandboxPermission(value SandboxPermission) bool {
 	case SandboxPermission(pluginsdk.PermissionManagedNetworkListen), SandboxPermission(pluginsdk.PermissionManagedNetworkDial), SandboxPermission(pluginsdk.CapabilityDatasetQuery), SandboxPermission(pluginsdk.CapabilityDatasetResolve), SandboxPermission(pluginsdk.PermissionScopedSecretRead), SandboxPermission(pluginsdk.PermissionScopedSecretWrite):
 		return true
 	default:
+		return knownScopedSecretPermission(value)
+	}
+}
+
+// Scoped-secret grants may carry their resource selector in the projected
+// permission string (for example, "secret.scoped.read:secret-scope:backup").
+// The selector is still host-mediated and must remain canonical, but it is not
+// an ambient sandbox authority.
+func knownScopedSecretPermission(value SandboxPermission) bool {
+	base, selector, ok := strings.Cut(string(value), ":")
+	if !ok || strings.TrimSpace(selector) == "" || strings.TrimSpace(selector) != selector {
 		return false
 	}
+	return base == pluginsdk.PermissionScopedSecretRead || base == pluginsdk.PermissionScopedSecretWrite
 }
 
 func knownSandboxExtension(value SandboxExtensionPoint) bool {

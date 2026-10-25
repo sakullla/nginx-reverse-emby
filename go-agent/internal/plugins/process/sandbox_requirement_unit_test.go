@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestNewSandboxRequirementUsesProcessFloor(t *testing.T) {
@@ -126,6 +128,25 @@ func TestNewSandboxRequirementKeepsChannelNodeTransferPermissionHostMediated(t *
 	}
 	if requirement.RequiresPrivilegeBoundary() || requirement.RequiresFilesystemBoundary() || requirement.Budget().Network {
 		t.Fatal("channel.node-transfer permission gained ambient privilege, filesystem, or network authority")
+	}
+}
+
+func TestNewSandboxRequirementKeepsScopedSecretSelectorHostMediated(t *testing.T) {
+	t.Parallel()
+	permission := SandboxPermission(pluginsdk.PermissionScopedSecretRead + ":secret-scope:docker-app-backup")
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest: strings.Repeat("8", 64),
+		Permissions:   []SandboxPermission{permission},
+		ResourceBudget: ManifestResourceBudget{
+			TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1,
+			InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("scoped secret sandbox requirement = %v", err)
+	}
+	if requirement.RequiresPrivilegeBoundary() || requirement.RequiresFilesystemBoundary() || requirement.Budget().Network {
+		t.Fatal("scoped secret permission gained ambient privilege, filesystem, or network authority")
 	}
 }
 
