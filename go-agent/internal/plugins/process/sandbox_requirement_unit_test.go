@@ -150,6 +150,25 @@ func TestNewSandboxRequirementKeepsScopedSecretSelectorHostMediated(t *testing.T
 	}
 }
 
+func TestNewSandboxRequirementKeepsParameterizedHostPermissionHostMediated(t *testing.T) {
+	t.Parallel()
+	permission := SandboxPermission(pluginsdk.CapabilityServiceRevocableResourceHandle + ":docker-compose:managed")
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest: strings.Repeat("9", 64),
+		Permissions:   []SandboxPermission{permission},
+		ResourceBudget: ManifestResourceBudget{
+			TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1,
+			InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("parameterized host permission sandbox requirement = %v", err)
+	}
+	if requirement.RequiresPrivilegeBoundary() || requirement.RequiresFilesystemBoundary() || requirement.Budget().Network {
+		t.Fatal("parameterized host permission gained ambient privilege, filesystem, or network authority")
+	}
+}
+
 func TestNewSandboxRequirementKeepsRuntimeIdentityHostMediated(t *testing.T) {
 	t.Parallel()
 	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
