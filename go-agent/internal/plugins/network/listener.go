@@ -19,6 +19,7 @@ type listener struct {
 	active          *resource
 	flows           map[string]*resource
 	writeGate       chan struct{}
+	wake            *sync.Cond
 	closed          bool
 }
 
@@ -45,6 +46,7 @@ func (owner *Owner) listen(request sdk.ManagedNetworkRequest) (sdk.ManagedNetwor
 		}
 	} else {
 		shared = &listener{manager: manager, key: key, instanceID: owner.authority.InstanceID, owners: map[*Owner]*resource{}, flows: map[string]*resource{}, writeGate: make(chan struct{}, 1)}
+		shared.wake = sync.NewCond(&shared.mu)
 		var err error
 		if request.Protocol == "tcp" {
 			shared.tcp, err = net.Listen("tcp", endpointString(*request.Endpoint))
@@ -83,6 +85,7 @@ func (owner *Owner) listen(request sdk.ManagedNetworkRequest) (sdk.ManagedNetwor
 	owner.mu.Unlock()
 	if active {
 		shared.active = record
+		shared.signal()
 	}
 	return sdk.ManagedNetworkResponse{Handle: &record.handle}, nil
 }
@@ -94,6 +97,7 @@ func (shared *listener) remove(record *resource) {
 	}
 	if shared.active == record {
 		shared.active = nil
+		shared.signal()
 	}
 	shared.mu.Unlock()
 	// Undelivered TCP accepts cannot pin a retired generation indefinitely.
@@ -116,6 +120,7 @@ func (shared *listener) collect() {
 		return
 	}
 	shared.closed = true
+	shared.signal()
 	if shared.manager.listeners[shared.key] == shared {
 		delete(shared.manager.listeners, shared.key)
 	}
@@ -135,6 +140,24 @@ func (shared *listener) current() *resource {
 	return shared.active
 }
 
+func (shared *listener) signal() {
+	if shared.wake != nil {
+		shared.wake.Broadcast()
+	}
+}
+
+// waitActive holds an already accepted connection until a generation owns the
+// listener. Closing it here finishes the handshake and then FINs before any
+// payload is read, which leaves the public port looking open.
+func (shared *listener) waitActive() bool {
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	for !shared.closed && (shared.active == nil || shared.active.closed.Load()) {
+		shared.wake.Wait()
+	}
+	return !shared.closed && shared.active != nil && !shared.active.closed.Load()
+}
+
 func (shared *listener) acceptTCP() {
 	for {
 		connection, err := shared.tcp.Accept()
@@ -143,8 +166,15 @@ func (shared *listener) acceptTCP() {
 		}
 		parent := shared.current()
 		if parent == nil {
-			_ = connection.Close()
-			continue
+			if !shared.waitActive() {
+				_ = connection.Close()
+				return
+			}
+			parent = shared.current()
+			if parent == nil {
+				_ = connection.Close()
+				continue
+			}
 		}
 		source, err := sourceMetadata(connection.RemoteAddr())
 		if err == nil {

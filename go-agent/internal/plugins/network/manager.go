@@ -91,6 +91,7 @@ func (owner *Owner) Activate() {
 			owner.mu.Lock()
 			if owner.active && !owner.retired && !owner.closed && !handle.closed.Load() {
 				handle.listener.active = handle
+				handle.listener.signal()
 			}
 			owner.mu.Unlock()
 			handle.listener.mu.Unlock()
@@ -399,7 +400,7 @@ func (owner *Owner) Handle(ctx context.Context, request sdk.ManagedNetworkReques
 	}
 	if _, exists := owner.operations[request.RequestID]; exists || len(owner.operations) >= 128 {
 		owner.mu.Unlock()
-		return sdk.ManagedNetworkResponse{}, fail(sdk.ErrorResourceExhausted, "managed operation identity or concurrency exceeded")
+		return sdk.ManagedNetworkResponse{}, &sdk.RuntimeError{Code: sdk.ErrorResourceExhausted, Message: "managed operation identity or concurrency exceeded", Retryable: true}
 	}
 	operation, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(owner.ctx, cancel)

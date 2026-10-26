@@ -160,9 +160,7 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 		defer func() { stop(); cancel() }()
 		response := h.dispatchHostRuntime(ctx, candidate, owner, attempt, call)
 		defer clear(response.Payload)
-		if ctx.Err() != nil {
-			response = sdk.HostRuntimeResponse{Error: &sdk.RuntimeError{Code: sdk.ErrorUnavailable, Message: "managed generation call canceled"}}
-		}
+		response = finishHostRuntimeResponse(ctx, response)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 	})}
@@ -174,6 +172,16 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 }
 
 func capabilityRuntimeToken() string { return strconv.FormatInt(time.Now().UnixNano(), 36) }
+
+// A timed-out accept is retryable. Replacing it with "call canceled" makes the
+// plugin treat one poll as a permanent listener failure.
+func finishHostRuntimeResponse(ctx context.Context, response sdk.HostRuntimeResponse) sdk.HostRuntimeResponse {
+	if ctx.Err() == nil || (response.Error != nil && response.Error.Code == sdk.ErrorDeadlineExceeded) {
+		return response
+	}
+	return sdk.HostRuntimeResponse{Error: &sdk.RuntimeError{Code: sdk.ErrorUnavailable, Message: "managed generation call canceled"}}
+}
+
 func runtimeReply(value any, err error) sdk.HostRuntimeResponse {
 	if err != nil {
 		var failure *sdk.RuntimeError

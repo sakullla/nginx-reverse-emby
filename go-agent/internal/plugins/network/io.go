@@ -27,8 +27,20 @@ func socketDeadline(ctx context.Context, set func(time.Time) error, wait int) fu
 		_ = set(time.Time{})
 	}
 }
+func waitContext(ctx context.Context, wait int) (context.Context, context.CancelFunc) {
+	if wait <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, time.Duration(wait)*time.Millisecond)
+}
+
 func (resource *resource) read(ctx context.Context, request sdk.ManagedNetworkRequest) (sdk.ManagedNetworkResponse, error) {
-	release, err := acquire(ctx, resource, resource.readGate)
+	// Bound only the wait for the per-flow gate. The socket poll below uses
+	// WaitMS as an idle result; folding that same deadline into ctx turns a
+	// quiet connection into a failed call and pins the operation table.
+	waitCtx, cancel := waitContext(ctx, request.WaitMS)
+	defer cancel()
+	release, err := acquire(waitCtx, resource, resource.readGate)
 	if err != nil {
 		return sdk.ManagedNetworkResponse{}, err
 	}
@@ -59,7 +71,9 @@ func (resource *resource) read(ctx context.Context, request sdk.ManagedNetworkRe
 	return sdk.ManagedNetworkResponse{}, fail(sdk.ErrorUnavailable, "managed stream read failed")
 }
 func (resource *resource) write(ctx context.Context, request sdk.ManagedNetworkRequest) (sdk.ManagedNetworkResponse, error) {
-	release, err := acquire(ctx, resource, resource.writeGate)
+	waitCtx, cancel := waitContext(ctx, request.WaitMS)
+	defer cancel()
+	release, err := acquire(waitCtx, resource, resource.writeGate)
 	if err != nil {
 		return sdk.ManagedNetworkResponse{}, err
 	}
@@ -100,7 +114,9 @@ func (resource *resource) halfClose(direction string) error {
 	return connection.CloseWrite()
 }
 func (resource *resource) receive(ctx context.Context, request sdk.ManagedNetworkRequest) (sdk.ManagedNetworkResponse, error) {
-	release, err := acquire(ctx, resource, resource.readGate)
+	waitCtx, cancel := waitContext(ctx, request.WaitMS)
+	defer cancel()
+	release, err := acquire(waitCtx, resource, resource.readGate)
 	if err != nil {
 		return sdk.ManagedNetworkResponse{}, err
 	}
@@ -141,7 +157,9 @@ func (resource *resource) receive(ctx context.Context, request sdk.ManagedNetwor
 	return sdk.ManagedNetworkResponse{Data: buffer[:n]}, nil
 }
 func (resource *resource) send(ctx context.Context, request sdk.ManagedNetworkRequest) (sdk.ManagedNetworkResponse, error) {
-	release, err := acquire(ctx, resource, resource.writeGate)
+	waitCtx, cancel := waitContext(ctx, request.WaitMS)
+	defer cancel()
+	release, err := acquire(waitCtx, resource, resource.writeGate)
 	if err != nil {
 		return sdk.ManagedNetworkResponse{}, err
 	}

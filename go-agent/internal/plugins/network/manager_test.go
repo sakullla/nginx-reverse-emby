@@ -183,3 +183,72 @@ func TestManagedDatagramBackpressureReclaimsQueuedBytes(t *testing.T) {
 		t.Fatal("overflow did not close and reclaim flow")
 	}
 }
+
+func TestInactiveListenerKeepsTCPUntilActivated(t *testing.T) {
+	manager := NewManager()
+	defer manager.Close()
+	owner := testOwner(t, manager, "instance", "inactive-tcp", false)
+	address := endpoint(t)
+	listening := call(t, owner, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkListen, Endpoint: &address, Protocol: "tcp", MaxFlows: 4, IdleMS: 30000})
+	peer, err := net.Dial("tcp", endpointString(address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	if _, err := peer.Write([]byte("held")); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := peer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("inactive listener wrote to the peer")
+	} else {
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("inactive listener closed the connection: %v", err)
+		}
+	}
+	owner.Activate()
+	flow := call(t, owner, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkAccept, Handle: listening.Handle, WaitMS: 1000})
+	data := call(t, owner, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkRead, Handle: flow.Handle, MaxBytes: 16, WaitMS: 1000})
+	if string(data.Data) != "held" {
+		t.Fatalf("payload=%q", data.Data)
+	}
+}
+
+func TestQueuedReadReleasesSlotWhenGateIsBusy(t *testing.T) {
+	manager := NewManager()
+	defer manager.Close()
+	owner := testOwner(t, manager, "instance", "queued-read", false)
+	address := endpoint(t)
+	listening := call(t, owner, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkListen, Endpoint: &address, Protocol: "tcp", MaxFlows: 4, IdleMS: 30000})
+	owner.Activate()
+	peer, err := net.Dial("tcp", endpointString(address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	flow := call(t, owner, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkAccept, Handle: listening.Handle, WaitMS: 1000})
+	held := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		close(held)
+		_, _ = owner.Handle(context.Background(), sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkRead, Binding: owner.Binding(), RequestID: token(), Handle: flow.Handle, MaxBytes: 16, WaitMS: 5000})
+	}()
+	<-held
+	time.Sleep(50 * time.Millisecond)
+	started := time.Now()
+	_, err = owner.Handle(context.Background(), sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkRead, Binding: owner.Binding(), RequestID: token(), Handle: flow.Handle, MaxBytes: 16, WaitMS: 100})
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("queued read blocked for %s", elapsed)
+	}
+	if err == nil {
+		t.Fatal("queued read took the busy gate")
+	}
+	peer.Close()
+	select {
+	case <-finished:
+	case <-time.After(6 * time.Second):
+		t.Fatal("holding read did not return")
+	}
+}
