@@ -94,7 +94,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}
 
 	var initialPayload []byte
-	if ruleUsesRelay(rule) && !rule.Tuning.ProxyProtocol.Send {
+	if s.canPrefetchRelayPayload(rule) {
 		initialPayload, downstreamSource, err = s.prefetchRelayInitialPayload(client, downstreamSource)
 		if err != nil {
 			return
@@ -255,7 +255,26 @@ func copyL4TCP(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic
 	return traffic.CopyPreferReaderFrom(wrapped, src)
 }
 
-func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {
+// Application bytes must never be raced or retried against multiple targets.
+func (s *Server) canPrefetchRelayPayload(rule model.L4Rule) bool {
+	if !ruleUsesRelay(rule) || rule.Tuning.ProxyProtocol.Send || len(rule.Backends) != 1 {
+		return false
+	}
+	for _, layer := range rule.RelayLayers {
+		if len(layer) != 1 {
+			return false
+		}
+		listener, ok := s.relayListenersByID[layer[0]]
+		// QUIC fallback may open a second transport after an uncertain failure.
+		// Keep its bytes in the ordinary copy path until a connection is selected.
+		if !ok || listener.TransportMode != relay.ListenerTransportModeTLSTCP {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) prefetchRelayInitialPayload(client net.Conn, source io.Reader) ([]byte, io.Reader, error) {
 	if source == nil {
 		return nil, source, nil
 	}
@@ -272,8 +291,12 @@ func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]by
 		return buf[:n], source, nil
 	}
 
-	// Do not stall relay dials waiting for client bytes. Only buffered downstream
-	// data is folded into OPEN; raw connections fall back to normal relay copy.
+	// Read only bytes already queued on a plain TCP socket. Never wait for a
+	// client-first protocol or bypass a reader that transforms the wire data.
+	if source == client {
+		payload, err := prefetchTCPAvailable(client, relayInitialPayloadMax)
+		return payload, source, err
+	}
 	return nil, source, nil
 }
 

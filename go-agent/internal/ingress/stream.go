@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
@@ -107,6 +108,20 @@ func (c *pendingStreamConn) accepted() {
 }
 
 func (c *pendingStreamConn) AcknowledgeStreamDispatch() { c.accepted() }
+
+// SyscallConn preserves queued TCP reads through generation dispatch. As with
+// Read, taking ownership for socket I/O acknowledges dispatch unless deferred.
+func (c *pendingStreamConn) SyscallConn() (syscall.RawConn, error) {
+	socket, ok := c.Conn.(syscall.Conn)
+	if !ok {
+		return nil, errors.New("stream connection has no raw socket")
+	}
+	raw, err := socket.SyscallConn()
+	if err == nil && (c.endpoint == nil || c.endpoint.acknowledgeOnIO.Load()) {
+		c.accepted()
+	}
+	return raw, err
+}
 
 func (c *pendingStreamConn) Read(p []byte) (int, error) {
 	if c.endpoint == nil || c.endpoint.acknowledgeOnIO.Load() {
