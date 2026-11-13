@@ -4,11 +4,73 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func TestPendingRuntimeRecoveryRequiresControlPlaneBarrier(t *testing.T) {
+	for _, mode := range []string{"success", "runtime_missing", "stop_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			base := &pendingControlPlaneRecoveryStore{
+				installed: storage.InstalledPluginRow{PluginID: "reverse-l4", ActivePackageDigest: "active", DesiredLifecycle: "disabled", CurrentLifecycle: "applying", PendingOperationID: "op", PendingKind: "disable", PendingRevision: 551, PendingTargetDigest: "active"},
+				operation: storage.PluginOperationRow{ID: "op", PluginID: "reverse-l4", Kind: "disable", Status: "applying", TargetRevision: 551, TargetPackageDigest: "active", ActorID: "admin"},
+			}
+			service := &PluginService{store: &terminalControlPlaneRecoveryStore{base}, now: time.Now}
+			runtime := &recoveryStopBarrier{store: base}
+			if mode == "stop_failure" {
+				runtime.err = errors.New("stop failed")
+			}
+			if mode != "runtime_missing" {
+				service.controlPlaneRuntime = runtime
+			}
+			err := service.RecoverPendingPluginOperations(t.Context())
+			if mode != "success" {
+				if err == nil || base.completed || base.installed.PendingOperationID != "op" {
+					t.Fatalf("failed activation lost its fence: err=%v completed=%t pending=%s", err, base.completed, base.installed.PendingOperationID)
+				}
+				return
+			}
+			if err != nil || !runtime.stopped || runtime.completedBeforeStop || !base.completed || base.operation.Status != "succeeded" {
+				t.Fatalf("runtime barrier: err=%v stopped=%t premature=%t completed=%t", err, runtime.stopped, runtime.completedBeforeStop, base.completed)
+			}
+		})
+	}
+}
+
+type terminalControlPlaneRecoveryStore struct {
+	*pendingControlPlaneRecoveryStore
+}
+
+func (s *terminalControlPlaneRecoveryStore) ListPluginAgentRuntimeStatuses(context.Context, string) ([]storage.PluginAgentRuntimeStatusRow, error) {
+	return []storage.PluginAgentRuntimeStatusRow{{OperationID: "op", PluginID: "reverse-l4", InstanceID: "reverse-l4-default", AgentID: "edge-a", Revision: 551, State: "drained", DetailsJSON: `{}`}}, nil
+}
+
+func (*terminalControlPlaneRecoveryStore) GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error) {
+	return storage.AgentRevisionRow{State: storage.AgentRevisionStateApplied}, true, nil
+}
+
+func (*terminalControlPlaneRecoveryStore) GetPluginPackage(context.Context, string) (storage.PluginPackageRow, bool, error) {
+	return storage.PluginPackageRow{ManifestJSON: `{"runtime":{"kind":"rpc-service","host_scope":"control-plane"}}`, ConfigSchemaJSON: `{}`}, true, nil
+}
+
+type recoveryStopBarrier struct {
+	store                        *pendingControlPlaneRecoveryStore
+	err                          error
+	stopped, completedBeforeStop bool
+}
+
+func (*recoveryStopBarrier) ActivateBatch(context.Context, []pluginhost.Candidate) ([]*pluginhost.Instance, error) {
+	panic("disable must stop the control-plane runtime")
+}
+func (*recoveryStopBarrier) ActiveGeneration(string) (string, bool) { return "", false }
+func (r *recoveryStopBarrier) Stop(context.Context, string) error {
+	r.stopped, r.completedBeforeStop = true, r.store.completed
+	return r.err
+}
 
 func TestRecoverPendingControlPlaneOperationWithoutRuntimeStatuses(t *testing.T) {
 	for _, tc := range []struct {

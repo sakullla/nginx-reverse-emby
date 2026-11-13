@@ -1077,9 +1077,18 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 	if err != nil {
 		return err
 	}
+	// Recovery can observe terminal Agent work before the report reconciler.
+	// Apply the same control-plane activation barrier before promoting the
+	// package; otherwise the terminal operation prevents later reports from
+	// replacing the still-running old control-plane generation.
+	reconciler := &PluginLifecycleReconciler{plugins: s, runtime: s.controlPlaneRuntime}
+	applied, reconciledResults, err := reconciler.reconcileControlPlaneRuntime(ctx, operation, applied, agentResults)
+	if err != nil {
+		return err
+	}
 	result := PluginApplyResult{PluginID: pluginID, InstanceID: instanceID, OperationID: operation.ID,
 		TargetRevision: operation.TargetRevision, TargetDigest: operation.TargetPackageDigest,
-		ConfigVersion: configVersion, ActorID: operation.ActorID, Applied: applied, AgentResults: agentResults}
+		ConfigVersion: configVersion, ActorID: operation.ActorID, Applied: applied, AgentResults: reconciledResults}
 	switch operation.Kind {
 	case "enable", "disable":
 		_, err = s.CompleteLifecycleApply(ctx, result)
