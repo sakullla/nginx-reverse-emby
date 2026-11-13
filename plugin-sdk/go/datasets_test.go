@@ -149,7 +149,7 @@ func TestDatasetQueryRejectsInvalidBindingInputAndBudget(t *testing.T) {
 		},
 		"unbounded attributes":      func(q *DatasetQueryRequest) { q.Classifications[0].Attributes = make([]DatasetAttribute, 33) },
 		"no time budget":            func(q *DatasetQueryRequest) { q.Budget.MaxDurationMicros = 0 },
-		"excessive time budget":     func(q *DatasetQueryRequest) { q.Budget.MaxDurationMicros = 2001 },
+		"excessive time budget":     func(q *DatasetQueryRequest) { q.Budget.MaxDurationMicros = DatasetMaxQueryDurationMicros + 1 },
 		"no response budget":        func(q *DatasetQueryRequest) { q.Budget.MaxResponseBytes = 0 },
 		"excessive response budget": func(q *DatasetQueryRequest) { q.Budget.MaxResponseBytes = DatasetMaxQueryResponseBytes + 1 },
 	}

@@ -23,13 +23,13 @@ func (call policySourceHostFunc) ReadTrustedSource(ctx context.Context) (PolicyT
 
 func TestPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) {
 	// Use virtual time: scheduler pauses must not consume this contract test's
-	// 2 ms admission, while blocking adapters must still expire at the deadline.
+	// 20 ms admission, while blocking adapters must still expire at the deadline.
 	synctest.Test(t, testPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget)
 }
 
 func testPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) {
 	query := policyDatasetTestQuery()
-	query.Budget.MaxDurationMicros = 2000
+	query.Budget.MaxDurationMicros = DatasetMaxQueryDurationMicros
 	frame, err := MarshalPolicyDatasetQueryRequest(query, 4096)
 	if err != nil {
 		t.Fatal(err)
@@ -39,13 +39,13 @@ func testPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) 
 	if _, err := MarshalPolicyDatasetQueryResponse(DatasetQueryResponse{Reference: query.Reference, Status: DatasetQueryUnavailable}, query); err != nil {
 		t.Fatal(err)
 	}
-	budget := PolicyV1ResourceBudget{TimeoutMilliseconds: 2, MemoryBytes: 1 << 20, Concurrency: 1, InputFrameBytes: 4096, OutputFrameBytes: 4096}
+	budget := PolicyV1ResourceBudget{TimeoutMilliseconds: PolicyV1MaxTimeoutMilliseconds, MemoryBytes: 1 << 20, Concurrency: 1, InputFrameBytes: 4096, OutputFrameBytes: 4096}
 	scopes := []string{string(CapabilityDatasetQuery), string(CapabilityPolicyTrustedSource)}
 	authorization := PolicyHostCallAuthorization{InstanceID: query.Reference.InstanceID, Generation: query.Reference.Generation, EntryID: "entry-1", DeclaredScopes: scopes, GrantedScopes: scopes}
 	calls := 0
 	host := policyDatasetHostFunc(func(ctx context.Context, request PolicyDatasetQueryRequest) (DatasetQueryResponse, error) {
 		calls++
-		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 2*time.Millisecond {
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > time.Duration(PolicyV1MaxTimeoutMilliseconds)*time.Millisecond {
 			t.Error("query was detached from admission budget")
 		}
 		return DatasetQueryResponse{Reference: request.Reference, Status: DatasetQueryOK, Matches: []DatasetMatch{{Index: 0, Coverage: DatasetCovered}}}, nil

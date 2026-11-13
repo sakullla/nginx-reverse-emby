@@ -153,7 +153,7 @@ latest, changes Config, downloads data, or activates a source. The original
 `OpenDataset` still requires and verifies an explicit version digest.
 
 Host RPC adapters use `DecodeDatasetResolveRequest` and `CallDatasetResolveHost`;
-the latter checks both grants, a 2 ms ceiling and the returned source/instance/
+the latter checks both grants, a 20 ms ceiling and the returned source/instance/
 generation against `DatasetResolveAuthorization`. `DatasetResolveHost` owns
 the actual binding registry, source authorization and revocation checks. RPC
 resolve success frames are capped at 4 KiB. The client validates the source and
@@ -231,7 +231,7 @@ domain matching remains in the RPC dataset lookup contract. `PolicyDatasetHost`
 and `PolicyTrustedSourceHost` are optional interfaces, so existing implementations
 continue compiling. Host implementations must resolve actual authorization and
 cooperate with cancellation, using the enclosing admission context so query time
-cannot reset the 2 ms deadline. The 16 MiB memory and complete input/output frame
+cannot reset the 20 ms deadline. The 16 MiB memory and complete input/output frame
 limits remain unchanged.
 
 The SDK policy codecs validate raw frames before protobuf decoding, rejecting

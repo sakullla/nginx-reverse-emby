@@ -101,7 +101,7 @@ func TestPolicyDatasetWireFailuresAndMalformedFrames(t *testing.T) {
 		"domain classification": func(q *PolicyDatasetQueryRequest) {
 			q.Classifications[0] = DatasetClassification{Name: "category-ai-!cn", Kind: DatasetClassificationDomain}
 		},
-		"time ceiling":   func(q *PolicyDatasetQueryRequest) { q.Budget.MaxDurationMicros = 2001 },
+		"time ceiling":   func(q *PolicyDatasetQueryRequest) { q.Budget.MaxDurationMicros = DatasetMaxQueryDurationMicros + 1 },
 		"output ceiling": func(q *PolicyDatasetQueryRequest) { q.Budget.MaxResponseBytes = 4097 },
 		"missing budget": func(q *PolicyDatasetQueryRequest) { q.Budget = DatasetQueryBudget{} },
 	} {

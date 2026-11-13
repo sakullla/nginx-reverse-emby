@@ -28,7 +28,7 @@ const (
 // extension_point and request_id; the minimum output is the four-byte smallest
 // EvaluateResponse success envelope with a valid non-zero action.
 const (
-	PolicyV1MaxTimeoutMilliseconds int64 = 2
+	PolicyV1MaxTimeoutMilliseconds int64 = 20
 	PolicyV1MinMemoryBytes         int64 = 1 << 16
 	PolicyV1MaxMemoryBytes         int64 = 16 << 20
 	PolicyV1MaxConcurrency               = 64

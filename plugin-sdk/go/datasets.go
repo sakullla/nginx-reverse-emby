@@ -22,7 +22,7 @@ const (
 	HostRuntimeDatasetCatalog = "dataset.catalog"
 
 	DatasetMaxQueryClassifications       = 64
-	DatasetMaxQueryDurationMicros        = 2000
+	DatasetMaxQueryDurationMicros        = 20000
 	DatasetMaxQueryResponseBytes         = 32 << 10
 	DatasetMaxCatalogPage                = 128
 	DatasetMaxClassifications            = 10000
@@ -379,7 +379,7 @@ func (budget DatasetQueryBudget) Validate() error {
 // caller provides one address or domain; it carries no trusted-source assertion.
 // Admission queries must obtain their address from Host-authenticated connection
 // context, never from this caller input. Host query time counts against the
-// enclosing admission budget, including any policy/v1 2 ms execution ceiling.
+// enclosing admission budget, including any policy/v1 20 ms execution ceiling.
 type DatasetQueryRequest struct {
 	Reference       DatasetReference        `json:"reference"`
 	Classifications []DatasetClassification `json:"classifications"`

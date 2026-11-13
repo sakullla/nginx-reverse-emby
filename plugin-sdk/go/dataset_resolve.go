@@ -12,7 +12,7 @@ import (
 const (
 	HostRuntimeDatasetResolve       = "dataset.resolve"
 	DatasetResolveMaxFrameBytes     = 4096
-	DatasetResolveMaxDurationMicros = 2000
+	DatasetResolveMaxDurationMicros = 20000
 )
 
 // DatasetResolveRequest selects only an already prepared source binding in the
@@ -110,7 +110,7 @@ func DecodeDatasetResolveRequest(payload json.RawMessage) (DatasetResolveRequest
 }
 
 // CallDatasetResolveHost is the RPC Host boundary after private-transport
-// authentication. It uses a fixed 2 ms ceiling and validates the returned
+// authentication. It uses a fixed 20 ms ceiling and validates the returned
 // reference against the actual caller, not any plugin-supplied identity.
 func CallDatasetResolveHost(ctx context.Context, host DatasetResolveHost, authorization DatasetResolveAuthorization, payload json.RawMessage) (DatasetReference, error) {
 	ctx, cancel := context.WithTimeout(ctx, DatasetResolveMaxDurationMicros*time.Microsecond)

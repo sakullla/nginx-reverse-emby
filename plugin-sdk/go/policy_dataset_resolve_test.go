@@ -13,7 +13,7 @@ import (
 )
 
 func policyResolveTestRequest() PolicyDatasetResolveRequest {
-	return PolicyDatasetResolveRequest{SourceID: "regions", Budget: DatasetQueryBudget{MaxDurationMicros: 2000, MaxResponseBytes: 4096}}
+	return PolicyDatasetResolveRequest{SourceID: "regions", Budget: DatasetQueryBudget{MaxDurationMicros: DatasetMaxQueryDurationMicros, MaxResponseBytes: 4096}}
 }
 
 func TestPolicyDatasetResolveWireBoundsAndErrors(t *testing.T) {
@@ -66,7 +66,7 @@ func TestPolicyDatasetResolveWireBoundsAndErrors(t *testing.T) {
 			t.Fatal("invalid/oversized result accepted")
 		}
 	}
-	for _, mutate := range []func(*PolicyDatasetResolveRequest){func(r *PolicyDatasetResolveRequest) { r.SourceID = "" }, func(r *PolicyDatasetResolveRequest) { r.SourceID = strings.Repeat("a", PolicyIdentityMaxBytes+1) }, func(r *PolicyDatasetResolveRequest) { r.Budget.MaxDurationMicros = 2001 }, func(r *PolicyDatasetResolveRequest) { r.Budget.MaxResponseBytes = 4097 }, func(r *PolicyDatasetResolveRequest) { r.Budget = DatasetQueryBudget{} }} {
+	for _, mutate := range []func(*PolicyDatasetResolveRequest){func(r *PolicyDatasetResolveRequest) { r.SourceID = "" }, func(r *PolicyDatasetResolveRequest) { r.SourceID = strings.Repeat("a", PolicyIdentityMaxBytes+1) }, func(r *PolicyDatasetResolveRequest) { r.Budget.MaxDurationMicros = DatasetMaxQueryDurationMicros + 1 }, func(r *PolicyDatasetResolveRequest) { r.Budget.MaxResponseBytes = 4097 }, func(r *PolicyDatasetResolveRequest) { r.Budget = DatasetQueryBudget{} }} {
 		invalid := request
 		mutate(&invalid)
 		if _, err := MarshalPolicyDatasetResolveRequest(invalid, 4096); err == nil {
@@ -128,7 +128,7 @@ func TestPolicyDatasetResolveHostBindsCallerAndEnclosingBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	budget := PolicyV1ResourceBudget{TimeoutMilliseconds: 2, MemoryBytes: 1 << 20, Concurrency: 1, InputFrameBytes: 4096, OutputFrameBytes: 4096}
+	budget := PolicyV1ResourceBudget{TimeoutMilliseconds: PolicyV1MaxTimeoutMilliseconds, MemoryBytes: 1 << 20, Concurrency: 1, InputFrameBytes: 4096, OutputFrameBytes: 4096}
 	calls := 0
 	host := datasetResolveHostFunc(func(ctx context.Context, binding DatasetResolveBinding, request DatasetResolveRequest) (DatasetReference, error) {
 		calls++
@@ -228,7 +228,7 @@ func TestPolicyDatasetResolveInitializationDoesNotRequireConnectionEntry(t *test
 	if _, err := MarshalPolicyDatasetResolveResponse(PolicyDatasetResolveResponse{Reference: &reference}, request); err != nil {
 		t.Fatal(err)
 	}
-	budget := PolicyV1ResourceBudget{TimeoutMilliseconds: 2, MemoryBytes: 1 << 20, Concurrency: 1, InputFrameBytes: 4096, OutputFrameBytes: 4096}
+	budget := PolicyV1ResourceBudget{TimeoutMilliseconds: PolicyV1MaxTimeoutMilliseconds, MemoryBytes: 1 << 20, Concurrency: 1, InputFrameBytes: 4096, OutputFrameBytes: 4096}
 	calls := 0
 	host := datasetResolveHostFunc(func(_ context.Context, actual DatasetResolveBinding, actualRequest DatasetResolveRequest) (DatasetReference, error) {
 		calls++
