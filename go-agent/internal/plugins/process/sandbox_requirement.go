@@ -148,6 +148,13 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 	if files < 64 {
 		files = 64
 	}
+	for _, permission := range []SandboxPermission{SandboxPermission(pluginsdk.PermissionManagedNetworkListen), SandboxPermission(pluginsdk.PermissionManagedNetworkDial)} {
+		if _, ok := seenPermissions[permission]; ok {
+			// Managed sockets stay in the host; each concurrent read still needs
+			// a private RPC descriptor in the guest, independently of hook concurrency.
+			files = max(files, 2*pluginsdk.ManagedNetworkMaxFlows+256)
+		}
+	}
 	requirement.budget = Budget{CPUMillis: budget.CPUMillis, MemoryBytes: budget.MemoryBytes, Processes: processes, Files: files, Network: network}
 	return requirement, nil
 }

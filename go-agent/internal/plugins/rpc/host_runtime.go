@@ -128,19 +128,27 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 			return nil, err
 		}
 	}
-	calls := make(chan struct{}, 128)
+	parsing := make(chan struct{}, managed.MaxActiveOperations)
+	calls := managed.NewAdmission()
 	server := &http.Server{ReadTimeout: 10 * time.Second, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 16 << 10, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != sdk.PluginHostCallPath || subtle.ConstantTimeCompare([]byte(r.Header.Get(sdk.HeaderPluginHostCredential)), []byte(security.dial.Cookie)) != 1 {
 			http.Error(w, "denied", http.StatusForbidden)
 			return
 		}
 		select {
-		case calls <- struct{}{}:
-			defer func() { <-calls }()
+		case parsing <- struct{}{}:
 		default:
-			http.Error(w, "busy", http.StatusTooManyRequests)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(sdk.HostRuntimeResponse{Error: &sdk.RuntimeError{Code: sdk.ErrorResourceExhausted, Message: "plugin host runtime admission is busy", Retryable: true}})
 			return
 		}
+		parsingHeld := true
+		defer func() {
+			if parsingHeld {
+				<-parsing
+			}
+		}()
 		payload, err := io.ReadAll(io.LimitReader(r.Body, sdk.PluginHostPayloadMaxBytes+2049))
 		if err != nil || len(payload) > sdk.PluginHostPayloadMaxBytes+2048 {
 			http.Error(w, "oversized", http.StatusBadRequest)
@@ -155,6 +163,25 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 			http.Error(w, "invalid", http.StatusBadRequest)
 			return
 		}
+		action := ""
+		if call.Operation == sdk.HostRuntimeManagedNetwork {
+			request, err := sdk.DecodeManagedNetworkRequest(call.Payload)
+			if err != nil {
+				http.Error(w, "invalid", http.StatusBadRequest)
+				return
+			}
+			action = request.Action
+		}
+		<-parsing
+		parsingHeld = false
+		release, admitted := calls.TryAcquire(action)
+		if !admitted {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(sdk.HostRuntimeResponse{Error: &sdk.RuntimeError{Code: sdk.ErrorResourceExhausted, Message: "plugin host runtime admission is busy", Retryable: true}})
+			return
+		}
+		defer release()
 		ctx, cancel := context.WithCancel(r.Context())
 		stop := context.AfterFunc(owner.Context(), cancel)
 		defer func() { stop(); cancel() }()

@@ -1,5 +1,22 @@
 # Test Policy
 
+The isolated Shadowsocks capacity gate requires the plugin checkout with its
+`capacity` test fixture. It opens 3000 simultaneous encrypted TCP connections,
+checks every connection in three bidirectional rounds across an idle-poll
+rollover, verifies a bulk-transfer hash, and checks socket reclamation. It does
+not contact production nodes. Run on Linux with sufficient file descriptors:
+
+```sh
+cd go-agent
+CGO_ENABLED=0 NRE_SS_PLUGIN_ROOT=/path/to/sakullla-plugins NRE_SS_CAPACITY=3000 \
+  go test -exec 'sudo -n -E --' -tags=integration,ssplugin -count=1 -timeout=5m \
+  -run '^TestIntegrationRealShadowsocksManagedHostProcess$' -v ./internal/plugins/rpc
+```
+
+`NRE_SS_CAPACITY` accepts 3000 through 4096 and only controls this opt-in test.
+The fixture reports peak host and plugin-tree RSS; these measurements are not a
+bandwidth guarantee for a particular VPS.
+
 For an explicit read-only Docker metadata diagnostic on an Agent, compile the
 `go-agent/internal/plugins/dockerproxy` tests for that host and run
 `TestLiveDockerProxyReadOnlyMetadata` with `NRE_DOCKER_APP_LIVE_IMAGES` containing

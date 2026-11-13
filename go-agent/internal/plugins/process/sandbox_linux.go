@@ -388,6 +388,8 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	protocol.HardRlimits = cgroupFile == nil
 	protocol.Environment = linuxChildEnvironmentForIsolation(protocol.Environment, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, security.GuestEndpoint, protocol.Namespaces)
 	protocol.Environment = setLinuxEnvironment(protocol.Environment, "GOMAXPROCS", strconv.Itoa(linuxGuestGOMAXPROCS(protocol.Budget)))
+	// Leave room for stacks, mappings and the process wrapper below the hard RSS limit.
+	protocol.Environment = setLinuxEnvironment(protocol.Environment, "GOMEMLIMIT", strconv.FormatInt(protocol.Budget.MemoryBytes*3/4, 10))
 
 	protocolFile, err := createLinuxProtocolFile(protocol)
 	if err != nil {

@@ -50,6 +50,11 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 
 默认运行时是 **纯 Go 控制面容器**，控制面和 Agent 都由 Go 实现，**不再依赖 Nginx**（项目名沿用历史名称）。
 
+Linux 插件沙箱根据插件内存预算自动设置 Go 的 `GOMEMLIMIT`（预算的 75%，例如
+512 MiB 预算对应 384 MiB），为线程栈和映射等保留余量，无需用户配置。受管网络插件
+的空闲读、普通操作和连接回收分别限流，文件描述符额度独立于生命周期回调并发数。
+3000 条 Shadowsocks 连接的隔离容量验收命令见 [TESTING.md](TESTING.md)。
+
 ## 5 分钟上手
 
 ### 准备

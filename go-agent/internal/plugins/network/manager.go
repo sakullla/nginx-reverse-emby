@@ -19,7 +19,8 @@ import (
 	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
-const maxResources = 4096
+// Include both sides of proxy flows and overlap while generations drain.
+const maxResources = 8 * sdk.ManagedNetworkMaxFlows
 const maxPending = 32
 const maxBufferedDatagramBytes = 64 << 20
 
@@ -54,6 +55,7 @@ type Owner struct {
 	closed     bool
 	handles    map[string]*resource
 	operations map[string]context.CancelFunc
+	admission  *Admission
 }
 
 func (manager *Manager) Stage(authority Authority) (*Owner, error) {
@@ -67,7 +69,7 @@ func (manager *Manager) Stage(authority Authority) (*Owner, error) {
 	}
 	authority.Grants = append([]model.PluginGrantProjection(nil), authority.Grants...)
 	ctx, cancel := context.WithCancel(context.Background())
-	owner := &Owner{manager: manager, authority: authority, ctx: ctx, cancel: cancel, handles: map[string]*resource{}, operations: map[string]context.CancelFunc{}}
+	owner := &Owner{manager: manager, authority: authority, ctx: ctx, cancel: cancel, handles: map[string]*resource{}, operations: map[string]context.CancelFunc{}, admission: NewAdmission()}
 	manager.owners[owner] = true
 	return owner, nil
 }
@@ -398,10 +400,16 @@ func (owner *Owner) Handle(ctx context.Context, request sdk.ManagedNetworkReques
 	if request.Handle != nil {
 		record = owner.handles[request.Handle.Token]
 	}
-	if _, exists := owner.operations[request.RequestID]; exists || len(owner.operations) >= 128 {
+	if _, exists := owner.operations[request.RequestID]; exists {
 		owner.mu.Unlock()
 		return sdk.ManagedNetworkResponse{}, &sdk.RuntimeError{Code: sdk.ErrorResourceExhausted, Message: "managed operation identity or concurrency exceeded", Retryable: true}
 	}
+	release, admitted := owner.admission.TryAcquire(request.Action)
+	if !admitted {
+		owner.mu.Unlock()
+		return sdk.ManagedNetworkResponse{}, &sdk.RuntimeError{Code: sdk.ErrorResourceExhausted, Message: "managed operation concurrency exceeded", Retryable: true}
+	}
+	defer release()
 	operation, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(owner.ctx, cancel)
 	owner.operations[request.RequestID] = cancel

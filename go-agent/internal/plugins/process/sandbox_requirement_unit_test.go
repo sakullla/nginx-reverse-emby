@@ -32,6 +32,22 @@ func TestNewSandboxRequirementUsesProcessFloor(t *testing.T) {
 	}
 }
 
+func TestManagedNetworkDescriptorBudgetIsIndependentOfHookConcurrency(t *testing.T) {
+	budget := ManifestResourceBudget{TimeoutMS: 1000, MemoryBytes: 512 << 20, Concurrency: 8, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1}
+	for _, permission := range []string{pluginsdk.PermissionManagedNetworkListen, pluginsdk.PermissionManagedNetworkDial} {
+		r, err := NewSandboxRequirement(SandboxRequirementProjection{PackageDigest: strings.Repeat("a", 64), Permissions: []SandboxPermission{SandboxPermission(permission)}, ResourceBudget: budget})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Budget().Files < 2*3000+128 {
+			t.Fatalf("3000 managed flows cannot fit descriptor budget: %+v", r.Budget())
+		}
+		if r.Budget().Network {
+			t.Fatal("managed descriptor capacity granted ambient network access")
+		}
+	}
+}
+
 func TestNewSandboxRequirementRejectsRemovedDockerComposeIdentifiers(t *testing.T) {
 	t.Parallel()
 	budget := ManifestResourceBudget{

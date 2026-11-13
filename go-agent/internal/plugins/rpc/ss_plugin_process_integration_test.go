@@ -100,6 +100,7 @@ func TestIntegrationRealShadowsocksManagedHostProcess(t *testing.T) {
 		"storage.read", "storage.write", "event.emit", "service.revocable-resource-handle", "agent.read",
 		string(sdk.CapabilityRuntimeIdentity), sdk.PermissionManagedNetworkListen, sdk.PermissionManagedNetworkDial,
 		sdk.PermissionScopedSecretRead, sdk.PermissionScopedSecretWrite,
+		string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve),
 	}
 	permissions := make([]pluginprocess.SandboxPermission, len(scopes))
 	grants := make([]model.PluginGrantProjection, 0, len(scopes))
@@ -114,7 +115,7 @@ func TestIntegrationRealShadowsocksManagedHostProcess(t *testing.T) {
 	packageDigest := strings.Repeat("a", 64)
 	requirement, err := pluginprocess.NewSandboxRequirement(pluginprocess.SandboxRequirementProjection{
 		PackageDigest: packageDigest, Permissions: permissions,
-		ResourceBudget: pluginprocess.ManifestResourceBudget{TimeoutMS: 30000, MemoryBytes: 256 << 20, Concurrency: 8, InputBytes: 1 << 20, OutputBytes: 1 << 20, CPUMillis: 1000, Restarts: 3},
+		ResourceBudget: pluginprocess.ManifestResourceBudget{TimeoutMS: 30000, MemoryBytes: 512 << 20, Concurrency: 8, InputBytes: 1 << 20, OutputBytes: 1 << 20, CPUMillis: 1000, Restarts: 3},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -183,6 +184,9 @@ func TestIntegrationRealShadowsocksManagedHostProcess(t *testing.T) {
 	}
 	if admission.allowed.Load() < 2 || admission.denied.Load() < 1 {
 		t.Fatalf("Host admission decisions = allowed:%d denied:%d", admission.allowed.Load(), admission.denied.Load())
+	}
+	if count := os.Getenv("NRE_SS_CAPACITY"); count != "" {
+		runSSCapacity(t, work, pluginRoot, modernPort, serverPSK+":"+userPSK, count, instance.Status().PID)
 	}
 
 	conflictPort := freeSSDualPort(t)

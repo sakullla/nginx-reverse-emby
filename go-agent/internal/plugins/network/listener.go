@@ -178,7 +178,7 @@ func (shared *listener) acceptTCP() {
 		}
 		source, err := sourceMetadata(connection.RemoteAddr())
 		if err == nil {
-			ctx, cancel := context.WithTimeout(parent.owner.ctx, 10*time.Millisecond)
+			ctx, cancel := context.WithTimeout(parent.owner.ctx, time.Duration(sdk.PolicyV1MaxTimeoutMilliseconds)*time.Millisecond)
 			err = parent.owner.admit(ctx, "tcp", source)
 			if err == nil {
 				err = ctx.Err()
@@ -239,7 +239,7 @@ func (shared *listener) acceptUDP() {
 			}
 			source, err := sourceMetadata(peer)
 			if err == nil {
-				ctx, cancel := context.WithTimeout(parent.owner.ctx, 10*time.Millisecond)
+				ctx, cancel := context.WithTimeout(parent.owner.ctx, time.Duration(sdk.PolicyV1MaxTimeoutMilliseconds)*time.Millisecond)
 				err = parent.owner.admit(ctx, "udp", source)
 				if err == nil {
 					err = ctx.Err()
@@ -293,7 +293,11 @@ func (owner *Owner) dial(ctx context.Context, request sdk.ManagedNetworkRequest)
 	if request.Protocol == "udp" {
 		kind = "datagram"
 	}
-	flow, err := owner.newResource(kind, request.Protocol, sdk.PermissionManagedNetworkDial, nil, time.Duration(request.IdleMS)*time.Millisecond)
+	idle := time.Duration(request.IdleMS) * time.Millisecond
+	if request.Protocol == "tcp" {
+		idle = time.Duration(sdk.ManagedNetworkMaxIdleMS) * time.Millisecond
+	}
+	flow, err := owner.newResource(kind, request.Protocol, sdk.PermissionManagedNetworkDial, nil, idle)
 	if err != nil {
 		return sdk.ManagedNetworkResponse{}, err
 	}
