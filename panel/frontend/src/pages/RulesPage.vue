@@ -14,6 +14,7 @@
       </div>
       <div class="rules-page__header-right">
         <a
+          title="查看文档"
           class="btn btn-secondary docs-link rules-page__docs-link"
           :href="DOC_LINKS.httpRules"
           target="_blank"
@@ -814,7 +815,7 @@ async function confirmDelete() {
 
 <style scoped>
 .rules-page {
-  max-width: 1200px;
+  max-width: none;
   margin: 0 auto;
   animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }
@@ -838,16 +839,16 @@ async function confirmDelete() {
 }
 
 .rules-page__title {
-  font-size: 1.3125rem;
-  font-weight: 700;
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
   margin: 0 0 0.15rem;
   color: var(--color-text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   line-height: 1.25;
 }
 
 .rules-page__subtitle {
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   margin: 0;
   line-height: 1.35;

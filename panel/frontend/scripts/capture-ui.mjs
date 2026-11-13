@@ -310,7 +310,7 @@ for (const width of widths) {
         await capture('account-menu')
         await page.keyboard.press('Escape')
         await page.locator('.theme-trigger').click()
-        await page.getByText('选择主题').waitFor()
+        await page.getByRole('menu', { name: '外观' }).waitFor()
         await capture('theme-menu')
         await page.keyboard.press('Escape')
       } else {

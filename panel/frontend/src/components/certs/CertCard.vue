@@ -88,7 +88,7 @@
     <template v-if="hasFooter" #footer>
       <BaseBadge v-if="isSystemRelayCA(cert)" tone="primary">系统 Relay CA</BaseBadge>
       <BaseBadge v-if="cert.self_signed" tone="warning">自签</BaseBadge>
-      <BaseBadge v-for="tag in visibleTags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
+      <BaseBadge v-for="tag in visibleTags" :key="tag" tone="neutral" subtone="secondary" class="tag-badge">{{ tag }}</BaseBadge>
     </template>
   </BaseListCard>
 </template>

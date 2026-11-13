@@ -84,7 +84,7 @@ const props = defineProps({
   defaultAgentId: { type: String, default: '' }
 })
 
-const DISTRIBUTION_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#22d3ee', '#f472b6']
+const DISTRIBUTION_COLORS = ['#6d6af5', '#22b8cf', '#34c38f', '#f5a524', '#f0607a', '#a77bf3', '#4aa3f0']
 
 const onlineCount = computed(() => props.agents.filter(a => a.status === 'online').length)
 const offlineCount = computed(() => props.agents.length - onlineCount.value)
@@ -248,8 +248,12 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
   gap: 0.35rem;
   padding: var(--space-3) var(--space-2);
   margin: 0 calc(-1 * var(--space-2));
-  border-radius: var(--radius-lg);
-  border-top: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  /* Hairline divider inset from the rounded hover surface */
+  background-image: linear-gradient(var(--color-border-subtle), var(--color-border-subtle));
+  background-size: calc(100% - 2 * var(--space-2)) 1px;
+  background-position: center top;
+  background-repeat: no-repeat;
   text-decoration: none;
   transition: background var(--duration-fast) var(--ease-default);
 }

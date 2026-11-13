@@ -198,7 +198,7 @@ function emitDismiss() {
 .operation-status__btn {
   padding: 3px 10px;
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
   font-size: var(--text-xs);

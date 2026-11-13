@@ -332,15 +332,15 @@ const series = computed(() => {
 })
 
 const seriesStyles = {
-  '用量': { color: '#3b82f6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.12 },
-  RX: { color: '#6366f1', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
-  TX: { color: '#10b981', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
-  '上期': { color: '#8b5cf6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.08 },
-  '日均预算': { color: '#f59e0b', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
-  '月额度': { color: '#ef4444', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
-  HTTP: { color: '#3b82f6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 },
-  L4: { color: '#a78bfa', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 },
-  Relay: { color: '#34d399', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 }
+  '用量': { color: '#6d6af5', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.12 },
+  RX: { color: '#22b8cf', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
+  TX: { color: '#34c38f', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
+  '上期': { color: '#a77bf3', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.08 },
+  '日均预算': { color: '#f5a524', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
+  '月额度': { color: '#f0607a', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
+  HTTP: { color: '#6d6af5', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 },
+  L4: { color: '#22b8cf', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 },
+  Relay: { color: '#34c38f', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 }
 }
 
 const fallbackSeriesStyle = { color: '#9ca3af', width: 1.5, dashArray: 4, fillType: 'none', fillOpacity: 0 }

@@ -72,6 +72,7 @@ const tabs = [
   font-weight: var(--font-bold);
   margin: 0 0 var(--space-1);
   color: var(--color-text-primary);
+  letter-spacing: -0.03em;
 }
 .settings-page__desc {
   font-size: var(--text-sm);

@@ -3,25 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Nginx Reverse Emby Panel</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
+  <title>Nginx Proxy · 控制台</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=ZCOOL+KuaiLe&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
   <div id="app"></div>
   <script>
-  // Prevent theme flash: read theme before first paint
+  // Prevent theme flash: resolve the stored preference before first paint.
   (function() {
-    var themeMap = { 'sakura': 'sakura-day', 'midnight': 'sakura-night', 'cyberpunk': 'sakura-day' };
-    var saved = localStorage.getItem('theme');
-    var resolved = themeMap[saved] || saved;
-    var valid = ['sakura-day', 'sakura-night', 'business'];
-    var t = valid.includes(resolved)
-      ? resolved
-      : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'sakura-night' : 'sakura-day');
-    document.documentElement.setAttribute('data-theme', t);
+    var legacy = { 'sakura': 'sakura-day', 'cyberpunk': 'sakura-day', 'midnight': 'sakura-night', 'light': 'sakura-day', 'dark': 'sakura-night' };
+    var valid = ['fresh-green', 'sakura-day', 'sakura-night', 'business', 'neko-dark'];
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var pref = legacy[saved] || saved;
+    if (valid.indexOf(pref) === -1) {
+      // "system" or no preference: follow the OS scheme with the sakura pair.
+      pref = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'sakura-night' : 'sakura-day';
+    }
+    document.documentElement.setAttribute('data-theme', pref);
   })();
   </script>
   <script type="module" src="/src/main.js"></script>

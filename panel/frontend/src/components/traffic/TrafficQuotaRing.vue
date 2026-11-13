@@ -32,7 +32,7 @@ const props = defineProps({
   agents: { type: Array, default: null }
 })
 
-const DISTRIBUTION_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#22d3ee', '#f472b6']
+const DISTRIBUTION_COLORS = ['#6d6af5', '#22b8cf', '#34c38f', '#f5a524', '#f0607a', '#a77bf3', '#4aa3f0']
 
 const sortedAgents = computed(() => {
   if (!Array.isArray(props.agents)) return []

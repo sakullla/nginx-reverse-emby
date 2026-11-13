@@ -214,7 +214,7 @@ function toggleSortOrder() {
 }
 .filter-select {
   padding: 0.4rem 0.75rem;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-border-default);
   background: var(--color-bg-surface);
   font-size: 0.8125rem;
@@ -248,7 +248,7 @@ function toggleSortOrder() {
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
@@ -261,7 +261,7 @@ function toggleSortOrder() {
 }
 .clear-filters-btn {
   padding: 0.4rem 0.85rem;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-border-default);
   background: transparent;
   color: var(--color-text-secondary);

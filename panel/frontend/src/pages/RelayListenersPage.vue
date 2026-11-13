@@ -8,6 +8,7 @@
       </div>
       <div class='relay-page__header-right'>
         <a
+          title="查看文档"
           class='btn btn-secondary docs-link relay-page__docs-link'
           :href='DOC_LINKS.relay'
           target='_blank'
@@ -580,7 +581,7 @@ async function confirmDelete() {
 
 <style scoped>
 .relay-page {
-  max-width: 1200px;
+  max-width: none;
   margin: 0 auto;
   animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }

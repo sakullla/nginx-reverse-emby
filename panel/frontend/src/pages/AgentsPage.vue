@@ -25,6 +25,7 @@
           </button>
         </div>
         <a
+          title="查看文档"
           class="btn btn-secondary docs-link agents-page__docs-link"
           :href="DOC_LINKS.agents"
           target="_blank"
@@ -771,7 +772,7 @@ function confirmDelete() {
 
 <style scoped>
 .agents-page {
-  max-width: 1280px;
+  max-width: none;
   margin: 0 auto;
   animation: fadeInUp var(--duration-normal) var(--ease-default) both;
 }
@@ -798,15 +799,15 @@ function confirmDelete() {
 }
 
 .agents-page__title {
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
   margin: 0 0 0.25rem;
   color: var(--color-text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 
 .agents-page__subtitle {
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   margin: 0;
   /* Header actions claim most of the row; keep stats wrapping tidy when tight. */

@@ -109,12 +109,12 @@ const resumeTimer = (id, event) => {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
-  padding: var(--space-4);
+  padding: var(--space-3) var(--space-3-5, 0.875rem);
   background: color-mix(in srgb, var(--color-bg-surface-raised) 94%, transparent);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xl), var(--shadow-md);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
   border: var(--border-width-thin) solid var(--color-border-default);
   pointer-events: auto;
   min-width: 320px;
@@ -123,8 +123,9 @@ const resumeTimer = (id, event) => {
   transition: all var(--duration-slow) var(--ease-default);
 }
 
-/* 顶部彩色条 */
+/* 顶部彩色条（新设计中隐藏，状态由图标表达） */
 .status-message::before {
+  display: none;
   content: '';
   position: absolute;
   top: 0;
@@ -153,13 +154,13 @@ const resumeTimer = (id, event) => {
 /* 图标容器 - 圆形背景 */
 .status-message__icon-wrapper {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: calc(-1 * var(--space-0-5));
+  margin-top: 0;
 }
 
 .status-message--success .status-message__icon-wrapper {

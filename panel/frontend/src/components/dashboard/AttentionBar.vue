@@ -90,17 +90,20 @@ const signals = computed(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2-5) var(--space-3) var(--space-2-5) var(--space-4);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-2xl);
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xs);
   min-height: 52px;
+  box-sizing: border-box;
 }
 
 .attention-bar--alert {
-  border-color: color-mix(in srgb, var(--color-danger, #ef4444) 35%, var(--color-border-subtle));
-  background: color-mix(in srgb, var(--color-danger, #ef4444) 4%, var(--color-bg-surface));
+  border-color: color-mix(in srgb, var(--color-warning) 28%, var(--color-border-subtle));
+  background:
+    linear-gradient(90deg, var(--color-warning-50), transparent 45%),
+    var(--color-bg-surface);
 }
 
 .attention-bar__label {
@@ -108,9 +111,17 @@ const signals = computed(() => {
   align-items: center;
   gap: var(--space-2);
   font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--color-danger, #ef4444);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
   flex-shrink: 0;
+}
+
+.attention-bar__label svg {
+  padding: 5px;
+  box-sizing: content-box;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
 }
 
 .attention-bar__chips {
@@ -123,31 +134,50 @@ const signals = computed(() => {
 .attention-bar__chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.3rem 0.7rem;
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-danger, #ef4444) 10%, transparent);
-  color: var(--color-danger, #ef4444);
-  border: 1px solid color-mix(in srgb, var(--color-danger, #ef4444) 25%, transparent);
+  gap: var(--space-1-5);
+  height: 1.875rem;
+  padding: 0 var(--space-2-5) 0 var(--space-1);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-default);
+  box-shadow: var(--shadow-xs);
   font-size: var(--text-xs);
-  font-weight: 600;
+  font-weight: var(--font-medium);
   text-decoration: none;
-  transition: background var(--duration-fast) var(--ease-default),
-    transform var(--duration-fast) var(--ease-default);
+  box-sizing: border-box;
+  transition: border-color var(--duration-fast) var(--ease-default),
+    color var(--duration-fast) var(--ease-default);
 }
 
 .attention-bar__chip:hover {
-  background: color-mix(in srgb, var(--color-danger, #ef4444) 18%, transparent);
-  transform: translateY(-1px);
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
 }
 
 .attention-bar__chip-count {
-  font-size: var(--text-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.375rem;
+  height: 1.375rem;
+  padding: 0 0.3rem;
+  box-sizing: border-box;
+  border-radius: var(--radius-sm);
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   font-variant-numeric: tabular-nums;
 }
 
 .attention-bar__chip-arrow {
-  opacity: 0.7;
+  color: var(--color-text-muted);
+  transition: transform var(--duration-fast) var(--ease-default);
+}
+
+.attention-bar__chip:hover .attention-bar__chip-arrow {
+  transform: translateX(2px);
 }
 
 .attention-bar__ok {
@@ -176,7 +206,7 @@ const signals = computed(() => {
 .attention-bar__retry {
   min-height: 40px;
   padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--color-danger, #ef4444) 35%, var(--color-border-default));
   background: transparent;
   color: var(--color-danger, #ef4444);

@@ -10,7 +10,7 @@
     <section class="settings-section">
       <div class="settings-section__header">
         <h3 class="settings-section__title">外观主题</h3>
-        <p class="settings-section__desc">选择面板配色风格</p>
+        <p class="settings-section__desc">选择面板配色；“跟随系统”会按系统明暗在昼樱与夜樱之间自动切换</p>
       </div>
       <div class="settings-section__body">
         <div class="theme-grid" data-testid="pref-theme">
@@ -23,9 +23,25 @@
             :aria-pressed="currentTheme === theme.id"
             @click="setTheme(theme.id)"
           >
-            <span class="theme-card__icon">{{ theme.emoji || '✨' }}</span>
-            <span class="theme-card__label">{{ theme.label }}</span>
-            <div v-if="currentTheme === theme.id" class="theme-card__indicator"></div>
+            <span class="theme-card__preview" aria-hidden="true">
+              <span
+                v-for="paneTheme in previewThemes(theme.id)"
+                :key="paneTheme"
+                class="theme-card__pane"
+                :data-theme="paneTheme"
+              >
+                <span class="theme-card__side"><span class="theme-card__logo"></span><span class="theme-card__nav"></span><span class="theme-card__nav"></span></span>
+                <span class="theme-card__main">
+                  <span class="theme-card__line theme-card__line--title"></span>
+                  <span class="theme-card__panel"><span class="theme-card__line"></span><span class="theme-card__line theme-card__line--short"></span></span>
+                  <span class="theme-card__btn"></span>
+                </span>
+              </span>
+            </span>
+            <span class="theme-card__label">
+              <span class="theme-card__radio" aria-hidden="true"></span>
+              {{ theme.label }}
+            </span>
           </button>
         </div>
       </div>
@@ -68,11 +84,15 @@
 
 <script setup>
 import { reactive } from 'vue'
-import { useTheme } from '../../context/ThemeContext'
+import { SYSTEM_DARK_THEME, SYSTEM_LIGHT_THEME, useTheme } from '../../context/ThemeContext'
 import { usePreference } from '../../hooks/usePreference'
 import { PREFERENCE_DEFINITIONS, normalizeTrafficView } from '../../preferences/definitions'
 
 const { currentThemeId: currentTheme, setTheme, themes } = useTheme()
+
+function previewThemes(id) {
+  return id === 'system' ? [SYSTEM_LIGHT_THEME, SYSTEM_DARK_THEME] : [id]
+}
 
 const preferenceDefs = PREFERENCE_DEFINITIONS
 const preferenceValues = reactive(
@@ -176,65 +196,149 @@ const preferenceValues = reactive(
 
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, max-content));
-  grid-auto-rows: max-content;
-  justify-content: start;
-  align-items: start;
-  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: var(--space-3);
+  max-width: 760px;
 }
 
 .theme-card {
-  display: inline-flex;
+  display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-2);
-  width: 100%;
-  max-width: 120px;
-  height: auto !important;
-  min-height: 0;
-  align-self: start;
-  padding: var(--space-3);
-  border: 1.5px solid var(--color-border-default);
+  gap: var(--space-2-5);
+  padding: var(--space-1-5) var(--space-1-5) var(--space-2-5);
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   background: var(--color-bg-surface);
   cursor: pointer;
   font-family: inherit;
-  transition: border-color var(--duration-fast) var(--ease-default),
-              background-color var(--duration-fast) var(--ease-default),
-              transform var(--duration-fast) var(--ease-default),
-              box-shadow var(--duration-fast) var(--ease-default);
+  text-align: left;
+  transition: border-color var(--duration-fast) var(--ease-default), box-shadow var(--duration-fast) var(--ease-default);
 }
 
 .theme-card:hover {
-  border-color: var(--color-primary);
-  transform: translateY(-1px);
+  border-color: var(--color-border-strong);
 }
 
 .theme-card.active {
   border-color: var(--color-primary);
-  background: var(--color-primary-subtle);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 15%, transparent);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 3px var(--color-primary-100);
 }
 
-.theme-card__icon {
-  font-size: var(--text-xl);
-  line-height: 1;
+.theme-card__preview {
+  display: flex;
+  height: 76px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+}
+
+/* Each pane carries data-theme, so it paints with that theme's tokens. */
+.theme-card__pane {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  background: var(--color-bg-atmosphere);
+}
+
+.theme-card__side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 26%;
+  padding: 7px 5px;
+  border-right: 1px solid var(--color-border-subtle);
+  box-sizing: border-box;
+}
+
+.theme-card__logo {
+  width: 10px;
+  height: 10px;
+  margin-bottom: 2px;
+  border-radius: 3px;
+  background: var(--color-brand-bg);
+}
+
+.theme-card__nav {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-border-strong);
+}
+
+.theme-card__nav:first-of-type {
+  background: var(--color-primary);
+}
+
+.theme-card__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px;
+  min-width: 0;
+}
+
+.theme-card__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  border-radius: 4px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+}
+
+.theme-card__line {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-border-strong);
+}
+
+.theme-card__line--title {
+  width: 50%;
+  height: 5px;
+  background: var(--color-text-primary);
+  opacity: 0.8;
+}
+
+.theme-card__line--short {
+  width: 55%;
+}
+
+.theme-card__btn {
+  align-self: flex-end;
+  width: 22px;
+  height: 7px;
+  border-radius: 3px;
+  background: var(--color-button-bg);
 }
 
 .theme-card__label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-text-primary);
-  line-height: 1.2;
 }
 
-.theme-card__indicator {
-  width: 20px;
-  height: 3px;
-  border-radius: var(--radius-full);
-  background: var(--color-primary);
+.theme-card__radio {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-border-strong);
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.theme-card.active .theme-card__radio {
+  border: 4px solid var(--color-primary);
+}
+
+@media (max-width: 520px) {
+  .theme-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
 }
 </style>

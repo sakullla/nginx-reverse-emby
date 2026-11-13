@@ -86,7 +86,7 @@
     />
 
     <template v-if="hasTags" #footer>
-      <BaseBadge v-for="tag in listener.tags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
+      <BaseBadge v-for="tag in listener.tags" :key="tag" tone="neutral" subtone="secondary" class="tag-badge">{{ tag }}</BaseBadge>
     </template>
   </BaseListCard>
 </template>

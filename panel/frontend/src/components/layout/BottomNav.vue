@@ -204,12 +204,14 @@ onUnmounted(() => {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 64px;
-  background: var(--color-bg-chrome, var(--color-bg-surface));
-  border-top: var(--border-width-thin) solid var(--color-border-default);
-  backdrop-filter: blur(16px);
+  height: calc(60px + env(safe-area-inset-bottom, 0px));
+  padding: 0 var(--space-2) env(safe-area-inset-bottom, 0);
+  background: var(--color-bg-chrome);
+  border-top: 1px solid var(--color-border-subtle);
+  backdrop-filter: blur(var(--chrome-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--chrome-blur)) saturate(160%);
   z-index: var(--z-sticky);
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  box-sizing: border-box;
 }
 @media (max-width: 1023px) {
   .bottom-nav { display: flex; }
@@ -220,42 +222,42 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-1);
+  gap: 3px;
   text-decoration: none;
-  color: var(--color-text-muted);
+  color: var(--color-text-tertiary);
   font-family: inherit;
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
   border: none;
   background: transparent;
   min-width: 0;
   font-weight: var(--font-medium);
-  transition: all var(--duration-normal) var(--ease-default);
-  padding: var(--space-2) var(--space-1);
-  border-radius: var(--radius-lg);
+  transition: color var(--duration-fast) var(--ease-default);
+  padding: var(--space-1-5) var(--space-1);
   cursor: pointer;
   position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+.nav-item span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .nav-item.active {
   color: var(--color-primary);
-}
-.nav-item.active::before {
-  content: '';
-  position: absolute;
-  top: var(--space-1);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 20px;
-  height: 3px;
-  background: var(--color-primary);
-  border-radius: var(--radius-full);
+  font-weight: var(--font-semibold);
 }
 .nav-icon {
-  width: 24px;
-  height: 24px;
-  transition: transform var(--duration-normal) var(--ease-default);
+  width: 22px;
+  height: 22px;
+  padding: 3px 14px;
+  box-sizing: content-box;
+  border-radius: var(--radius-full);
+  stroke-width: 1.8;
+  transition: background var(--duration-normal) var(--ease-default);
 }
 .nav-item.active > .nav-icon {
-  transform: translateY(-2px);
+  background: var(--color-primary-subtle);
 }
 
 /* More Dropdown */
@@ -267,20 +269,19 @@ onUnmounted(() => {
 }
 .more-dropdown {
   position: absolute;
-  bottom: calc(100% + var(--space-3));
-  right: var(--space-1-5);
-  background: var(--color-bg-surface);
-  border: var(--border-width-thick) solid var(--color-border-default);
+  bottom: calc(100% + var(--space-2));
+  right: 0;
+  background: var(--color-bg-surface-raised);
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
-  min-width: 200px;
+  min-width: 210px;
   max-width: calc(100vw - var(--space-6));
   max-height: calc(100dvh - 150px - env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
   overscroll-behavior: contain;
   z-index: var(--z-dropdown);
-  backdrop-filter: blur(16px);
-  padding: var(--space-2);
+  padding: var(--space-1-5);
 }
 .more-pop-enter-active,
 .more-pop-leave-active {
@@ -289,18 +290,18 @@ onUnmounted(() => {
 .more-pop-enter-from,
 .more-pop-leave-to {
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateY(6px) scale(0.98);
 }
 .more-dropdown__item {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2-5) var(--space-4);
+  padding: 0 var(--space-3);
   font-size: var(--text-sm);
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   text-decoration: none;
   text-align: left;
-  transition: all var(--duration-fast) var(--ease-default);
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
   white-space: nowrap;
   border-radius: var(--radius-md);
   font-weight: var(--font-medium);
@@ -309,8 +310,9 @@ onUnmounted(() => {
 }
 .more-dropdown__item:hover,
 .more-dropdown__item:focus-visible {
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  outline: none;
 }
 .more-dropdown__item--active {
   background: var(--color-primary-subtle);
@@ -319,9 +321,8 @@ onUnmounted(() => {
 }
 .more-dropdown__item svg {
   flex-shrink: 0;
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
 }
-.more-dropdown__item:hover svg,
 .more-dropdown__item--active svg {
   color: var(--color-primary);
 }

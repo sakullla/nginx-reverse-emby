@@ -244,7 +244,7 @@ function confirmDelete() {
 .settings-egress__create-btn {
   min-height: 2.25rem;
   padding-inline: 0.95rem;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 

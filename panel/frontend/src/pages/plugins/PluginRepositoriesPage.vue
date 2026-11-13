@@ -385,7 +385,7 @@ function formatDate(value) {
 </script>
 
 <style scoped>
-.plugin-repositories-page { max-width: 1280px; margin: 0 auto; }
+.plugin-repositories-page { margin: 0 auto; }
 
 .plugin-repositories-page__loading {
   display: flex;

@@ -155,19 +155,19 @@ onUnmounted(() => {
 
 .modal-enter-active .modal,
 .modal-leave-active .modal {
-  transition: transform var(--duration-slow) var(--ease-bounce),
-              opacity var(--duration-slow) var(--ease-bounce);
+  transition: transform var(--duration-normal) var(--ease-default),
+              opacity var(--duration-normal) var(--ease-default);
 }
 
 .modal-enter-from .modal,
 .modal-leave-to .modal {
-  transform: scale(0.9);
+  transform: translateY(8px) scale(0.98);
   opacity: 0;
 }
 
 .modal__title {
-  font-size: var(--text-lg);
-  font-weight: var(--font-bold);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
   color: var(--color-text-primary);
   margin: 0;
   letter-spacing: -0.02em;
@@ -182,9 +182,8 @@ onUnmounted(() => {
 }
 
 .modal__close:hover {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-  transform: rotate(90deg);
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .modal__close:focus-visible {

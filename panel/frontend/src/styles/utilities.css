@@ -1,6 +1,6 @@
 /* Global utilities — used across pages. */
 
-/* ----- Buttons — refined system (desktop + mobile) ----- */
+/* ----- Buttons ----- */
 /* Compatible with both legacy (`btn-primary`) and modern (`btn--primary`) class names. */
 .btn,
 .btn-primary,
@@ -18,19 +18,19 @@
   justify-content: center;
   gap: var(--space-1-5);
   min-height: var(--control-height-md);
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-lg); /* slightly softer than md, not pill */
+  padding: 0 var(--space-3-5, 0.875rem);
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  letter-spacing: 0.005em;
+  font-weight: var(--font-medium);
+  letter-spacing: -0.003em;
   cursor: pointer;
   transition:
     background-color var(--duration-fast) var(--ease-default),
+    background var(--duration-fast) var(--ease-default),
     border-color var(--duration-fast) var(--ease-default),
     color var(--duration-fast) var(--ease-default),
-    box-shadow var(--duration-normal) var(--ease-default),
+    box-shadow var(--duration-fast) var(--ease-default),
     transform var(--duration-fast) var(--ease-default),
-    filter var(--duration-fast) var(--ease-default),
     opacity var(--duration-fast) var(--ease-default);
   border: 1px solid transparent;
   font-family: inherit;
@@ -86,129 +86,91 @@
 .btn--ghost:disabled,
 .btn--danger-soft:disabled,
 .btn--danger-ghost:disabled {
-  opacity: 0.48;
+  opacity: 0.45;
   cursor: not-allowed;
   transform: none !important;
   box-shadow: none !important;
   filter: none !important;
 }
 
-/* Default / primary */
+.btn:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn--primary:active:not(:disabled),
+.btn-secondary:active:not(:disabled),
+.btn--secondary:active:not(:disabled),
+.btn-danger:active:not(:disabled),
+.btn--danger:active:not(:disabled),
+.btn--danger-soft:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Primary — solid accent with a fine inner highlight */
 .btn,
 .btn-primary,
 .btn--primary {
   background: var(--color-button-bg);
   color: var(--color-text-inverse);
-  border-color: color-mix(in srgb, var(--color-primary) 82%, black 8%);
+  border-color: color-mix(in srgb, var(--color-primary) 85%, black 15%);
   box-shadow:
-    0 1px 0 color-mix(in srgb, white 22%, transparent) inset,
-    0 1px 2px color-mix(in srgb, var(--color-primary) 18%, transparent),
-    0 6px 14px -8px color-mix(in srgb, var(--color-primary) 55%, transparent);
+    inset 0 1px 0 rgb(255 255 255 / 0.18),
+    0 1px 2px rgb(var(--shadow-color) / 0.10),
+    0 2px 8px -2px color-mix(in srgb, var(--color-primary) 40%, transparent);
 }
 
 .btn:hover:not(:disabled),
 .btn-primary:hover:not(:disabled),
 .btn--primary:hover:not(:disabled) {
   background: var(--color-button-hover-bg);
-  border-color: color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 78%, black 12%);
-  transform: translateY(-1px);
   box-shadow:
-    0 1px 0 color-mix(in srgb, white 24%, transparent) inset,
-    0 2px 4px color-mix(in srgb, var(--color-primary) 16%, transparent),
-    0 10px 18px -10px color-mix(in srgb, var(--color-primary) 62%, transparent);
+    inset 0 1px 0 rgb(255 255 255 / 0.2),
+    0 1px 2px rgb(var(--shadow-color) / 0.12),
+    0 4px 14px -4px color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 
-.btn:active:not(:disabled),
-.btn-primary:active:not(:disabled),
-.btn--primary:active:not(:disabled) {
-  transform: translateY(0);
-  filter: brightness(0.98);
-  box-shadow:
-    0 1px 0 color-mix(in srgb, black 8%, transparent) inset,
-    0 1px 2px color-mix(in srgb, var(--color-primary) 18%, transparent);
-}
-
-/* Secondary */
+/* Secondary — quiet surface button */
 .btn-secondary,
 .btn--secondary {
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  border-color: color-mix(in srgb, var(--color-border-default) 88%, var(--color-text-tertiary));
-  box-shadow:
-    0 1px 0 color-mix(in srgb, white 55%, transparent) inset,
-    0 1px 2px color-mix(in srgb, black 4%, transparent);
+  border-color: var(--color-border-default);
+  box-shadow: var(--shadow-xs);
 }
 
 .btn-secondary:hover:not(:disabled),
 .btn--secondary:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--color-primary) 42%, var(--color-border-default));
-  color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary-subtle) 70%, var(--color-bg-surface));
-  transform: translateY(-1px);
-  box-shadow:
-    0 1px 0 color-mix(in srgb, white 60%, transparent) inset,
-    0 4px 10px -6px color-mix(in srgb, var(--color-primary) 28%, transparent);
-}
-
-.btn-secondary:active:not(:disabled),
-.btn--secondary:active:not(:disabled) {
-  transform: translateY(0);
-  background: color-mix(in srgb, var(--color-primary-subtle) 55%, var(--color-bg-surface));
-  box-shadow: none;
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
 }
 
 /* Danger solid */
 .btn-danger,
 .btn--danger {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-danger) 90%, white) 0%,
-      var(--color-danger) 100%
-    );
-  color: var(--color-text-inverse);
-  border-color: color-mix(in srgb, var(--color-danger) 82%, black 10%);
+  background: var(--color-danger);
+  color: #ffffff;
+  border-color: color-mix(in srgb, var(--color-danger) 85%, black 15%);
   box-shadow:
-    0 1px 0 color-mix(in srgb, white 16%, transparent) inset,
-    0 6px 14px -8px color-mix(in srgb, var(--color-danger) 48%, transparent);
+    inset 0 1px 0 rgb(255 255 255 / 0.16),
+    0 1px 2px rgb(var(--shadow-color) / 0.10);
 }
 
 .btn-danger:hover:not(:disabled),
 .btn--danger:hover:not(:disabled) {
-  filter: brightness(0.97);
-  transform: translateY(-1px);
-  box-shadow:
-    0 1px 0 color-mix(in srgb, white 18%, transparent) inset,
-    0 10px 18px -10px color-mix(in srgb, var(--color-danger) 55%, transparent);
-}
-
-.btn-danger:active:not(:disabled),
-.btn--danger:active:not(:disabled) {
-  transform: translateY(0);
-  filter: brightness(0.94);
-  box-shadow: none;
+  background: color-mix(in srgb, var(--color-danger) 88%, black);
 }
 
 /* Soft danger (list/card actions) */
 .btn--danger-soft {
-  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-bg-surface));
+  background: var(--color-danger-50);
   color: var(--color-danger);
-  border-color: color-mix(in srgb, var(--color-danger) 16%, var(--color-border-default));
+  border-color: color-mix(in srgb, var(--color-danger) 18%, transparent);
   box-shadow: none;
 }
 
 .btn--danger-soft:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger) 13%, var(--color-bg-surface));
-  border-color: color-mix(in srgb, var(--color-danger) 30%, var(--color-border-default));
+  background: var(--color-danger-subtle);
+  border-color: color-mix(in srgb, var(--color-danger) 32%, transparent);
   color: var(--color-danger);
-  filter: none;
-  transform: translateY(-1px);
-  box-shadow: 0 6px 12px -8px color-mix(in srgb, var(--color-danger) 35%, transparent);
-}
-
-.btn--danger-soft:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: none;
 }
 
 /* Ghost */
@@ -218,38 +180,36 @@
   color: var(--color-text-secondary);
   border-color: transparent;
   box-shadow: none;
-  padding-inline: var(--space-3);
+  padding-inline: var(--space-2-5);
 }
 
 .btn-ghost:hover:not(:disabled),
 .btn--ghost:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-bg-hover, var(--color-bg-subtle)) 88%, transparent);
+  background: var(--color-bg-hover);
   color: var(--color-text-primary);
-  transform: none;
 }
 
 /* Danger ghost (icon/text delete in dense forms) */
 .btn--danger-ghost {
   background: transparent;
-  color: var(--color-text-muted);
+  color: var(--color-text-tertiary);
   border-color: transparent;
   box-shadow: none;
 }
 
 .btn--danger-ghost:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  background: var(--color-danger-50);
   color: var(--color-danger);
-  transform: none;
 }
 
 /* Sizes */
 .btn-sm,
 .btn--sm {
   min-height: var(--control-height-sm);
-  padding: var(--space-1-5) var(--space-3);
+  padding: 0 var(--space-2-5);
   font-size: var(--text-xs);
   gap: var(--space-1);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
 }
 
 .btn-sm > svg,
@@ -261,7 +221,7 @@
 .btn-lg,
 .btn--lg {
   min-height: var(--control-height-lg);
-  padding: var(--space-3) var(--space-5);
+  padding: 0 var(--space-5);
   font-size: var(--text-base);
   border-radius: var(--radius-lg);
 }
@@ -274,7 +234,7 @@
   height: var(--control-height-icon);
   min-height: var(--control-height-icon);
   padding: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   overflow: visible;
 }
 
@@ -286,12 +246,12 @@
   min-width: var(--control-height-icon-sm);
   height: var(--control-height-icon-sm);
   min-height: var(--control-height-icon-sm);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
 }
 
 .btn-icon--danger:hover:not(:disabled) {
   color: var(--color-danger);
-  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  background: var(--color-danger-50);
 }
 
 /* Mobile / touch targets for all pages */
@@ -535,17 +495,16 @@
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border: 1px solid var(--color-border-subtle);
-  line-height: 1.4;
+  height: 1.25rem;
+  font-size: var(--text-2xs);
+  padding: 0 var(--space-1-5);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-xs);
+  font-weight: var(--font-medium);
   white-space: nowrap;
-  transition: all var(--duration-fast) var(--ease-default);
+  box-sizing: border-box;
 }
 
 /* ----- Page headers (shared) ----- */
@@ -774,11 +733,12 @@
 }
 
 .page-title {
-  font-size: var(--text-xl);
+  font-size: var(--text-2xl);
   font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0 0 0.25rem;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }
 
 .page-subtitle {
@@ -825,7 +785,7 @@
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1.5rem;
+  gap: var(--space-4);
 }
 
 @media (min-width: 1280px) {
@@ -838,8 +798,8 @@
   position: fixed;
   inset: 0;
   background: var(--color-overlay);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(4px) saturate(120%);
+  -webkit-backdrop-filter: blur(4px) saturate(120%);
   z-index: var(--z-modal-backdrop);
   display: flex;
   align-items: center;
@@ -853,12 +813,9 @@
 
 .modal {
   background: var(--color-bg-surface-raised);
-  border: 1px solid color-mix(in srgb, var(--color-border-default) 90%, var(--color-primary) 10%);
-  border-radius: var(--radius-2xl);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent),
-    var(--shadow-2xl),
-    var(--shadow-modal-deep);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-modal-deep);
   width: min(var(--modal-width-md), 92vw);
   /* dvh tracks the visible viewport on mobile (collapsible URL/tool bars); vh is the fallback. */
   max-height: min(90vh, 920px);
@@ -892,12 +849,7 @@
   gap: var(--space-3);
   color: var(--color-text-primary);
   flex-shrink: 0;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-primary-subtle) 38%, var(--color-bg-surface-raised)) 0%,
-      var(--color-bg-surface-raised) 100%
-    );
+  background: var(--color-bg-surface-raised);
 }
 
 .modal__close {
@@ -955,7 +907,7 @@
   gap: var(--space-2);
   border-top: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
-  background: color-mix(in srgb, var(--color-bg-surface) 70%, var(--color-bg-surface-raised));
+  background: var(--color-bg-subtle);
 }
 
 @media (max-width: 640px) {
@@ -1003,8 +955,9 @@
 
 .input-base {
   width: 100%;
-  padding: var(--space-2-5) var(--space-4);
-  border-radius: var(--radius-lg);
+  min-height: var(--control-height-md);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
   border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   font-size: var(--text-sm);
@@ -1061,4 +1014,26 @@
   background: var(--color-warning);
   box-shadow: 0 0 6px var(--color-warning-glow);
   animation: breathe 2s ease-in-out infinite;
+}
+
+/* ----- Compact header utilities -----
+   Documentation links and refresh are secondary: render as square icon
+   buttons, keeping the label for assistive tech and the tooltip. */
+.docs-link.btn-secondary,
+.agents-page__refresh.btn-secondary {
+  width: var(--control-height-md);
+  min-width: var(--control-height-md);
+  padding: 0;
+  flex: 0 0 auto !important;
+}
+
+.docs-link .btn-text,
+.agents-page__refresh .btn-text {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }

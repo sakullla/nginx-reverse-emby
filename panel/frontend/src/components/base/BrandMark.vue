@@ -1,39 +1,52 @@
 <template>
-  <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+  <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <!-- Sakura themes keep the blossom mark -->
     <g class="brand-mark__sakura" fill="currentColor">
       <path
         v-for="angle in [0, 72, 144, 216, 288]"
         :key="angle"
-        :transform="`rotate(${angle} 20 20)`"
-        d="M20 18C15 15 12 8 16 4L20 7L24 4C28 8 25 15 20 18Z"
+        :transform="`rotate(${angle} 16 16)`"
+        d="M16 14.6C12.4 12.5 10.3 7.4 13.1 4.6L16 6.8L18.9 4.6C21.7 7.4 19.6 12.5 16 14.6Z"
       />
-      <circle cx="20" cy="20" r="2" />
+      <circle cx="16" cy="16" r="1.5" />
     </g>
-    <g class="brand-mark__fallback" transform="translate(8 8)" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <template v-if="fallback === 'lock'">
-        <rect x="3" y="11" width="18" height="11" rx="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </template>
-      <polygon v-else points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    <!-- Routing glyph: one entry fanning out to upstream nodes -->
+    <g class="brand-mark__route">
+      <path
+        d="M7 16h6.5c2.2 0 3.3-1 4.4-3l1.2-2.2c1-1.8 2.1-2.8 4.4-2.8H25M13.5 16c2.2 0 3.3 1 4.4 3l1.2 2.2c1 1.8 2.1 2.8 4.4 2.8H25M13.5 16H25"
+        stroke="currentColor"
+        stroke-width="2.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <circle cx="7" cy="16" r="2.6" fill="currentColor" />
     </g>
   </svg>
 </template>
 
 <script setup>
+// `fallback` was used by the retired per-theme marks; accepted for compatibility.
 defineProps({
-  fallback: { type: String, default: 'bolt' }
+  fallback: { type: String, default: '' }
 })
 </script>
 
 <style scoped>
 .brand-mark {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: 62%;
+  height: 62%;
+  margin: auto;
 }
 
 .brand-mark__sakura {
   display: none;
+}
+
+[data-theme="sakura-day"] .brand-mark,
+[data-theme="sakura-night"] .brand-mark {
+  width: 74%;
+  height: 74%;
 }
 
 [data-theme="sakura-day"] .brand-mark__sakura,
@@ -41,8 +54,8 @@ defineProps({
   display: block;
 }
 
-[data-theme="sakura-day"] .brand-mark__fallback,
-[data-theme="sakura-night"] .brand-mark__fallback {
+[data-theme="sakura-day"] .brand-mark__route,
+[data-theme="sakura-night"] .brand-mark__route {
   display: none;
 }
 </style>

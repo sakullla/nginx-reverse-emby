@@ -4,6 +4,8 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import App from './App.vue'
 import router from './router'
 import { bindCredentialIdentityBoundary } from './api/identityBoundary'
+import '@fontsource-variable/inter'
+import '@fontsource-variable/jetbrains-mono'
 import './styles/index.css'
 import 'virtual:uno.css'
 

@@ -1,80 +1,82 @@
 /* =============================================
-   Shared tokens — applied to all themes
+   Design tokens — "Nova" design system
+   Calm surfaces, hairline borders, soft layered shadows. Five themes
+   share one structure (light or dark base below) and differ only in
+   palette: 清新绿 / 昼樱 / 晴空 (light), 夜樱 / 夜猫 (dark).
+   The theme context resolves "跟随系统" to 昼樱 or 夜樱.
    ============================================= */
 [data-theme] {
-  /* Spacing (8px base) */
+  /* Spacing (4px base) */
   --space-0: 0;
-  --space-0-5: 0.125rem;   /* 2px */
-  --space-1: 0.25rem;      /* 4px */
-  --space-1-5: 0.375rem;   /* 6px */
-  --space-2: 0.5rem;       /* 8px */
-  --space-2-5: 0.625rem;   /* 10px */
-  --space-3: 0.75rem;      /* 12px */
-  --space-4: 1rem;         /* 16px */
-  --space-4-5: 1.125rem;   /* 18px */
-  --space-5: 1.25rem;      /* 20px */
-  --space-6: 1.5rem;       /* 24px */
-  --space-8: 2rem;         /* 32px */
-  --space-10: 2.5rem;      /* 40px */
-  --space-12: 3rem;        /* 48px */
-  --space-16: 4rem;        /* 64px */
-  --space-20: 5rem;        /* 80px */
+  --space-0-5: 0.125rem;
+  --space-1: 0.25rem;
+  --space-1-5: 0.375rem;
+  --space-2: 0.5rem;
+  --space-2-5: 0.625rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-4-5: 1.125rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
 
-  /* Control heights (buttons, icon buttons, dense table/list actions) */
-  --control-height-dense: 1.65rem;
-  --control-height-sm: 2rem;
-  --control-height-md: 2.375rem;
-  --control-height-lg: 2.75rem;
-  --control-height-icon: 2.25rem;
-  --control-height-icon-sm: 1.85rem;
+  /* Control heights */
+  --control-height-dense: 1.625rem;
+  --control-height-sm: 1.875rem;
+  --control-height-md: 2.25rem;
+  --control-height-lg: 2.625rem;
+  --control-height-icon: 2.125rem;
+  --control-height-icon-sm: 1.75rem;
 
-  /* Button icon sizing */
   --icon-size-btn: 0.95rem;
   --icon-size-btn-sm: 0.85rem;
 
-  /* Radius */
+  /* Radius — calm, consistent, never pill for actions */
   --radius-none: 0;
-  --radius-xs: 0.375rem;   /* 6px */
-  --radius-sm: 0.5rem;     /* 8px */
-  --radius-md: 0.625rem;   /* 10px */
-  --radius-lg: 0.75rem;    /* 12px */
-  --radius-xl: 1rem;       /* 16px */
-  --radius-2xl: 1.25rem;   /* 20px */
-  --radius-3xl: 1.5rem;    /* 24px */
+  --radius-xs: 0.3125rem;  /* 5px */
+  --radius-sm: 0.4375rem;  /* 7px */
+  --radius-md: 0.5rem;     /* 8px */
+  --radius-lg: 0.625rem;   /* 10px */
+  --radius-xl: 0.75rem;    /* 12px */
+  --radius-2xl: 0.875rem;  /* 14px */
+  --radius-3xl: 1.125rem;  /* 18px */
   --radius-full: 9999px;
-  --radius-dense: 0.45rem;  /* compact table/list action buttons */
+  --radius-dense: 0.4375rem;
 
-  /* Dense table/list action sizing */
   --space-dense-block: 0.16rem;
   --space-dense-inline: 0.55rem;
 
-  /* Fonts */
-  --font-sans: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+  /* Type */
+  --font-sans: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 
-  /* Font Sizes */
-  --text-xs: 0.75rem;      /* 12px */
-  --text-sm: 0.875rem;     /* 14px */
-  --text-base: 1rem;       /* 16px */
-  --text-lg: 1.125rem;     /* 18px */
-  --text-xl: 1.25rem;      /* 20px */
-  --text-2xl: 1.5rem;      /* 24px */
-  --text-3xl: 1.875rem;    /* 30px */
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
 
-  /* Font Weights */
   --font-normal: 400;
   --font-medium: 500;
   --font-semibold: 600;
-  --font-bold: 700;
+  --font-bold: 650;
 
-  /* Transitions */
-  --duration-fast: 150ms;
-  --duration-normal: 200ms;
-  --duration-slow: 300ms;
-  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-normal: 180ms;
+  --duration-slow: 280ms;
+  --ease-default: cubic-bezier(0.2, 0, 0, 1);
+  --ease-bounce: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
 
-  /* Z-Index */
+  /* Z-index */
   --z-base: 0;
   --z-dropdown: 100;
   --z-sticky: 200;
@@ -86,530 +88,366 @@
   --z-toast: 800;
 
   /* Layout */
-  --sidebar-width: 220px;
+  --sidebar-width: 240px;
+  --sidebar-width-collapsed: 64px;
   --header-height: 56px;
+  --page-max-width: 1440px;
 
-  /* Border widths & focus outline */
   --border-width-thin: 1px;
-  --border-width-thick: 1.5px;
+  --border-width-thick: 1px;
   --focus-outline-width: 2px;
 
-  /* Shadow system — shared geometry lives here; themes only tune the
-     color/intensity params below (no per-theme shadow geometry).
-     --shadow-color is an RGB triplet consumed as rgb(var(--shadow-color) / <alpha>). */
-  --shadow-color: 15 23 42;
+  /* Shadows — geometry shared, intensity per scheme */
+  --shadow-color: 24 24 27;
   --shadow-alpha-xs: 0.04;
-  --shadow-alpha-sm: 0.06;
-  --shadow-alpha-sm-2: 0.04;
+  --shadow-alpha-sm: 0.05;
+  --shadow-alpha-sm-2: 0.03;
   --shadow-alpha-md: 0.06;
-  --shadow-alpha-md-2: 0.04;
-  --shadow-alpha-lg: 0.07;
+  --shadow-alpha-md-2: 0.03;
+  --shadow-alpha-lg: 0.08;
   --shadow-alpha-lg-2: 0.04;
-  --shadow-alpha-xl: 0.08;
+  --shadow-alpha-xl: 0.10;
   --shadow-alpha-xl-2: 0.04;
-  --shadow-alpha-2xl: 0.10;
+  --shadow-alpha-2xl: 0.14;
   --shadow-alpha-inner: 0.04;
-  --shadow-focus-color: var(--color-primary-subtle);
+  --shadow-focus-color: var(--color-primary-200);
 
   --shadow-xs: 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-xs));
   --shadow-sm:
-    0 1px 3px rgb(var(--shadow-color) / var(--shadow-alpha-sm)),
-    0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-sm-2));
+    0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-sm)),
+    0 1px 1px rgb(var(--shadow-color) / var(--shadow-alpha-sm-2));
   --shadow-md:
-    0 4px 6px rgb(var(--shadow-color) / var(--shadow-alpha-md)),
-    0 2px 4px rgb(var(--shadow-color) / var(--shadow-alpha-md-2));
+    0 4px 12px -2px rgb(var(--shadow-color) / var(--shadow-alpha-md)),
+    0 2px 4px -1px rgb(var(--shadow-color) / var(--shadow-alpha-md-2));
   --shadow-lg:
-    0 10px 15px rgb(var(--shadow-color) / var(--shadow-alpha-lg)),
-    0 4px 6px rgb(var(--shadow-color) / var(--shadow-alpha-lg-2));
+    0 12px 28px -6px rgb(var(--shadow-color) / var(--shadow-alpha-lg)),
+    0 4px 8px -2px rgb(var(--shadow-color) / var(--shadow-alpha-lg-2));
   --shadow-xl:
-    0 20px 25px rgb(var(--shadow-color) / var(--shadow-alpha-xl)),
-    0 8px 10px rgb(var(--shadow-color) / var(--shadow-alpha-xl-2));
-  --shadow-2xl: 0 24px 48px rgb(var(--shadow-color) / var(--shadow-alpha-2xl));
+    0 24px 48px -12px rgb(var(--shadow-color) / var(--shadow-alpha-xl)),
+    0 8px 16px -4px rgb(var(--shadow-color) / var(--shadow-alpha-xl-2));
+  --shadow-2xl: 0 32px 64px -16px rgb(var(--shadow-color) / var(--shadow-alpha-2xl));
   --shadow-focus: 0 0 0 3px var(--shadow-focus-color);
-  --shadow-focus-danger: 0 0 0 3px var(--color-danger-50);
-  /* Decorative halo for non-focus dots (timeline/path chips) — do not use for focus */
+  --shadow-focus-danger: 0 0 0 3px var(--color-danger-subtle);
   --shadow-dot-ring: 0 0 0 3px var(--color-primary-subtle);
   --shadow-inner: inset 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-inner));
-  /* Deep drop under modal dialogs — single shared geometry, tuned per theme via --shadow-color */
-  --shadow-modal-deep: 0 28px 60px -28px rgb(var(--shadow-color) / 0.28);
+  --shadow-modal-deep:
+    0 0 0 1px var(--color-border-subtle),
+    0 40px 80px -24px rgb(var(--shadow-color) / 0.35);
 
   /* Modal geometry */
-  --modal-width-sm: 400px;
-  --modal-width-md: 500px;
+  --modal-width-sm: 420px;
+  --modal-width-md: 520px;
   --modal-width-lg: 760px;
   --modal-width-xl: 980px;
-  --modal-pad-block: 0.9rem;
-  --modal-pad-block-footer: 0.85rem;
-  --modal-pad-inline: 1.15rem;
+  --modal-pad-block: 1rem;
+  --modal-pad-block-footer: 0.875rem;
+  --modal-pad-inline: 1.25rem;
 
-  /* Status dot (breathing indicator) */
   --status-dot-size: 7px;
 
-  /* Modal overlay scrim — themes may tint or darken */
-  --color-overlay: rgb(15 23 42 / 0.42);
-
-  /* Theme identity tokens — neutral defaults derived from generic tokens so no
-     consumer fallback chains are needed; sakura themes override below. */
+  /* Identity tokens — schemes below override */
   --color-bg-chrome: var(--color-bg-surface);
-  --color-bg-sidebar: var(--color-bg-surface);
+  --color-bg-sidebar: var(--color-bg-canvas);
   --color-bg-panel: var(--color-bg-surface);
   --color-bg-atmosphere: var(--color-bg-canvas);
-  --color-brand-bg: var(--color-primary);
-  --color-brand-ink: var(--color-text-inverse);
+  --color-brand-bg: linear-gradient(135deg, #6d6af5 0%, #9b5cf6 55%, #22b8cf 130%);
+  --color-brand-ink: #ffffff;
   --color-badge-bg: var(--color-primary-subtle);
   --color-badge-ink: var(--color-primary);
-  /* Agent badge — purple family, per-theme overrides below */
-  --color-badge-agent-bg: rgba(124, 58, 237, 0.10);
-  --color-badge-agent-ink: #7c3aed;
-  --color-nav-selected: var(--color-primary-subtle);
-  --color-button-bg:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-primary) 92%, white) 0%,
-      var(--color-primary) 100%
-    );
-  --color-button-hover-bg:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 90%, white) 0%,
-      var(--color-primary-hover, var(--color-primary)) 100%
-    );
-  --chrome-blur: 0px;
+  --color-nav-selected: var(--color-bg-surface);
+  --color-button-bg: var(--color-primary);
+  --color-button-hover-bg: var(--color-primary-hover);
+  --chrome-blur: 14px;
   --sakura-decoration-display: none;
   --sakura-decoration-opacity: 0;
 
-  /* Dashboard metric tiles — colors per theme below; shadow fixed to one shared level */
   --color-dashboard-tile-bg: var(--color-bg-subtle);
-  --color-dashboard-tile-border: var(--color-border-default);
-  --color-dashboard-tile-header-bg: rgba(255, 255, 255, 0.25);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
-
-  /* Semantic subtle backgrounds — themes may override */
-  --color-success-subtle: var(--color-success-50);
-  --color-danger-subtle: var(--color-danger-50);
-  --color-warning-subtle: var(--color-warning-50);
+  --color-dashboard-tile-border: var(--color-border-subtle);
+  --color-dashboard-tile-header-bg: transparent;
+  --color-dashboard-tile-shadow: none;
 }
 
 /* =============================================
-   Theme: 清新绿 (fresh-green) — Airy emerald
-   Near-white canvas with a faint green cast; pure white surfaces;
-   low-saturation green tints so content, not the wash, carries the theme.
+   Light base — 清新绿 / 昼樱 / 晴空
    ============================================= */
-[data-theme="fresh-green"] {
+[data-theme="fresh-green"],
+[data-theme="sakura-day"],
+[data-theme="business"] {
   color-scheme: light;
 
+  --color-text-inverse: #ffffff;
+
+  --color-bg-surface: #ffffff;
+  --color-bg-surface-raised: #ffffff;
+
+  --color-success: #16803c;
+  --color-success-50: rgba(22, 163, 74, 0.07);
+  --color-success-subtle: rgba(22, 163, 74, 0.10);
+  --color-success-glow: rgba(22, 163, 74, 0.22);
+  --color-danger: #d92d20;
+  --color-danger-50: rgba(217, 45, 32, 0.06);
+  --color-danger-subtle: rgba(217, 45, 32, 0.09);
+  --color-danger-glow: rgba(217, 45, 32, 0.20);
+  --color-warning: #b45309;
+  --color-warning-50: rgba(217, 119, 6, 0.07);
+  --color-warning-subtle: rgba(217, 119, 6, 0.11);
+  --color-warning-glow: rgba(217, 119, 6, 0.22);
+
+  --color-button-bg: linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 88%, white) 0%, var(--color-primary) 100%);
+  --color-button-hover-bg: linear-gradient(180deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
+  --color-bg-atmosphere:
+    radial-gradient(900px 320px at 18% -120px, var(--color-primary-100), transparent 70%),
+    radial-gradient(700px 280px at 92% -120px, var(--color-accent-subtle), transparent 70%),
+    var(--color-bg-canvas);
+  --color-overlay: rgb(24 24 27 / 0.32);
+}
+
+/* =============================================
+   Dark base — 夜樱 / 夜猫
+   ============================================= */
+[data-theme="sakura-night"],
+[data-theme="neko-dark"] {
+  color-scheme: dark;
+
+  --color-success: #4ade80;
+  --color-success-50: rgba(74, 222, 128, 0.08);
+  --color-success-subtle: rgba(74, 222, 128, 0.12);
+  --color-success-glow: rgba(74, 222, 128, 0.25);
+  --color-danger: #ff7b72;
+  --color-danger-50: rgba(255, 123, 114, 0.08);
+  --color-danger-subtle: rgba(255, 123, 114, 0.13);
+  --color-danger-glow: rgba(255, 123, 114, 0.25);
+  --color-warning: #fbbf24;
+  --color-warning-50: rgba(251, 191, 36, 0.08);
+  --color-warning-subtle: rgba(251, 191, 36, 0.12);
+  --color-warning-glow: rgba(251, 191, 36, 0.25);
+
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+
+  --shadow-color: 0 0 0;
+  --shadow-alpha-xs: 0.30;
+  --shadow-alpha-sm: 0.35;
+  --shadow-alpha-sm-2: 0.20;
+  --shadow-alpha-md: 0.40;
+  --shadow-alpha-md-2: 0.25;
+  --shadow-alpha-lg: 0.45;
+  --shadow-alpha-lg-2: 0.25;
+  --shadow-alpha-xl: 0.50;
+  --shadow-alpha-xl-2: 0.30;
+  --shadow-alpha-2xl: 0.60;
+  --shadow-alpha-inner: 0.30;
+
+  --color-button-bg: linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 85%, white) 0%, var(--color-primary) 100%);
+  --color-button-hover-bg: linear-gradient(180deg, color-mix(in srgb, var(--color-primary-hover) 85%, white) 0%, var(--color-primary-hover) 100%);
+  --color-bg-atmosphere:
+    radial-gradient(900px 340px at 18% -140px, var(--color-primary-100), transparent 70%),
+    radial-gradient(700px 300px at 92% -140px, var(--color-accent-subtle), transparent 70%),
+    var(--color-bg-canvas);
+  --color-overlay: rgb(0 0 0 / 0.62);
+}
+
+/* =============================================
+   🌿 清新绿 (fresh-green) — emerald on airy mint-white
+   ============================================= */
+[data-theme="fresh-green"] {
   --color-primary: #059669;
   --color-primary-hover: #047857;
   --color-primary-active: #065f46;
   --color-primary-subtle: rgba(5, 150, 105, 0.08);
   --color-primary-50: rgba(5, 150, 105, 0.04);
-  --color-primary-100: rgba(5, 150, 105, 0.09);
-  --color-primary-200: rgba(5, 150, 105, 0.16);
-  --color-primary-300: rgba(5, 150, 105, 0.28);
+  --color-primary-100: rgba(5, 150, 105, 0.10);
+  --color-primary-200: rgba(5, 150, 105, 0.18);
+  --color-primary-300: rgba(5, 150, 105, 0.32);
 
-  --color-accent: #14b8a6;
-  --color-accent-hover: #0d9488;
-  --color-accent-subtle: rgba(20, 184, 166, 0.08);
+  --color-accent: #0d9488;
+  --color-accent-hover: #0f766e;
+  --color-accent-subtle: rgba(13, 148, 136, 0.08);
 
-  --color-text-primary: #122019;
-  --color-text-secondary: #40584c;
-  --color-text-tertiary: #526c5c;
-  --color-text-muted: #5d7365;
-  --color-text-inverse: #ffffff;
+  --color-text-primary: #13201a;
+  --color-text-secondary: #46594f;
+  --color-text-tertiary: #5d7066;
+  --color-text-muted: #66796f;
 
-  --color-bg-canvas: #f6f9f7;
-  --color-bg-surface: #ffffff;
-  --color-bg-surface-raised: #ffffff;
-  --color-bg-sunken: #eef4f0;
-  --color-bg-subtle: #f0f7f3;
-  --color-bg-hover: #e6f2ec;
-  --color-bg-active: #d7eae0;
+  --color-bg-canvas: #f5f8f6;
+  --color-bg-sunken: #edf3ef;
+  --color-bg-subtle: #f3f7f4;
+  --color-bg-hover: #ebf2ed;
+  --color-bg-active: #dfeae3;
 
-  --color-border-subtle: rgba(18, 32, 25, 0.06);
-  --color-border-default: rgba(18, 32, 25, 0.09);
-  --color-border-strong: rgba(18, 32, 25, 0.15);
-  --color-border-focus: rgba(5, 150, 105, 0.35);
+  --color-border-subtle: rgba(19, 32, 26, 0.06);
+  --color-border-default: rgba(19, 32, 26, 0.10);
+  --color-border-strong: rgba(19, 32, 26, 0.18);
+  --color-border-focus: rgba(5, 150, 105, 0.5);
 
-  --color-success: #059669;
-  --color-success-50: rgba(5, 150, 105, 0.08);
-  --color-success-subtle: rgba(5, 150, 105, 0.10);
-  --color-success-glow: rgba(5, 150, 105, 0.20);
-  --color-danger: #dc2626;
-  --color-danger-50: rgba(220, 38, 38, 0.08);
-  --color-danger-subtle: rgba(220, 38, 38, 0.10);
-  --color-danger-glow: rgba(220, 38, 38, 0.18);
-  --color-warning: #d97706;
-  --color-warning-50: rgba(217, 119, 6, 0.08);
-  --color-warning-subtle: rgba(217, 119, 6, 0.10);
-  --color-warning-glow: rgba(217, 119, 6, 0.20);
-
-  /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #f0f7f3;
-  --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: rgba(5, 150, 105, 0.05);
-
-  /* Agent badge — purple, distinct from the green primary */
-  --color-badge-agent-bg: rgba(124, 58, 237, 0.10);
+  --color-bg-chrome: rgba(245, 248, 246, 0.78);
+  --color-brand-bg: linear-gradient(135deg, #10b981 0%, #059669 50%, #0d9488 120%);
+  --color-badge-agent-bg: rgba(124, 58, 237, 0.09);
   --color-badge-agent-ink: #6d28d9;
-
-  /* Shadow quality params (geometry lives in the shared block) */
-  --shadow-color: 18 32 25;
-  --shadow-alpha-sm: 0.05;
-  --shadow-alpha-sm-2: 0.03;
-  --shadow-alpha-md: 0.05;
-  --shadow-alpha-md-2: 0.03;
-  --shadow-alpha-lg-2: 0.03;
-
-  /* Modal overlay scrim */
-  --color-overlay: rgb(18 32 25 / 0.42);
+  --shadow-color: 19 32 26;
 }
 
 /* =============================================
-   Theme: 昼樱 (sakura-day) — Sakura rose and airy lilac
-   Cool white surfaces over a soft petal-light canvas.
+   🌸 昼樱 (sakura-day) — sakura rose and airy lilac
    ============================================= */
 [data-theme="sakura-day"] {
-  color-scheme: light;
-
   --color-primary: #b83f73;
   --color-primary-hover: #a53165;
   --color-primary-active: #892653;
-  --color-primary-subtle: #fbeaf2;
-  --color-primary-50: #fff5fa;
-  --color-primary-100: #fbeaf2;
-  --color-primary-200: #f2cde1;
-  --color-primary-300: #e4a6c7;
+  --color-primary-subtle: rgba(184, 63, 115, 0.08);
+  --color-primary-50: rgba(184, 63, 115, 0.04);
+  --color-primary-100: rgba(184, 63, 115, 0.10);
+  --color-primary-200: rgba(184, 63, 115, 0.18);
+  --color-primary-300: rgba(184, 63, 115, 0.32);
 
   --color-accent: #7760b2;
   --color-accent-hover: #624995;
-  --color-accent-subtle: #f0ecfa;
+  --color-accent-subtle: rgba(119, 96, 178, 0.09);
 
-  --color-text-primary: #292b42;
-  --color-text-secondary: #595d76;
-  --color-text-tertiary: #6d7088;
-  --color-text-muted: #71738c;
-  --color-text-inverse: #ffffff;
+  --color-text-primary: #26283d;
+  --color-text-secondary: #575a72;
+  --color-text-tertiary: #6b6e86;
+  --color-text-muted: #71738b;
 
-  --color-bg-canvas: #f6f7fc;
-  --color-bg-surface: #ffffff;
-  --color-bg-surface-raised: #ffffff;
-  --color-bg-sunken: #edf0f8;
-  --color-bg-subtle: #f6f6fb;
-  --color-bg-hover: #efeef8;
-  --color-bg-active: #e5e2f3;
+  --color-bg-canvas: #f7f6fb;
+  --color-bg-sunken: #efeef6;
+  --color-bg-subtle: #f6f5fa;
+  --color-bg-hover: #f0eef6;
+  --color-bg-active: #e6e2f1;
 
-  --color-border-subtle: #e8e9f2;
-  --color-border-default: #d8daea;
-  --color-border-strong: #a5abc5;
-  --color-border-focus: #be80b3;
+  --color-border-subtle: rgba(38, 40, 61, 0.06);
+  --color-border-default: rgba(38, 40, 61, 0.10);
+  --color-border-strong: rgba(38, 40, 61, 0.18);
+  --color-border-focus: rgba(184, 63, 115, 0.5);
 
-  --color-success: #23775e;
-  --color-success-50: #eff8f4;
-  --color-success-subtle: #e3f3ec;
-  --color-success-glow: rgba(35, 119, 94, 0.14);
-  --color-danger: #b83b54;
-  --color-danger-50: #fff3f4;
-  --color-danger-subtle: #fce8eb;
-  --color-danger-glow: rgba(184, 59, 84, 0.14);
-  --color-warning: #936021;
-  --color-warning-50: #fff8ec;
-  --color-warning-subtle: #fbefd8;
-  --color-warning-glow: rgba(147, 96, 33, 0.14);
-
-  /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #f6f6fb;
-  --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: #f0edf8;
-
-  /* Shadow quality params — soft petal-light, single-layer look
-     (second-layer alphas at 0; slightly raised alphas compensate the tighter
-     shared geometry versus the former diffuse per-theme shadows). */
-  --shadow-color: 68 31 51;
-  --shadow-alpha-xs: 0.03;
-  --shadow-alpha-sm: 0.05;
-  --shadow-alpha-sm-2: 0;
-  --shadow-alpha-md: 0.07;
-  --shadow-alpha-md-2: 0;
-  --shadow-alpha-lg: 0.10;
-  --shadow-alpha-lg-2: 0;
-  --shadow-alpha-xl: 0.12;
-  --shadow-alpha-xl-2: 0;
-  --shadow-alpha-2xl: 0.15;
-  --shadow-focus-color: rgba(184, 63, 115, 0.16);
-
-  /* Modal overlay scrim */
-  --color-overlay: rgb(41 43 66 / 0.40);
-
-  /* Sakura visual identity: translucent chrome, petal light and lilac ink. */
-  --color-bg-chrome: rgba(255, 255, 255, 0.86);
-  --color-bg-sidebar: linear-gradient(180deg, #ffffff 0%, #faf8ff 100%);
-  --color-bg-panel: linear-gradient(145deg, #ffffff 65%, #faf9ff);
-  --color-bg-atmosphere:
-    radial-gradient(ellipse 65% 42% at 5% 0%, rgba(245, 196, 220, 0.32), transparent 72%),
-    radial-gradient(ellipse 55% 45% at 95% 0%, rgba(187, 197, 248, 0.28), transparent 72%),
-    var(--color-bg-canvas);
-  --color-brand-bg: linear-gradient(135deg, #b83f73, #8650ab);
-  --color-brand-ink: #ffffff;
-  --color-badge-bg: var(--color-primary-subtle);
-  --color-badge-ink: var(--color-primary);
-  /* Agent badge — lilac violet, distinct from the rose primary-subtle */
-  --color-badge-agent-bg: #efe9fa;
-  --color-badge-agent-ink: #6d4fa1;
-  --color-nav-selected: linear-gradient(100deg, #fbeaf2, #f0ecfa);
-  --color-button-bg: linear-gradient(115deg, #b83f73, #8650ab);
+  --color-bg-chrome: rgba(247, 246, 251, 0.78);
+  --color-brand-bg: linear-gradient(135deg, #d0558a 0%, #b83f73 45%, #8650ab 110%);
+  --color-button-bg: linear-gradient(115deg, #c04a7d, #8a55ad);
   --color-button-hover-bg: linear-gradient(115deg, #a53165, #744394);
-  --chrome-blur: 16px;
-  --sakura-decoration-display: block;
-  --sakura-decoration-opacity: 0.28;
+  --color-badge-agent-bg: rgba(119, 96, 178, 0.10);
+  --color-badge-agent-ink: #6d4fa1;
+  --shadow-color: 68 31 51;
+  --color-overlay: rgb(38 40 61 / 0.34);
 }
 
 /* =============================================
-   Theme: 夜樱 (sakura-night) — Indigo moonlight and sakura
-   Layered blue-violet surfaces with pink and lilac highlights.
+   ☀️ 晴空 (business) — clear-sky indigo on cool grey
+   ============================================= */
+[data-theme="business"] {
+  --color-primary: #5b57e8;
+  --color-primary-hover: #4c48d6;
+  --color-primary-active: #403cc0;
+  --color-primary-subtle: rgba(91, 87, 232, 0.08);
+  --color-primary-50: rgba(91, 87, 232, 0.04);
+  --color-primary-100: rgba(91, 87, 232, 0.10);
+  --color-primary-200: rgba(91, 87, 232, 0.18);
+  --color-primary-300: rgba(91, 87, 232, 0.32);
+
+  --color-accent: #0e9fbb;
+  --color-accent-hover: #0b88a1;
+  --color-accent-subtle: rgba(14, 159, 187, 0.09);
+
+  --color-text-primary: #18181b;
+  --color-text-secondary: #52525b;
+  --color-text-tertiary: #6b6b75;
+  --color-text-muted: #71717a;
+
+  --color-bg-canvas: #f7f7f8;
+  --color-bg-sunken: #f1f1f3;
+  --color-bg-subtle: #f6f6f7;
+  --color-bg-hover: #efeff1;
+  --color-bg-active: #e6e6ea;
+
+  --color-border-subtle: rgba(24, 24, 27, 0.06);
+  --color-border-default: rgba(24, 24, 27, 0.10);
+  --color-border-strong: rgba(24, 24, 27, 0.18);
+  --color-border-focus: rgba(91, 87, 232, 0.55);
+
+  --color-bg-chrome: rgba(247, 247, 248, 0.78);
+  --color-badge-agent-bg: rgba(14, 159, 187, 0.10);
+  --color-badge-agent-ink: #0b7d93;
+}
+
+/* =============================================
+   🌙 夜樱 (sakura-night) — indigo moonlight with sakura pink
    ============================================= */
 [data-theme="sakura-night"] {
-  color-scheme: dark;
-
   --color-primary: #efaccf;
   --color-primary-hover: #f8c3de;
   --color-primary-active: #df96c0;
-  --color-primary-subtle: #35283f;
-  --color-primary-50: #242237;
-  --color-primary-100: #35283f;
-  --color-primary-200: #4b3458;
-  --color-primary-300: #6d4b7c;
+  --color-primary-subtle: rgba(239, 172, 207, 0.12);
+  --color-primary-50: rgba(239, 172, 207, 0.06);
+  --color-primary-100: rgba(239, 172, 207, 0.13);
+  --color-primary-200: rgba(239, 172, 207, 0.22);
+  --color-primary-300: rgba(239, 172, 207, 0.36);
 
   --color-accent: #b6acf1;
   --color-accent-hover: #cec5ff;
-  --color-accent-subtle: #302d4b;
+  --color-accent-subtle: rgba(182, 172, 241, 0.10);
 
-  --color-text-primary: #f0eefb;
-  --color-text-secondary: #c0c2dc;
-  --color-text-tertiary: #a2a6c5;
-  --color-text-muted: #9ba1c0;
+  --color-text-primary: #eeecf8;
+  --color-text-secondary: #b5b7d0;
+  --color-text-tertiary: #9a9dbb;
+  --color-text-muted: #9599b8;
   --color-text-inverse: #221a35;
 
-  --color-bg-canvas: #101320;
-  --color-bg-surface: #1b1e31;
-  --color-bg-surface-raised: #24283e;
-  --color-bg-sunken: #0c0f1b;
-  --color-bg-subtle: #22263b;
-  --color-bg-hover: #2b2e47;
-  --color-bg-active: #353551;
+  --color-bg-canvas: #0d0f1a;
+  --color-bg-surface: #151826;
+  --color-bg-surface-raised: #1b1e2f;
+  --color-bg-sunken: #0a0c15;
+  --color-bg-subtle: #191c2c;
+  --color-bg-hover: #212438;
+  --color-bg-active: #2a2d44;
 
-  --color-border-subtle: #2c314a;
-  --color-border-default: #3c435f;
-  --color-border-strong: #616b8e;
-  --color-border-focus: #b89bdc;
+  --color-border-focus: rgba(239, 172, 207, 0.55);
 
-  --color-success: #85ccb5;
-  --color-success-50: #1b2e2c;
-  --color-success-subtle: #223a32;
-  --color-success-glow: rgba(133, 204, 181, 0.14);
-  --color-danger: #f1a2a7;
-  --color-danger-50: #322433;
-  --color-danger-subtle: #422b38;
-  --color-danger-glow: rgba(241, 162, 167, 0.14);
-  --color-warning: #e4c18a;
-  --color-warning-50: #2d2930;
-  --color-warning-subtle: #3b3336;
-  --color-warning-glow: rgba(228, 193, 138, 0.14);
-
-  /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #22263b;
-  --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: #2a2841;
-
-  /* Shadow quality params — same single-layer sakura look, deep indigo ink */
-  --shadow-color: 8 5 12;
-  --shadow-alpha-xs: 0.16;
-  --shadow-alpha-sm: 0.22;
-  --shadow-alpha-sm-2: 0;
-  --shadow-alpha-md: 0.26;
-  --shadow-alpha-md-2: 0;
-  --shadow-alpha-lg: 0.32;
-  --shadow-alpha-lg-2: 0;
-  --shadow-alpha-xl: 0.36;
-  --shadow-alpha-xl-2: 0;
-  --shadow-alpha-2xl: 0.44;
-  --shadow-alpha-inner: 0.20;
-  --shadow-focus-color: rgba(239, 172, 207, 0.18);
-
-  /* Modal overlay scrim */
-  --color-overlay: rgb(8 5 12 / 0.55);
-
-  /* The same sakura identity under indigo moonlight. */
-  --color-bg-chrome: rgba(27, 30, 49, 0.88);
-  --color-bg-sidebar: linear-gradient(180deg, #1b1e31 0%, #1d1d33 100%);
-  --color-bg-panel: linear-gradient(145deg, #20243a, #1b1e31 70%);
-  --color-bg-atmosphere:
-    radial-gradient(ellipse 65% 42% at 5% 0%, rgba(117, 70, 123, 0.18), transparent 72%),
-    radial-gradient(ellipse 55% 45% at 95% 0%, rgba(100, 104, 187, 0.18), transparent 72%),
-    var(--color-bg-canvas);
-  --color-brand-bg: linear-gradient(135deg, #efaccf, #bcb0f2);
+  --color-bg-chrome: rgba(13, 15, 26, 0.74);
+  --color-brand-bg: linear-gradient(135deg, #efaccf 0%, #c9a0e8 55%, #a9b0f5 110%);
   --color-brand-ink: #221a35;
-  --color-badge-bg: var(--color-primary-subtle);
-  --color-badge-ink: var(--color-primary);
-  /* Agent badge — cool violet, distinct from the pink primary badge */
-  --color-badge-agent-bg: #2f2b4d;
-  --color-badge-agent-ink: #c9bcff;
-  --color-nav-selected: linear-gradient(100deg, #35283f, #302d4b);
   --color-button-bg: linear-gradient(115deg, #efaccf, #bcb0f2);
   --color-button-hover-bg: linear-gradient(115deg, #f8c3de, #cec5ff);
-  --chrome-blur: 16px;
-  --sakura-decoration-display: block;
-  --sakura-decoration-opacity: 0.20;
+  --color-badge-agent-bg: rgba(182, 172, 241, 0.14);
+  --color-badge-agent-ink: #c9bcff;
+  --shadow-color: 4 3 10;
 }
 
 /* =============================================
-   Theme: 夜猫 (neko-dark) — Deep blue dark
+   🐱 夜猫 (neko-dark) — deep navy with sky blue
    ============================================= */
 [data-theme="neko-dark"] {
-  color-scheme: dark;
-
   --color-primary: #60a5fa;
   --color-primary-hover: #93c5fd;
   --color-primary-active: #3b82f6;
   --color-primary-subtle: rgba(96, 165, 250, 0.12);
   --color-primary-50: rgba(96, 165, 250, 0.06);
-  --color-primary-100: rgba(96, 165, 250, 0.14);
+  --color-primary-100: rgba(96, 165, 250, 0.13);
   --color-primary-200: rgba(96, 165, 250, 0.22);
-  --color-primary-300: rgba(96, 165, 250, 0.32);
+  --color-primary-300: rgba(96, 165, 250, 0.36);
 
   --color-accent: #a78bfa;
   --color-accent-hover: #c4b5fd;
   --color-accent-subtle: rgba(167, 139, 250, 0.10);
 
-  --color-text-primary: #f1f5f9;
-  --color-text-secondary: #94a3b8;
-  --color-text-tertiary: #8b9cb3;
-  /* Alias kept for consumers of the old name — same canonical value. */
-  --color-text-muted: var(--color-text-tertiary);
-  --color-text-inverse: #0f172a;
+  --color-text-primary: #edf2f8;
+  --color-text-secondary: #a3b1c4;
+  --color-text-tertiary: #8b9ab0;
+  --color-text-muted: #8b9ab0;
+  --color-text-inverse: #0b1120;
 
-  --color-bg-canvas: #0f172a;
-  --color-bg-surface: #1e293b;
-  --color-bg-surface-raised: #334155;
-  --color-bg-sunken: #0b1221;
-  --color-bg-subtle: rgba(96, 165, 250, 0.05);
-  --color-bg-hover: rgba(96, 165, 250, 0.08);
-  --color-bg-active: rgba(96, 165, 250, 0.12);
+  --color-bg-canvas: #0a0f1c;
+  --color-bg-surface: #0f1626;
+  --color-bg-surface-raised: #152036;
+  --color-bg-sunken: #070b15;
+  --color-bg-subtle: #121a2d;
+  --color-bg-hover: #182238;
+  --color-bg-active: #1f2b45;
 
-  --color-border-subtle: rgba(255, 255, 255, 0.04);
-  --color-border-default: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.14);
-  --color-border-focus: rgba(96, 165, 250, 0.40);
+  --color-border-focus: rgba(96, 165, 250, 0.55);
 
-  --color-success: #34d399;
-  --color-success-50: rgba(52, 211, 153, 0.10);
-  --color-success-subtle: rgba(52, 211, 153, 0.12);
-  --color-success-glow: rgba(52, 211, 153, 0.25);
-  --color-danger: #f87171;
-  --color-danger-50: rgba(248, 113, 113, 0.10);
-  --color-danger-subtle: rgba(248, 113, 113, 0.12);
-  --color-danger-glow: rgba(248, 113, 113, 0.25);
-  --color-warning: #fbbf24;
-  --color-warning-50: rgba(251, 191, 36, 0.10);
-  --color-warning-subtle: rgba(251, 191, 36, 0.12);
-  --color-warning-glow: rgba(251, 191, 36, 0.25);
-
-  /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
-  --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: rgba(96, 165, 250, 0.08);
-
-  /* Agent badge — violet, distinct from the blue primary badge */
-  --color-badge-agent-bg: rgba(167, 139, 250, 0.18);
+  --color-bg-chrome: rgba(10, 15, 28, 0.74);
+  --color-brand-bg: linear-gradient(135deg, #60a5fa 0%, #6d7cf5 55%, #a78bfa 110%);
+  --color-brand-ink: #ffffff;
+  --color-badge-agent-bg: rgba(167, 139, 250, 0.16);
   --color-badge-agent-ink: #c4b5fd;
-
-  /* Shadow quality params — deep dark, high opacity (geometry in shared block) */
-  --shadow-color: 0 0 0;
-  --shadow-alpha-xs: 0.25;
-  --shadow-alpha-sm: 0.30;
-  --shadow-alpha-sm-2: 0.20;
-  --shadow-alpha-md: 0.35;
-  --shadow-alpha-md-2: 0.25;
-  --shadow-alpha-lg: 0.40;
-  --shadow-alpha-lg-2: 0.30;
-  --shadow-alpha-xl: 0.45;
-  --shadow-alpha-xl-2: 0.30;
-  --shadow-alpha-2xl: 0.55;
-  --shadow-alpha-inner: 0.20;
-
-  /* Modal overlay scrim */
-  --color-overlay: rgb(2 6 23 / 0.60);
-}
-
-/* =============================================
-   Theme: 晴空 (business) — Professional SaaS
-   Primary: Indigo 600 — calm, trustworthy, modern
-   ============================================= */
-[data-theme="business"] {
-  color-scheme: light;
-
-  /* Primary: Indigo — the gold standard for SaaS (Stripe, Linear, Vercel) */
-  --color-primary: #4f46e5;
-  --color-primary-hover: #4338ca;
-  --color-primary-active: #3730a3;
-  --color-primary-subtle: rgba(79, 70, 229, 0.10);
-  --color-primary-50: rgba(79, 70, 229, 0.04);
-  --color-primary-100: rgba(79, 70, 229, 0.08);
-  --color-primary-200: rgba(79, 70, 229, 0.16);
-  --color-primary-300: rgba(79, 70, 229, 0.28);
-
-  /* Accent: Cyan — complements indigo without competing */
-  --color-accent: #06b6d4;
-  --color-accent-hover: #0891b2;
-  --color-accent-subtle: rgba(6, 182, 212, 0.08);
-
-  /* Text: Slate scale — neutral, highly legible, professional */
-  --color-text-primary: #0f172a;
-  --color-text-secondary: #475569;
-  --color-text-tertiary: #64748b;
-  /* Alias kept for consumers of the old name — same canonical value. */
-  --color-text-muted: var(--color-text-tertiary);
-  --color-text-inverse: #ffffff;
-
-  /* Background: Cool gray — clean, unobtrusive canvas */
-  --color-bg-canvas: #f8fafc;
-  --color-bg-surface: #ffffff;
-  --color-bg-surface-raised: #ffffff;
-  --color-bg-sunken: #f1f5f9;
-  --color-bg-subtle: #f1f5f9;
-  --color-bg-hover: #e2e8f0;
-  --color-bg-active: #cbd5e1;
-
-  /* Borders: Slate-tinted for cohesive feel */
-  --color-border-subtle: rgba(15, 23, 42, 0.06);
-  --color-border-default: rgba(15, 23, 42, 0.09);
-  --color-border-strong: rgba(15, 23, 42, 0.15);
-  --color-border-focus: rgba(79, 70, 229, 0.40);
-
-  /* Semantic: slightly adjusted for indigo harmony */
-  --color-success: #10b981;
-  --color-success-50: rgba(16, 185, 129, 0.08);
-  --color-success-subtle: rgba(16, 185, 129, 0.10);
-  --color-success-glow: rgba(16, 185, 129, 0.20);
-  --color-danger: #ef4444;
-  --color-danger-50: rgba(239, 68, 68, 0.08);
-  --color-danger-subtle: rgba(239, 68, 68, 0.10);
-  --color-danger-glow: rgba(239, 68, 68, 0.20);
-  --color-warning: #f59e0b;
-  --color-warning-50: rgba(245, 158, 11, 0.08);
-  --color-warning-subtle: rgba(245, 158, 11, 0.10);
-  --color-warning-glow: rgba(245, 158, 11, 0.20);
-
-  /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #f1f5f9;
-  --color-dashboard-tile-border: var(--color-border-default);
-  --color-dashboard-tile-header-bg: rgba(79, 70, 229, 0.04);
-
-  /* Agent badge — purple, distinct from the indigo primary */
-  --color-badge-agent-bg: rgba(147, 51, 234, 0.10);
-  --color-badge-agent-ink: #9333ea;
-
-  /* Shadow quality params match the shared (slate-tinted) defaults exactly. */
-
-  /* Modal overlay scrim */
-  --color-overlay: rgb(15 23 42 / 0.42);
 }

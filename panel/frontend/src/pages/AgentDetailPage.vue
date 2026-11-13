@@ -2658,7 +2658,7 @@ function packageStatusLabel(status) {
   align-items: center;
   justify-content: center;
   padding: var(--space-2-5) var(--space-6);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: 1.5px solid var(--color-border-default);
   color: var(--color-text-secondary);
   font-size: var(--text-sm);

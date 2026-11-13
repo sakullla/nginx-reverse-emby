@@ -85,17 +85,16 @@ function onKey(e) {
 .base-list-card {
   position: relative;
   background: var(--color-bg-surface);
-  border: var(--border-width-thin) solid var(--color-border-subtle);
-  border-radius: var(--radius-2xl);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
   padding: var(--space-4);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   overflow: hidden;
   box-shadow: var(--shadow-xs);
-  transition: border-color var(--duration-fast) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
-    transform var(--duration-fast) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
-    box-shadow var(--duration-normal) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+  transition: border-color var(--duration-fast) var(--ease-default),
+    box-shadow var(--duration-normal) var(--ease-default);
 }
 
 .base-list-card--clickable {
@@ -103,24 +102,23 @@ function onKey(e) {
 }
 
 .base-list-card--clickable:hover {
-  border-color: var(--color-primary-300);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-lg);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-md);
 }
 
 .base-list-card--clickable:focus-visible {
   outline: none;
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
-}
-
-.base-list-card--clickable:active {
-  transform: translateY(0);
+  border-color: var(--color-border-focus);
+  box-shadow: var(--shadow-focus);
 }
 
 .base-list-card--disabled {
-  background: var(--color-bg-sunken);
-  border-style: dashed;
+  background: var(--color-bg-subtle);
+  box-shadow: none;
+}
+
+.base-list-card--disabled .base-list-card__title {
+  color: var(--color-text-tertiary);
 }
 
 .base-list-card__header {
@@ -143,17 +141,30 @@ function onKey(e) {
 .base-list-card__header-right {
   display: flex;
   align-items: center;
-  gap: var(--space-0-5);
+  gap: 1px;
   flex-shrink: 0;
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
+/* Pointer devices: reveal secondary actions on intent to keep cards calm. */
+@media (hover: hover) and (pointer: fine) {
+  .base-list-card__header-right {
+    opacity: 0.35;
+  }
+
+  .base-list-card:hover .base-list-card__header-right,
+  .base-list-card:focus-within .base-list-card__header-right {
+    opacity: 1;
+  }
 }
 
 .base-list-card__title {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
   font-weight: var(--font-semibold);
   color: var(--color-text-primary);
-  line-height: 1.35;
-  letter-spacing: -0.01em;
+  line-height: 1.4;
+  letter-spacing: -0.015em;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -165,7 +176,7 @@ function onKey(e) {
 .base-list-card__body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1-5);
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -175,7 +186,7 @@ function onKey(e) {
   gap: var(--space-1);
   min-width: 0;
   margin-top: auto;
-  padding-top: var(--space-0-5);
+  padding-top: var(--space-1);
 }
 
 @media (max-width: 640px) {

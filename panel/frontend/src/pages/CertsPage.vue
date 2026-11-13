@@ -7,6 +7,7 @@
     >
       <template #actions>
         <a
+          title="查看文档"
           class='btn btn-secondary docs-link cert-center__docs-link'
           :href='DOC_LINKS.certificates'
           target='_blank'
@@ -561,7 +562,7 @@ async function confirmDelete() {
 
 <style scoped>
 .certs-page {
-  max-width: 1200px;
+  max-width: none;
   margin: 0 auto;
   animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }

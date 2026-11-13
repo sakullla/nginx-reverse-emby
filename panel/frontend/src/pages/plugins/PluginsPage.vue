@@ -539,7 +539,7 @@ function openDetail(detail) {
 .plugins-chip {
   padding: 0.3rem 0.7rem;
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   background: var(--color-bg-canvas);
   color: var(--color-text-secondary);
   font: inherit;

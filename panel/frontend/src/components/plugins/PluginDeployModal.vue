@@ -732,7 +732,7 @@ async function deploy(payload) {
 .plugin-deployment__agent-search input::-webkit-search-cancel-button { appearance: none; }
 .plugin-deployment__agent-filters { display: flex; flex-wrap: wrap; gap: .25rem; }
 .plugin-deployment__agent-filter {
-  padding: var(--space-0-5) var(--space-2); border: 0; border-radius: var(--radius-full);
+  padding: var(--space-0-5) var(--space-2); border: 0; border-radius: var(--radius-md);
   background: var(--color-bg-surface); color: var(--color-text-secondary);
   font: inherit; font-size: var(--text-xs); cursor: pointer;
 }

@@ -258,7 +258,7 @@ function backendTooltip(rule) {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);
@@ -305,14 +305,18 @@ function backendTooltip(rule) {
 .toggle--on .toggle__knob { transform: translateX(16px); }
 
 .tag {
-  font-size: 0.6875rem;
-  padding: var(--space-0-5) var(--space-2);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border-radius: var(--radius-full);
-  font-weight: 600;
-  font-family: var(--font-mono);
-  line-height: 1.3;
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+  font-size: var(--text-2xs);
+  padding: 0 var(--space-1-5);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-xs);
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+  box-sizing: border-box;
 }
 
 tbody tr.empty-state-row:hover { background: transparent; }

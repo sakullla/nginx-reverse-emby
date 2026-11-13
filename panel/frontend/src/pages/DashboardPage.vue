@@ -121,7 +121,6 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 
 <style scoped>
 .dashboard {
-  max-width: 1200px;
   margin: 0 auto;
 }
 
@@ -139,10 +138,10 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 
 .dashboard__title {
   font-size: var(--text-2xl);
-  font-weight: 700;
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0 0 var(--space-1);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 
 .dashboard__subtitle {
@@ -176,9 +175,9 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 .dashboard__health-cell {
   background: var(--color-bg-panel, var(--color-bg-surface));
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-2xl);
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xs);
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-5);
   min-width: 0;
 }
 
@@ -191,8 +190,8 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 }
 
 .dashboard__nodes-title {
-  font-size: var(--text-base);
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
   color: var(--color-text-primary);
   margin: 0;
 }
@@ -200,8 +199,8 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 .dashboard__nodes-link {
   display: inline-flex;
   align-items: center;
-  padding: 0.25rem 0.75rem;
-  border-radius: var(--radius-full);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
   font-size: 0.8125rem;
   color: var(--color-primary);
   text-decoration: none;
@@ -241,12 +240,5 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
   .dashboard__title {
     font-size: var(--text-xl);
   }
-}
-/* Wide-screen (2K/4K) width steps */
-@media (min-width: 1920px) {
-  .dashboard { max-width: 1600px; }
-}
-@media (min-width: 2560px) {
-  .dashboard { max-width: 2000px; }
 }
 </style>

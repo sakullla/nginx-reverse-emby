@@ -1374,7 +1374,7 @@ async function handleSubmit() {
       var(--color-bg-subtle) 100%
     );
   border: 1px solid color-mix(in srgb, var(--color-border-default) 92%, var(--color-primary) 8%);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-lg);
   z-index: 2;
   box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent);
 }
@@ -1387,7 +1387,7 @@ async function handleSubmit() {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text-muted);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   transition:
     color var(--duration-fast) var(--ease-default),
     background var(--duration-fast) var(--ease-default),

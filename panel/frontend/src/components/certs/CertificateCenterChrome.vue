@@ -98,16 +98,16 @@ function onDomainChange(next) {
 
 .cert-center__title {
   margin: 0 0 0.15rem;
-  font-size: 1.3125rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  letter-spacing: -0.03em;
   line-height: 1.25;
   color: var(--color-text-primary);
 }
 
 .cert-center__subtitle {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   line-height: 1.35;
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;

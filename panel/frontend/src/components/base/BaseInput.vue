@@ -98,10 +98,12 @@ const handleBlur = (event) => {
 
 input {
   width: 100%;
-  padding: var(--space-2-5) var(--space-4);
+  min-height: var(--control-height-md);
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  border: var(--border-width-thick) solid var(--color-border-default);
+  border: 1px solid var(--color-border-default);
   background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
   font-size: var(--text-sm);
   color: var(--color-text-primary);
   outline: none;
@@ -112,7 +114,7 @@ input {
 }
 
 input:focus {
-  border-color: var(--color-primary);
+  border-color: var(--color-border-focus);
   box-shadow: var(--shadow-focus);
 }
 

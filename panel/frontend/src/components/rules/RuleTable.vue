@@ -5,10 +5,10 @@
         <tr>
           <th class="rules-table__col-toggle"></th>
           <th class="rules-table__col-status">状态</th>
-          <th>前端地址</th>
-          <th>后端地址</th>
-          <th v-if="showAgentColumn">节点</th>
-          <th>标签</th>
+          <th class="rules-table__col-frontend">前端地址</th>
+          <th class="rules-table__col-backend">后端地址</th>
+          <th v-if="showAgentColumn" class="rules-table__col-agent">节点</th>
+          <th class="rules-table__col-tags">标签</th>
           <th class="rules-table__col-actions">操作</th>
         </tr>
       </thead>
@@ -147,8 +147,8 @@ function backendTooltip(rule) {
 <style scoped>
 .rule-table {
   overflow-x: auto;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-2xl);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
   background: var(--color-bg-surface);
   box-shadow: var(--shadow-xs);
 }
@@ -156,23 +156,28 @@ function backendTooltip(rule) {
 .rules-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 720px;
+  table-layout: fixed;
+  min-width: 760px;
 }
 
 .rules-table th {
   text-align: left;
-  padding: 0.7rem 1rem;
-  font-size: 0.6875rem;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  color: var(--color-text-muted);
-  border-bottom: 1px solid var(--color-border-subtle);
+  padding: 0 var(--space-4);
+  height: 2.5rem;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-subtle);
+  border-bottom: 1px solid var(--color-border-default);
   white-space: nowrap;
 }
 
-.rules-table__col-toggle { width: 3rem; }
-.rules-table__col-status { width: 8rem; }
-.rules-table__col-actions { width: 5.25rem; }
+.rules-table__col-toggle { width: 4rem; }
+.rules-table__col-status { width: 10.5rem; }
+.rules-table__col-backend { width: 24%; }
+.rules-table__col-agent { width: 9rem; }
+.rules-table__col-tags { width: 18%; }
+.rules-table__col-actions { width: 6rem; }
 
 .rules-table__row {
   border-bottom: 1px solid var(--color-border-subtle);
@@ -184,55 +189,57 @@ function backendTooltip(rule) {
 }
 
 .rules-table__row:hover {
-  background: var(--color-bg-hover);
+  background: var(--color-bg-subtle);
 }
 
-.rules-table__row--disabled {
-  opacity: 0.62;
+.rules-table__row--disabled td:not(:first-child) {
+  opacity: 0.55;
 }
 
 .rules-table td {
-  padding: 0.75rem 1rem;
+  padding: var(--space-3) var(--space-4);
   vertical-align: middle;
+  overflow: hidden;
 }
 
 .rules-table__status {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 0.3rem;
 }
 
 .rules-table__url-cell {
   display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  align-items: baseline;
+  gap: var(--space-2);
   min-width: 0;
-  max-width: 28rem;
 }
 
 .rules-table__id {
+  flex-shrink: 0;
   color: var(--color-text-muted);
   font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 650;
-  line-height: 1.2;
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .rules-table__url {
   display: block;
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  font-weight: 500;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
   color: var(--color-text-primary);
-  line-height: 1.35;
+  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .rules-table__url--backend {
-  max-width: 18rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--font-normal);
   color: var(--color-text-secondary);
 }
 
@@ -240,23 +247,23 @@ function backendTooltip(rule) {
   display: flex;
   gap: 0.25rem;
   flex-wrap: wrap;
-  max-width: 12rem;
 }
 
 .rules-table__empty-cell {
   color: var(--color-text-muted);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
 }
 
 .rules-table__service-link {
   color: var(--color-primary);
-  font-size: 0.75rem;
-  font-weight: 650;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
   text-decoration: none;
 }
 
 .rules-table__actions {
   display: flex;
+  justify-content: flex-end;
   gap: 0.2rem;
 }
 
@@ -266,17 +273,17 @@ function backendTooltip(rule) {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
 }
 
 .rules-table__actions .btn-icon:hover {
   background: var(--color-bg-hover);
-  color: var(--color-primary);
+  color: var(--color-text-primary);
 }
 
 .rules-table__actions .btn-icon--danger:hover {
@@ -285,42 +292,49 @@ function backendTooltip(rule) {
 }
 
 .toggle {
-  width: 36px;
+  width: 34px;
   height: 20px;
   border-radius: var(--radius-full);
   border: none;
-  background: var(--color-bg-subtle);
+  background: var(--color-bg-active);
   cursor: pointer;
   position: relative;
   transition: background var(--duration-normal) var(--ease-default);
   padding: 0;
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
 }
 
-.toggle--on { background: var(--color-primary); }
+.toggle--on {
+  background: var(--color-primary);
+  box-shadow: none;
+}
 
 .toggle__knob {
   position: absolute;
-  top: var(--space-0-5);
-  left: var(--space-0-5);
+  top: 2px;
+  left: 2px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--color-text-inverse);
-  transition: transform var(--duration-normal) var(--ease-default);
-  box-shadow: var(--shadow-xs);
+  background: #ffffff;
+  transition: transform var(--duration-normal) var(--ease-spring);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
 }
 
-.toggle--on .toggle__knob { transform: translateX(16px); }
+.toggle--on .toggle__knob { transform: translateX(14px); }
 
 .tag {
-  font-size: 0.6875rem;
-  padding: var(--space-0-5) var(--space-2);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border-radius: var(--radius-full);
-  font-weight: 600;
-  font-family: var(--font-mono);
-  line-height: 1.3;
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+  font-size: var(--text-2xs);
+  padding: 0 var(--space-1-5);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-xs);
+  font-weight: var(--font-medium);
+  box-sizing: border-box;
 }
 
 tbody tr.empty-state-row:hover { background: transparent; }
@@ -329,6 +343,6 @@ tbody tr.empty-state-row:hover { background: transparent; }
   text-align: center;
   padding: 2rem 1rem;
   color: var(--color-text-tertiary);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
 }
 </style>

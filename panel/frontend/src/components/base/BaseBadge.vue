@@ -45,12 +45,14 @@ defineProps({
 .base-badge {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 0.3rem;
   line-height: 1;
-  font-weight: var(--font-semibold);
+  font-weight: var(--font-medium);
   white-space: nowrap;
   flex-shrink: 0;
-  transition: all var(--duration-fast) var(--ease-default);
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
 }
 
 .base-badge__dot {
@@ -64,30 +66,35 @@ defineProps({
 
 .base-badge--success {
   background: var(--color-success-50);
+  border-color: color-mix(in srgb, var(--color-success) 16%, transparent);
   color: var(--color-success);
 }
 
 .base-badge--warning {
   background: var(--color-warning-50);
+  border-color: color-mix(in srgb, var(--color-warning) 18%, transparent);
   color: var(--color-warning);
 }
 
 .base-badge--danger {
   background: var(--color-danger-50);
+  border-color: color-mix(in srgb, var(--color-danger) 16%, transparent);
   color: var(--color-danger);
 }
 
 .base-badge--primary {
-  background: var(--color-primary-subtle);
+  background: var(--color-primary-50);
+  border-color: color-mix(in srgb, var(--color-primary) 18%, transparent);
   color: var(--color-primary);
 }
 
 .base-badge--neutral {
   background: var(--color-bg-subtle);
+  border-color: var(--color-border-default);
 }
 
 .base-badge--neutral.base-badge--muted {
-  color: var(--color-text-muted);
+  color: var(--color-text-tertiary);
 }
 
 .base-badge--neutral.base-badge--secondary {
@@ -99,23 +106,28 @@ defineProps({
 }
 
 .base-badge--square {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
 }
 
 .base-badge--sm {
-  font-size: var(--text-xs);
-  padding: var(--space-0-5) var(--space-1-5);
-  font-weight: var(--font-bold);
+  height: 1.25rem;
+  font-size: var(--text-2xs);
+  padding: 0 var(--space-1-5);
 }
 
 .base-badge--md {
+  height: 1.5rem;
   font-size: var(--text-xs);
-  padding: var(--space-1) var(--space-2);
+  padding: 0 var(--space-2);
 }
 
 .base-badge--mono {
   font-family: var(--font-mono);
-  font-weight: var(--font-bold);
-  letter-spacing: 0.02em;
+  font-weight: var(--font-medium);
+  letter-spacing: 0;
+}
+
+.base-badge.tag-badge {
+  border-radius: var(--radius-xs);
 }
 </style>

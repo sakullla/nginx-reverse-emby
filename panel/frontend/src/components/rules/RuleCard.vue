@@ -71,7 +71,7 @@
     />
 
     <template v-if="hasTags || serviceLink" #footer>
-      <BaseBadge v-for="tag in rule.tags || []" :key="tag" tone="primary">{{ tag }}</BaseBadge>
+      <BaseBadge v-for="tag in rule.tags || []" :key="tag" tone="neutral" subtone="secondary" class="tag-badge">{{ tag }}</BaseBadge>
       <RouterLink v-if="serviceLink" :to="serviceLink.to" class="rule-card__service-link" :title="`服务 ${serviceLink.id}`">服务接入</RouterLink>
     </template>
   </BaseListCard>

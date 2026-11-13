@@ -113,7 +113,7 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.vm.series[1].data).toEqual([600, 1200])
     expect(wrapper.vm.series[2].data).toEqual([400, 800])
     expect(wrapper.vm.chartOptions.stroke.width).toHaveLength(seriesNames.length)
-    expect(wrapper.vm.chartOptions.colors[quotaIndex]).toBe('#ef4444')
+    expect(wrapper.vm.chartOptions.colors[quotaIndex]).toBe('#f0607a')
     expect(wrapper.vm.chartOptions.stroke.width[quotaIndex]).toBe(1)
     expect(wrapper.vm.chartOptions.stroke.dashArray[quotaIndex]).toBe(6)
     expect(wrapper.vm.chartOptions.fill.type[quotaIndex]).toBe('none')

@@ -268,7 +268,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   align-items: center;
   gap: var(--space-1-5);
   padding: var(--space-1-5) var(--space-3);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: var(--border-width-thin) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);

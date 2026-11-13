@@ -102,10 +102,10 @@ function tileClass(agent) {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-xl);
+  padding: var(--space-2-5) var(--space-3);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
   text-decoration: none;
   min-width: 0;
   transition: background var(--duration-fast) var(--ease-default),
@@ -114,9 +114,8 @@ function tileClass(agent) {
 }
 
 .agent-tile:hover {
-  background: var(--color-bg-hover);
   border-color: var(--color-border-strong);
-  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .agent-tile__dot {
@@ -124,27 +123,23 @@ function tileClass(agent) {
   height: var(--space-2);
   border-radius: 50%;
   background: var(--color-success, #34d399);
+  box-shadow: 0 0 0 3px var(--color-success-subtle);
   flex-shrink: 0;
 }
 
 .agent-tile--pending .agent-tile__dot {
   background: var(--color-warning, #fbbf24);
+  box-shadow: 0 0 0 3px var(--color-warning-subtle);
 }
 
 .agent-tile--failed .agent-tile__dot {
   background: var(--color-danger, #ef4444);
+  box-shadow: 0 0 0 3px var(--color-danger-subtle);
 }
 
 .agent-tile--offline .agent-tile__dot {
   background: var(--color-text-muted);
-}
-
-.agent-tile--offline {
-  border-color: color-mix(in srgb, var(--color-danger, #ef4444) 25%, var(--color-border-subtle));
-}
-
-.agent-tile--failed {
-  border-color: color-mix(in srgb, var(--color-danger, #ef4444) 35%, var(--color-border-subtle));
+  box-shadow: 0 0 0 3px var(--color-bg-active);
 }
 
 .agent-tile__body {

@@ -270,7 +270,7 @@ function navigateToAgent(agent) {
   }
 }
 
-const DISTRIBUTION_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#22d3ee', '#f472b6']
+const DISTRIBUTION_COLORS = ['#6d6af5', '#22b8cf', '#34c38f', '#f5a524', '#f0607a', '#a77bf3', '#4aa3f0']
 
 function rankStyle(index) {
   return { background: DISTRIBUTION_COLORS[index % DISTRIBUTION_COLORS.length] }
@@ -507,7 +507,7 @@ function scalePoints(points, factor) {
   display: inline-flex;
   align-items: center;
   padding: 0.2rem 0.55rem;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
   color: var(--color-text-tertiary);

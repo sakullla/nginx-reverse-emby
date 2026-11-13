@@ -1,12 +1,13 @@
 <template>
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
     <div class="sidebar__header">
-      <span class="sidebar__brand" v-show="!collapsed">Nginx Proxy</span>
-      <button class="sidebar__collapse-btn" type="button" @click="toggleCollapse" :aria-label="collapsed ? '展开侧栏' : '折叠侧栏'" :title="collapsed ? '展开侧栏' : '折叠侧栏'">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ 'rotate-180': collapsed }">
-          <polyline points="15 18 9 12 15 6"/>
-        </svg>
-      </button>
+      <RouterLink to="/" class="sidebar__brand-link" aria-label="Nginx Proxy 首页" title="Nginx Proxy">
+        <span class="sidebar__logo"><BrandMark /></span>
+        <span v-show="!collapsed" class="sidebar__brand-text">
+          <span class="sidebar__brand">Nginx Proxy</span>
+          <span class="sidebar__brand-sub">反向代理控制台</span>
+        </span>
+      </RouterLink>
     </div>
 
     <!-- Expanded navigation -->
@@ -122,6 +123,18 @@
         </div>
       </template>
     </nav>
+
+    <div class="sidebar__footer">
+      <button class="sidebar__collapse-btn" type="button" @click="toggleCollapse" :aria-label="collapsed ? '展开侧栏' : '折叠侧栏'" :title="collapsed ? '展开侧栏' : '折叠侧栏'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+          <path d="M9 4v16"/>
+          <path v-if="collapsed" d="m13 10 2 2-2 2"/>
+          <path v-else d="m15 10-2 2 2 2"/>
+        </svg>
+        <span v-show="!collapsed">收起侧栏</span>
+      </button>
+    </div>
   </aside>
 </template>
 
@@ -129,11 +142,13 @@
 import { ref, computed, h, onMounted, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useAccessControl } from '../../context/useAccessControl'
+import BrandMark from '../base/BrandMark.vue'
 import { pluginChildrenForGroup, usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
 
 // --- Icon components ---
-const makeIcon = (paths) => () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, paths.map(d => h('path', { d })))
-const makeIconMixed = (els) => () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, els.map(e => {
+const ICON_ATTRS = { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' }
+const makeIcon = (paths) => () => h('svg', ICON_ATTRS, paths.map(d => h('path', { d })))
+const makeIconMixed = (els) => () => h('svg', ICON_ATTRS, els.map(e => {
   const attrs = { ...e.attrs }
   if (e.tag === 'path') return h('path', { d: attrs.d, ...attrs })
   if (e.tag === 'line') return h('line', { x1: attrs.x1, y1: attrs.y1, x2: attrs.x2, y2: attrs.y2 })
@@ -150,9 +165,14 @@ const icons = {
   key: makeIcon(['M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4']),
   relay: makeIcon(['M8 12h8', 'M6 8h12', 'M10 16h4']),
   service: makeIcon(['M4 5h16v5H4z', 'M4 14h16v5H4z']),
-  monitor: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('rect', { x: '2', y: '3', width: '20', height: '14', rx: '2' }), h('line', { x1: '8', y1: '21', x2: '16', y2: '21' }), h('line', { x1: '12', y1: '17', x2: '12', y2: '21' })]),
-  settings: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('circle', { cx: '12', cy: '12', r: '3' }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' })]),
+  monitor: () => h('svg', ICON_ATTRS, [h('rect', { x: '2', y: '3', width: '20', height: '14', rx: '2' }), h('line', { x1: '8', y1: '21', x2: '16', y2: '21' }), h('line', { x1: '12', y1: '17', x2: '12', y2: '21' })]),
+  settings: () => h('svg', ICON_ATTRS, [h('circle', { cx: '12', cy: '12', r: '3' }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' })]),
   infra: makeIconMixed([{ tag: 'rect', attrs: { x: '2', y: '2', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'rect', attrs: { x: '2', y: '14', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'line', attrs: { x1: '6', y1: '6', x2: '6.01', y2: '6' } }, { tag: 'line', attrs: { x1: '6', y1: '18', x2: '6.01', y2: '18' } }]),
+  globe: makeIconMixed([{ tag: 'circle', attrs: { cx: '12', cy: '12', r: '9' } }, { tag: 'path', attrs: { d: 'M3 12h18' } }, { tag: 'path', attrs: { d: 'M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18' } }]),
+  layers: makeIcon(['M12 3 3 8l9 5 9-5-9-5z', 'm3 13 9 5 9-5', 'm3 17.5 9 5 9-5']),
+  shield: makeIcon(['M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6L12 3z', 'm9 12 2 2 4-4']),
+  store: makeIcon(['M4 9V19a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9', 'M3 5h18l-1.5 4a2.5 2.5 0 0 1-4.5 0 2.5 2.5 0 0 1-5 0 2.5 2.5 0 0 1-4.5 0L3 5z', 'M10 20v-5h4v5']),
+  package: makeIcon(['M21 8 12 3 3 8v8l9 5 9-5V8z', 'm3 8 9 5 9-5', 'M12 13v8']),
   plugin: makeIcon(['M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z']),
 }
 
@@ -173,14 +193,14 @@ const navItems = computed(() => {
     {
       type: 'group', label: '流量管理', icon: icons.traffic,
       children: [
-        { label: 'HTTP 规则', to: '/rules', icon: icons.traffic },
-        { label: 'L4 规则', to: '/l4', icon: icons.infra },
+        { label: 'HTTP 规则', to: '/rules', icon: icons.globe },
+        { label: 'L4 规则', to: '/l4', icon: icons.layers },
       ],
     },
     {
       type: 'group', label: '基础设施', icon: icons.infra,
       children: [
-        { label: '证书中心', to: '/certs', icon: icons.lock, activeMatch: (name) => name === 'certs' || name === 'pki' },
+        { label: '证书中心', to: '/certs', icon: icons.shield, activeMatch: (name) => name === 'certs' || name === 'pki' },
         ...pluginChildrenForGroup(pluginUIRoutes.value, '基础设施').map((child) => ({ ...child, icon: icons.key })),
         { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
         { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
@@ -193,14 +213,14 @@ const navItems = computed(() => {
           label: '插件市场',
           title: '浏览并安装插件，安装后继续部署或发布',
           to: '/plugins/marketplace',
-          icon: icons.plugin,
+          icon: icons.store,
           activeMatch: (name) => name === 'plugin-marketplace',
         },
         {
           label: '已安装插件',
           title: '查看尚未部署、待发布、已可用或异常',
           to: '/plugins',
-          icon: icons.plugin,
+          icon: icons.package,
           activeMatch: (name) => name === 'plugins' || name === 'plugin-detail',
         },
       ],
@@ -268,97 +288,115 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
 
 <style scoped>
 .sidebar {
+  position: relative;
+  z-index: var(--z-sticky);
   width: var(--sidebar-width);
   display: flex;
   flex-direction: column;
-  background: var(--color-bg-sidebar, var(--color-bg-surface));
-  border-right: var(--border-width-thin) solid var(--color-border-subtle);
+  background: var(--color-bg-sidebar);
+  border-right: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
   overflow: hidden;
   transition: width var(--duration-normal) var(--ease-default);
-  box-shadow: var(--shadow-xs);
 }
 
 .sidebar--collapsed {
-  width: 64px;
+  width: var(--sidebar-width-collapsed);
   overflow: visible;
 }
 
+/* ---------- Brand ---------- */
 .sidebar__header {
   display: flex;
   align-items: center;
-  gap: var(--space-2-5);
-  padding: var(--space-4) var(--space-4) var(--space-3);
-  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
-  min-height: 56px;
+  height: var(--header-height);
+  padding: 0 var(--space-4);
+  flex-shrink: 0;
   box-sizing: border-box;
 }
 
-.sidebar__brand {
-  font-size: var(--text-base);
-  font-weight: var(--font-bold);
-  color: var(--color-text-primary);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  letter-spacing: -0.01em;
-}
-
-.sidebar__collapse-btn {
-  display: flex;
-  align-items: center;
+.sidebar--collapsed .sidebar__header {
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
-  border: none;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  flex-shrink: 0;
+  padding: 0;
 }
 
-.sidebar--collapsed .sidebar__collapse-btn {
-  margin: 0 auto;
-}
-
-.sidebar__collapse-btn:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
-}
-
-.sidebar__collapse-btn svg {
-  transition: transform var(--duration-normal) var(--ease-default);
-}
-
-.sidebar__collapse-btn svg.rotate-180 {
-  transform: rotate(180deg);
-}
-
-/* Expanded nav */
-.sidebar__nav {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0-5);
-  padding: var(--space-2) var(--space-2-5);
-}
-
-/* Single nav item */
-.sidebar__nav-item {
+.sidebar__brand-link {
   display: flex;
   align-items: center;
   gap: var(--space-2-5);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-lg);
-  color: var(--color-text-secondary);
+  min-width: 0;
+  color: var(--color-text-primary);
   text-decoration: none;
+  border-radius: var(--radius-md);
+}
+
+.sidebar__logo {
+  display: flex;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  background: var(--color-brand-bg);
+  color: var(--color-brand-ink);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.sidebar__brand-text {
+  display: grid;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.sidebar__brand {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.sidebar__brand-sub {
+  font-size: var(--text-2xs);
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+/* ---------- Expanded nav ---------- */
+.sidebar__nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar__nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  min-height: 2rem;
+  padding: 0 var(--space-2-5);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
-  transition: all var(--duration-fast) var(--ease-default);
-  position: relative;
-  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
+}
+
+.sidebar__nav-item svg {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.sidebar__nav-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar__nav-item:hover {
@@ -366,145 +404,121 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
   color: var(--color-text-primary);
 }
 
+.sidebar__nav-item:hover svg {
+  color: var(--color-text-secondary);
+}
+
+.sidebar__nav-item.active,
 .sidebar__nav-item--active,
-.sidebar__nav-item.active {
-  background: var(--color-nav-selected, var(--color-primary-subtle));
-  color: var(--color-primary);
-  font-weight: var(--font-semibold);
-}
-
-.sidebar__nav-item--active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 60%;
-  background: var(--color-primary);
-  border-radius: 0 var(--radius-full) var(--radius-full) 0;
-}
-
-/* Child nav item (indented) */
-.sidebar__nav-item--child {
-  padding-left: var(--space-8);
-  font-size: var(--text-sm);
-}
-
-.sidebar__nav-item--child::before {
-  display: none;
-}
-
 .sidebar__nav-item--child-active {
-  background: var(--color-nav-selected, var(--color-primary-subtle)) !important;
-  color: var(--color-primary) !important;
+  background: var(--color-nav-selected);
+  color: var(--color-text-primary);
   font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--color-border-subtle);
 }
 
-.sidebar__nav-item--child-active::after {
-  content: '';
-  position: absolute;
-  left: var(--space-4);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 50%;
-  background: var(--color-primary);
-  border-radius: 0 var(--radius-full) var(--radius-full) 0;
-}
-
-.sidebar__nav-item--advanced:not(.sidebar__nav-item--child-active) {
-  color: var(--color-text-tertiary);
+.sidebar__nav-item.active svg,
+.sidebar__nav-item--active svg,
+.sidebar__nav-item--child-active svg {
+  color: var(--color-primary);
 }
 
 .sidebar__nav-badge {
   margin-left: auto;
-  flex-shrink: 0;
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
-  line-height: 1.2;
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-active);
   color: var(--color-text-tertiary);
-  background: var(--color-bg-hover);
-  border-radius: var(--radius-md);
-  padding: var(--space-0-5) var(--space-1-5);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-medium);
 }
 
-/* Nav group */
+.sidebar__nav:not(.sidebar__nav--collapsed) > .sidebar__nav-item:last-child {
+  margin-top: var(--space-4);
+}
+
+/* Section captions double as collapsible group toggles */
 .nav-group {
   display: flex;
   flex-direction: column;
+  margin-top: var(--space-3);
 }
 
 .nav-group__header {
   display: flex;
   align-items: center;
-  gap: var(--space-2-5);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-lg);
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  cursor: pointer;
+  gap: var(--space-1-5);
   width: 100%;
+  min-height: 1.75rem;
+  padding: 0 var(--space-2-5);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  letter-spacing: 0.02em;
+  cursor: pointer;
   text-align: left;
-  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.nav-group__header > svg:first-child {
+  display: none;
+}
+
+.nav-group__header span {
+  flex: 1;
 }
 
 .nav-group__header:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
 }
 
 .nav-group__header--active {
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-text-secondary);
 }
 
 .nav-group__chevron {
-  margin-left: auto;
-  transition: transform var(--duration-normal) var(--ease-default);
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
+  opacity: 0;
+  transform: rotate(-90deg);
+  transition: transform var(--duration-normal) var(--ease-default), opacity var(--duration-fast) var(--ease-default);
+}
+
+.nav-group__header:hover .nav-group__chevron,
+.nav-group__header:focus-visible .nav-group__chevron,
+.nav-group__chevron:not(.nav-group__chevron--open) {
+  opacity: 1;
 }
 
 .nav-group__chevron--open {
-  transform: rotate(180deg);
+  transform: rotate(0deg);
 }
 
-/* Nav group children */
 .nav-group__children {
   display: flex;
   flex-direction: column;
-  gap: var(--space-0-5);
+  gap: 1px;
+  margin-top: 1px;
 }
 
 .nav-group-enter-active,
 .nav-group-leave-active {
-  transition: all var(--duration-normal) var(--ease-default);
-  overflow: hidden;
+  transition: opacity var(--duration-fast) var(--ease-default), transform var(--duration-fast) var(--ease-default);
 }
 
 .nav-group-enter-from,
 .nav-group-leave-to {
   opacity: 0;
-  max-height: 0;
+  transform: translateY(-3px);
 }
 
-.nav-group-enter-to,
-.nav-group-leave-from {
-  opacity: 1;
-  max-height: 280px;
-}
-
-/* Collapsed nav icons */
+/* ---------- Collapsed nav ---------- */
 .sidebar__nav--collapsed {
-  display: flex;
-  flex-direction: column;
   align-items: center;
+  padding: var(--space-2) 0;
   gap: var(--space-1);
-  padding: var(--space-2);
+  overflow: visible;
 }
 
 .sidebar__nav-icon {
@@ -513,10 +527,12 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
   justify-content: center;
   width: 36px;
   height: 36px;
-  border-radius: var(--radius-lg);
-  color: var(--color-text-secondary);
-  text-decoration: none;
-  transition: all var(--duration-fast) var(--ease-default);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
 }
 
 .sidebar__nav-icon:hover {
@@ -524,48 +540,41 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
   color: var(--color-text-primary);
 }
 
-button.sidebar__nav-icon {
-  border: none;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  cursor: pointer;
-}
-
 .sidebar__nav-icon--active {
-  background: var(--color-primary-subtle);
+  background: var(--color-nav-selected);
   color: var(--color-primary);
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--color-border-subtle);
 }
 
-/* Hover popup */
 .sidebar__nav-icon-wrap {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
 }
 
 .sidebar__hover-popup {
   position: absolute;
   left: calc(100% + var(--space-2));
-  top: 50%;
-  transform: translateY(-50%) scale(0.95);
-  background: var(--color-bg-surface);
-  border: var(--border-width-thin) solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xl);
-  padding: var(--space-1-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0-5);
-  min-width: 160px;
+  top: 0;
+  z-index: var(--z-popover);
+  min-width: 11rem;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface-raised);
+  box-shadow: var(--shadow-lg);
   opacity: 0;
   visibility: hidden;
-  pointer-events: none;
-  transition: all var(--duration-fast) var(--ease-default);
-  z-index: var(--z-dropdown, 1000);
+  transform: translateX(-4px);
+  transition: opacity var(--duration-fast) var(--ease-default), transform var(--duration-fast) var(--ease-default), visibility var(--duration-fast);
+}
+
+/* Invisible bridge so the pointer can travel from icon to popup */
+.sidebar__hover-popup::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--space-2) - 2px);
+  width: calc(var(--space-2) + 2px);
 }
 
 .sidebar__nav-icon-wrap:hover .sidebar__hover-popup,
@@ -574,31 +583,24 @@ button.sidebar__nav-icon {
 .sidebar__hover-popup:hover {
   opacity: 1;
   visibility: visible;
-  pointer-events: auto;
-  transform: translateY(-50%) scale(1);
-}
-
-.sidebar__nav-icon-wrap::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 100%;
-  width: 12px;
-  height: 100%;
+  transform: translateX(0);
 }
 
 .sidebar__hover-popup__item {
   display: flex;
   align-items: center;
-  gap: var(--space-2-5);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
+  gap: var(--space-2);
+  min-height: 2rem;
+  padding: 0 var(--space-2-5);
+  border-radius: var(--radius-sm);
   color: var(--color-text-secondary);
-  text-decoration: none;
   font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  transition: all var(--duration-fast) var(--ease-default);
+  text-decoration: none;
   white-space: nowrap;
+}
+
+.sidebar__hover-popup__item svg {
+  color: var(--color-text-tertiary);
 }
 
 .sidebar__hover-popup__item:hover {
@@ -607,12 +609,52 @@ button.sidebar__nav-icon {
 }
 
 .sidebar__hover-popup__item--active {
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-text-primary);
   font-weight: var(--font-semibold);
 }
 
-.sidebar__hover-popup__item--advanced:not(.sidebar__hover-popup__item--active) {
+.sidebar__hover-popup__item--active svg {
+  color: var(--color-primary);
+}
+
+/* ---------- Footer ---------- */
+.sidebar__footer {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.sidebar--collapsed .sidebar__footer {
+  display: flex;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar__collapse-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  width: 100%;
+  min-height: 2rem;
+  padding: 0 var(--space-2-5);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--color-text-tertiary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
+}
+
+.sidebar--collapsed .sidebar__collapse-btn {
+  width: 36px;
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar__collapse-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 </style>

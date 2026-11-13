@@ -48,10 +48,24 @@ defineProps({
 }
 
 .empty-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: var(--space-5);
+  border-radius: var(--radius-2xl);
+  border: 1px solid var(--color-border-default);
+  background:
+    linear-gradient(180deg, var(--color-bg-surface), var(--color-bg-subtle));
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgb(255 255 255 / 0.04);
   font-size: var(--text-3xl);
-  margin-bottom: var(--space-6);
-  opacity: 0.5;
-  color: var(--color-text-muted);
+  color: var(--color-text-tertiary);
+}
+
+.empty-state-icon :deep(svg) {
+  width: 28px;
+  height: 28px;
 }
 
 .empty-state-container--compact .empty-state-icon {
@@ -59,7 +73,8 @@ defineProps({
 }
 
 .empty-state-title {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
+  letter-spacing: -0.02em;
   font-weight: var(--font-semibold);
   color: var(--color-text-primary);
   margin-bottom: var(--space-2);
@@ -70,8 +85,8 @@ defineProps({
 }
 
 .empty-state-description {
-  font-size: var(--text-base);
-  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
   margin-bottom: var(--space-6);
   max-width: 400px;
   margin-left: auto;
