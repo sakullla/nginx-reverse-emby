@@ -43,7 +43,7 @@ func datasetPolicyAuthorization(generation string) sdk.PolicyHostCallAuthorizati
 	return sdk.PolicyHostCallAuthorization{InstanceID: "shared-instance-ip", Generation: generation, EntryID: "entry-1", DeclaredScopes: []string{string(sdk.CapabilityDatasetQuery)}, GrantedScopes: []string{string(sdk.CapabilityDatasetQuery)}}
 }
 func datasetPolicyQuery(reference sdk.DatasetReference) sdk.DatasetQueryRequest {
-	return sdk.DatasetQueryRequest{Reference: reference, Address: "192.0.2.1", Classifications: []sdk.DatasetClassification{{Name: "cn-44", Kind: sdk.DatasetClassificationRegion}}, Budget: sdk.DatasetQueryBudget{MaxDurationMicros: 2000, MaxResponseBytes: 32768}}
+	return sdk.DatasetQueryRequest{Reference: reference, Address: "192.0.2.1", Classifications: []sdk.DatasetClassification{{Name: "cn-44", Kind: sdk.DatasetClassificationRegion}}, Budget: sdk.DatasetQueryBudget{MaxDurationMicros: sdk.DatasetMaxQueryDurationMicros, MaxResponseBytes: 32768}}
 }
 
 func TestDatasetGenerationSharesVersionWithIndependentInstanceHandles(t *testing.T) {
@@ -240,7 +240,7 @@ func TestDatasetGenerationRejectsAuthorityBudgetAndPreparationFailures(t *testin
 			r.Reference.Handle = strings.Repeat("a", 64)
 		}, sdk.DatasetQueryStaleReference},
 		{"budget", func(_ *sdk.PolicyHostCallAuthorization, r *sdk.DatasetQueryRequest) {
-			r.Budget.MaxDurationMicros = 2001
+			r.Budget.MaxDurationMicros = sdk.DatasetMaxQueryDurationMicros + 1
 		}, sdk.DatasetQueryBudgetExceeded},
 		{"scope", func(_ *sdk.PolicyHostCallAuthorization, r *sdk.DatasetQueryRequest) {
 			r.Classifications[0].Name = "other"
