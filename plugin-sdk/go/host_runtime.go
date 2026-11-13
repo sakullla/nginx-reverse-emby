@@ -129,6 +129,11 @@ func (client *HostRuntimeClient) Call(ctx context.Context, call HostRuntimeCall,
 	if len(encoded) > PluginHostPayloadMaxBytes+2048 {
 		return errors.New("plugin host runtime response exceeds the canonical bound")
 	}
+	// Admission rejection precedes the host's JSON dispatcher. Preserve its
+	// retry semantics even when net/http emits a plain-text busy response.
+	if response.StatusCode == http.StatusTooManyRequests {
+		return &RuntimeError{Code: ErrorResourceExhausted, Message: "plugin host runtime admission is busy", Retryable: true}
+	}
 	var wire HostRuntimeResponse
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()

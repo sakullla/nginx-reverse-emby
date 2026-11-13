@@ -3,6 +3,7 @@ package pluginsdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,20 @@ import (
 )
 
 type hostRuntimeRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func TestHostRuntimeBusyResponsePreservesRetryableAdmission(t *testing.T) {
+	client := &HostRuntimeClient{
+		client: &http.Client{Transport: hostRuntimeRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("busy\n"))}, nil
+		})},
+		credential: "attempt-cookie",
+	}
+	err := client.Call(t.Context(), HostRuntimeCall{Operation: "state.get"}, nil)
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) || runtimeErr.Code != ErrorResourceExhausted || !runtimeErr.Retryable {
+		t.Fatalf("busy host must preserve retryable admission, got %v", err)
+	}
+}
 
 func (call hostRuntimeRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return call(request)
