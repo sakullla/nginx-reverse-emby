@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -21,6 +22,12 @@ func (call policySourceHostFunc) ReadTrustedSource(ctx context.Context) (PolicyT
 }
 
 func TestPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) {
+	// Use virtual time: scheduler pauses must not consume this contract test's
+	// 2 ms admission, while blocking adapters must still expire at the deadline.
+	synctest.Test(t, testPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget)
+}
+
+func testPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) {
 	query := policyDatasetTestQuery()
 	query.Budget.MaxDurationMicros = 2000
 	frame, err := MarshalPolicyDatasetQueryRequest(query, 4096)
@@ -43,9 +50,7 @@ func TestPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) 
 		}
 		return DatasetQueryResponse{Reference: request.Reference, Status: DatasetQueryOK, Matches: []DatasetMatch{{Index: 0, Coverage: DatasetCovered}}}, nil
 	})
-	responseFrame, err := admitWithinBudget(t, &calls, func() ([]byte, error) {
-		return CallPolicyDatasetHost(t.Context(), host, authorization, frame, budget)
-	})
+	responseFrame, err := CallPolicyDatasetHost(t.Context(), host, authorization, frame, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,16 +60,12 @@ func TestPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) 
 	}
 	missing := authorization
 	missing.GrantedScopes = scopes[:1]
-	if _, err := admitWithinBudget(t, &calls, func() ([]byte, error) {
-		return CallPolicyDatasetHost(t.Context(), host, missing, frame, budget)
-	}); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied {
+	if _, err := CallPolicyDatasetHost(t.Context(), host, missing, frame, budget); PolicySecurityCallStatus(err) != PolicyStatusPermissionDenied {
 		t.Fatalf("missing grant status: %v", err)
 	}
 	foreign := authorization
 	foreign.Generation = "generation-other"
-	if _, err := admitWithinBudget(t, &calls, func() ([]byte, error) {
-		return CallPolicyDatasetHost(t.Context(), host, foreign, frame, budget)
-	}); err == nil {
+	if _, err := CallPolicyDatasetHost(t.Context(), host, foreign, frame, budget); err == nil {
 		t.Fatal("foreign binding reached Host")
 	}
 	if calls != 1 {
@@ -88,20 +89,14 @@ func TestPolicySecurityCallsEnforceGrantBindingAndAdmissionBudget(t *testing.T) 
 	}
 	source := PolicyTrustedSource{InstanceID: authorization.InstanceID, Generation: authorization.Generation, EntryID: authorization.EntryID, PeerAddress: netip.MustParseAddr("192.0.2.1"), SourceAddress: netip.MustParseAddr("192.0.2.1"), Authority: PolicySourceSocket}
 	sourceHost := policySourceHostFunc(func(context.Context) (PolicyTrustedSource, error) { return source, nil })
-	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
-		return CallPolicyTrustedSourceHost(t.Context(), sourceHost, authorization, nil, budget)
-	}); err != nil {
+	if _, err := CallPolicyTrustedSourceHost(t.Context(), sourceHost, authorization, nil, budget); err != nil {
 		t.Fatal(err)
 	}
 	source.EntryID = "foreign-entry"
-	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
-		return CallPolicyTrustedSourceHost(t.Context(), sourceHost, authorization, nil, budget)
-	}); err == nil {
+	if _, err := CallPolicyTrustedSourceHost(t.Context(), sourceHost, authorization, nil, budget); err == nil {
 		t.Fatal("Host source from another entry accepted")
 	}
-	if _, err := admitWithinBudget(t, nil, func() ([]byte, error) {
-		return CallPolicyTrustedSourceHost(t.Context(), sourceHost, authorization, []byte{0x08, 1}, budget)
-	}); err == nil {
+	if _, err := CallPolicyTrustedSourceHost(t.Context(), sourceHost, authorization, []byte{0x08, 1}, budget); err == nil {
 		t.Fatal("self-reported trusted request accepted")
 	}
 }
