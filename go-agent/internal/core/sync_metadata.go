@@ -142,6 +142,18 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 		return err
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
+	// App.Run may already have restored the durable snapshot before revision
+	// sync starts. A canceled earlier restore must not survive a healthy runtime
+	// and a successful sync, even if last_sync_error was previously cleared.
+	message := strings.TrimSpace(state.Metadata["last_apply_message"])
+	if state.Status == "active" && c.Runtime.ActiveSnapshot().Revision > 0 &&
+		strings.EqualFold(strings.TrimSpace(state.Metadata["last_apply_status"]), "error") &&
+		(message == "restore durable applied snapshot: context canceled" ||
+			message == "restore durable applied snapshot: context deadline exceeded") {
+		setApplyMetadata(state.Metadata, c.Runtime.ActiveSnapshot().Revision, "success", "")
+		delete(state.Metadata, "last_sync_error")
+		return c.Store.SaveRuntimeState(state)
+	}
 	lastSyncError := strings.TrimSpace(state.Metadata["last_sync_error"])
 	if lastSyncError == "" {
 		lastSyncError = recoverableApplyErrorMessage(state.Metadata)

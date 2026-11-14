@@ -106,6 +106,42 @@ func TestRestoreDurableRevisionRuntimePreservesIdentityAcrossSnapshotSchemaChang
 	}
 }
 
+func TestRevisionSyncClearsCanceledRestoreAfterStartupRecovery(t *testing.T) {
+	for _, message := range []string{
+		"restore durable applied snapshot: context canceled",
+		"restore durable applied snapshot: context deadline exceeded",
+		"apply candidate: context canceled",
+	} {
+		t.Run(message, func(t *testing.T) {
+			store := newRevisionTestStore(nil)
+			store.applied = revisionSnapshot(573)
+			store.runtime = RuntimeState{Metadata: map[string]string{
+				"last_apply_status": "error", "last_apply_revision": "0", "last_apply_message": message,
+			}}
+			runtime := NewRuntime()
+			// App.Run restores the runtime before the sync controller sees it.
+			if err := runtime.Apply(t.Context(), model.Snapshot{}, store.applied); err != nil {
+				t.Fatal(err)
+			}
+			controller := &SyncController{Store: store, Runtime: runtime, SyncClient: &revisionClientStub{}}
+			if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+				t.Fatal(err)
+			}
+			request, err := controller.BuildSyncRequest(t.Context(), store.applied)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(message, "restore durable applied snapshot:") {
+				if request.LastApplyStatus != "success" || request.LastApplyMessage != "" || request.LastApplyRevision != 573 {
+					t.Fatalf("recovered heartbeat = %+v", request)
+				}
+			} else if request.LastApplyStatus != "error" || request.LastApplyMessage != message {
+				t.Fatalf("unrelated apply error was cleared: %+v", request)
+			}
+		})
+	}
+}
+
 func TestRevisionSyncManagedCutoverRecoversEveryPostPublishPersistenceFailure(t *testing.T) {
 	tests := []struct {
 		name   string
