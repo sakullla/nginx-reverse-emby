@@ -25,6 +25,7 @@ const (
 	CapabilityDatasetQuery                   HostCapability = "dataset.query"
 	CapabilityDatasetResolve                 HostCapability = "dataset.resolve"
 	CapabilityDatasetManage                  HostCapability = "dataset.manage"
+	CapabilityDatasetSourceRegister          HostCapability = "dataset.source-register"
 )
 
 var hostCapabilityIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`)
@@ -38,7 +39,7 @@ func (capability HostCapability) Validate() error {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
 		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic,
-		CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
+		CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetSourceRegister, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
 		CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity, CapabilityChannelNodeTransfer:
 		return nil
 	default:

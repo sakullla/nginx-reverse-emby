@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	datasetRetrievalPinned        = "pinned"
-	datasetRetrievalRolling       = "rolling-sha256"
+	datasetRetrievalPinned        = sdk.DatasetRetrievalPinned
+	datasetRetrievalRolling       = sdk.DatasetRetrievalRollingSHA256
 	datasetChecksumMaxBytes int64 = 4096
 )
 
@@ -100,7 +100,7 @@ func (s *DatasetService) refresh(ctx context.Context, row storage.DatasetSourceR
 	candidate := sdk.DatasetImportCandidate{URL: summary.Source.URL, Revision: summary.Retrieval.Revision, ExpectedDigest: summary.Retrieval.ExpectedDigest}
 	var evidence []storage.DatasetVersionVerification
 	if summary.Retrieval.Mode == datasetRetrievalRolling {
-		metadata, err := fetchDatasetPayload(ctx, summary.Retrieval.ChecksumURL, summary.Retrieval, datasetChecksumMaxBytes, 15*time.Second)
+		metadata, err := s.fetchPayload(ctx, summary.Retrieval.ChecksumURL, summary.Retrieval, datasetChecksumMaxBytes, 15*time.Second)
 		if err != nil {
 			return err
 		}

@@ -181,6 +181,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 			string(pluginsdk.CapabilityRuntimeIdentity),
 			string(pluginsdk.CapabilityDatasetQuery), string(pluginsdk.CapabilityDatasetResolve),
 			string(pluginsdk.CapabilityDatasetManage), string(pluginsdk.CapabilityDatasetBind),
+			string(pluginsdk.CapabilityDatasetSourceRegister),
 			string(pluginsdk.CapabilityPolicyControl), string(pluginsdk.CapabilityPolicyEntryOverlays),
 			pluginsdk.PermissionManagedNetworkListen, pluginsdk.PermissionManagedNetworkDial,
 			pluginsdk.PermissionScopedSecretRead, pluginsdk.PermissionScopedSecretWrite,

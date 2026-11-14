@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -102,11 +103,15 @@ type DatasetService struct {
 	done         chan struct{}
 	closeOnce    sync.Once
 	refreshGates sync.Map
+	// fetchCandidate/fetchPayload are the restricted egress implementations;
+	// tests substitute them to exercise the remote-source lifecycle offline.
+	fetchCandidate func(context.Context, string, DatasetRetrieval, string) ([]byte, error)
+	fetchPayload   func(context.Context, string, DatasetRetrieval, int64, time.Duration) ([]byte, error)
 }
 
 func NewDatasetService(cfg config.Config, store *storage.GormStore) *DatasetService {
 	ctx, cancel := context.WithCancel(context.Background())
-	service := &DatasetService{store: store, cfg: cfg, executor: newMutationExecutor(cfg, store), importGate: make(chan struct{}, 1), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	service := &DatasetService{store: store, cfg: cfg, executor: newMutationExecutor(cfg, store), importGate: make(chan struct{}, 1), ctx: ctx, cancel: cancel, done: make(chan struct{}), fetchCandidate: fetchDatasetCandidate, fetchPayload: fetchDatasetPayload}
 	go func() {
 		defer close(service.done)
 		ticker := time.NewTicker(time.Minute)
@@ -185,13 +190,21 @@ func (s *DatasetService) List(ctx context.Context, authorization DatasetAuthoriz
 }
 
 func (s *DatasetService) PutSource(ctx context.Context, authorization DatasetAuthorization, source pluginsdk.DatasetSource, retrieval DatasetRetrieval) error {
+	return s.putSource(ctx, authorization, source, retrieval, false)
+}
+
+// putSource writes source authority under the caller's resource group.
+// remoteRegistration marks the dataset.source-register path: plugins may then
+// select rolling-sha256, while private-network and redirect authority remain
+// administrator-only for every public operation.
+func (s *DatasetService) putSource(ctx context.Context, authorization DatasetAuthorization, source pluginsdk.DatasetSource, retrieval DatasetRetrieval, remoteRegistration bool) error {
 	if !authorization.Manage || authorization.ActorID == "" || authorization.ResourceGroupID == "" {
 		return errPluginHostDenied
 	}
 	if source.Validate() != nil || retrieval.Validate(source) != nil {
 		return fmt.Errorf("%w: dataset source/retrieval is invalid", ErrInvalidArgument)
 	}
-	if !authorization.Administrator && (retrieval.AllowPrivate || len(retrieval.RedirectHosts) > 0 || retrieval.Mode == datasetRetrievalRolling) {
+	if !authorization.Administrator && (retrieval.AllowPrivate || len(retrieval.RedirectHosts) > 0 || (retrieval.Mode == datasetRetrievalRolling && !remoteRegistration)) {
 		return errPluginHostDenied
 	}
 	current, err := s.store.GetDatasetSource(ctx, source.ID)
@@ -217,6 +230,93 @@ func (s *DatasetService) PutSource(ctx context.Context, authorization DatasetAut
 		return fmt.Errorf("%w: dataset source changed concurrently", ErrConflict)
 	}
 	return err
+}
+
+// datasetRemoteURLAllowed re-verifies the plugin-facing remote bound on the
+// Host side: https transport, no credentials or fragment, and no literal
+// private or special-use address. DNS-bound destinations are authorized again
+// per dial by the fetch authority.
+func datasetRemoteURLAllowed(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" || parsed.Scheme != "https" {
+		return errPluginHostDenied
+	}
+	if address, err := netip.ParseAddr(parsed.Hostname()); err == nil {
+		address = address.Unmap()
+		if address.Zone() != "" || !datasetFetchAddressAllowed(address, false) {
+			return errPluginHostDenied
+		}
+	}
+	return nil
+}
+
+// RegisterSource is the dataset.source-register Host operation: it creates or
+// replaces a plugin-scoped remote source with Host-restricted network
+// authority (https only, no private networks, no redirect hosts, no
+// credentials) and runs the initial refresh so the source resolves to an
+// activated version. A failed candidate keeps the previously active version.
+func (s *DatasetService) RegisterSource(ctx context.Context, authorization DatasetAuthorization, request pluginsdk.DatasetSourceRegisterRequest, revisionOperationID string) (pluginsdk.DatasetSourceRegisterResponse, error) {
+	response := pluginsdk.DatasetSourceRegisterResponse{SourceID: request.Source.ID}
+	if !authorization.Manage || authorization.ActorID == "" || authorization.ResourceGroupID == "" {
+		return response, errPluginHostDenied
+	}
+	if err := request.Validate(); err != nil {
+		return response, fmt.Errorf("%w: dataset source registration is invalid", ErrInvalidArgument)
+	}
+	if revisionOperationID == "" {
+		revisionOperationID = lifecycleID("dataset")
+	}
+	if pluginsdk.ValidatePolicyIdentity(revisionOperationID) != nil {
+		return response, ErrInvalidArgument
+	}
+	if err := datasetRemoteURLAllowed(request.Source.URL); err != nil {
+		return response, err
+	}
+	if request.Retrieval.Mode == datasetRetrievalRolling {
+		if err := datasetRemoteURLAllowed(request.Retrieval.ChecksumURL); err != nil {
+			return response, err
+		}
+	}
+	if err := s.audit(ctx, authorization, request.Source.ID, "register-source", "started"); err != nil {
+		return response, err
+	}
+	retrieval := DatasetRetrieval{Mode: request.Retrieval.Mode, ChecksumURL: request.Retrieval.ChecksumURL, Revision: request.Retrieval.Revision, ExpectedDigest: request.Retrieval.ExpectedDigest}
+	err := s.putSource(ctx, authorization, request.Source, retrieval, true)
+	var version pluginsdk.DatasetVersion
+	if err == nil {
+		var row storage.DatasetSourceRow
+		if row, err = s.store.GetDatasetSource(ctx, request.Source.ID); err == nil {
+			err = s.refresh(ctx, row, revisionOperationID)
+		}
+		if err == nil {
+			version, err = s.registeredDatasetVersion(ctx, request.Source.ID)
+		}
+	}
+	result := "completed"
+	if err != nil {
+		result = "failed"
+	}
+	auditErr := s.audit(ctx, authorization, request.Source.ID, "register-source", result)
+	response.Version = version
+	return response, errors.Join(err, auditErr)
+}
+
+// registeredDatasetVersion resolves the activated version of a source after a
+// successful refresh so the registration acknowledgement reports real state.
+func (s *DatasetService) registeredDatasetVersion(ctx context.Context, sourceID string) (pluginsdk.DatasetVersion, error) {
+	row, err := s.store.GetDatasetSource(ctx, sourceID)
+	if err != nil {
+		return pluginsdk.DatasetVersion{}, err
+	}
+	stored, err := s.store.GetDatasetVersion(ctx, sourceID, row.CurrentDigest)
+	if err != nil {
+		return pluginsdk.DatasetVersion{}, err
+	}
+	var version pluginsdk.DatasetVersion
+	if json.Unmarshal([]byte(stored.VersionJSON), &version) != nil || version.Validate() != nil {
+		return pluginsdk.DatasetVersion{}, errors.New("stored dataset version is corrupt")
+	}
+	return version, nil
 }
 
 func (s *DatasetService) Control(ctx context.Context, authorization DatasetAuthorization, request pluginsdk.DatasetControlRequest, operationIDs ...string) (pluginsdk.DatasetControlResponse, error) {
@@ -309,7 +409,7 @@ func (s *DatasetService) prepare(ctx context.Context, row storage.DatasetSourceR
 		if registered == nil || requested == nil || registered.Scheme != requested.Scheme || !strings.EqualFold(registered.Host, requested.Host) {
 			err = errPluginHostDenied
 		} else {
-			payload, err = fetchDatasetCandidate(ctx, candidate.URL, summary.Retrieval, candidate.ExpectedDigest)
+			payload, err = s.fetchCandidate(ctx, candidate.URL, summary.Retrieval, candidate.ExpectedDigest)
 		}
 	}
 	if err == nil {

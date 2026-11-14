@@ -7,7 +7,7 @@ import (
 )
 
 func TestManagedCapabilitiesAgreeWithSchemaAndHandshake(t *testing.T) {
-	capabilities := []HostCapability{CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity}
+	capabilities := []HostCapability{CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityDatasetSourceRegister, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity}
 	var schema struct {
 		Defs map[string]struct {
 			Enum []string `json:"enum"`
@@ -77,7 +77,7 @@ func TestManagedCapabilitiesAgreeWithSchemaAndHandshake(t *testing.T) {
 	if err := ValidateManifestManagedCapabilities(manifest, capabilities); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{HostRuntimeDatasetOpen, HostRuntimeDatasetQuery, HostRuntimeDatasetControl, HostRuntimeDatasetStatus, HostRuntimeDatasetCatalog} {
+	for _, operation := range []string{HostRuntimeDatasetOpen, HostRuntimeDatasetQuery, HostRuntimeDatasetControl, HostRuntimeDatasetStatus, HostRuntimeDatasetCatalog, HostRuntimeDatasetSourceRegister} {
 		capability, err := DatasetRuntimeCapability(operation)
 		if err != nil || capability.Validate() != nil {
 			t.Fatalf("unregistered dataset operation %s", operation)

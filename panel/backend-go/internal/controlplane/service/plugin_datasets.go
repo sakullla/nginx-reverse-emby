@@ -15,21 +15,42 @@ func (manager *PluginCapabilityManager) SetDatasetService(service *DatasetServic
 	}
 }
 
+// pluginDatasetScopeGranted requires the dataset capability to be both signed
+// into the manifest declaration and projected into an administrator grant.
+func pluginDatasetScopeGranted(candidate pluginhost.Candidate, permission string) bool {
+	if !pluginCandidateHasGrant(candidate, permission) {
+		return false
+	}
+	for _, scope := range candidate.Identity.Scopes {
+		if scope == permission {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginDatasetSelectorGranted applies the administrator source-ID projection:
+// an empty selector list means the whole granted resource group, otherwise the
+// exact source ID must appear.
+func pluginDatasetSelectorGranted(candidate pluginhost.Candidate, permission, sourceID string) bool {
+	selectors := candidate.GrantSelectors[permission]
+	if len(selectors) == 0 {
+		return true
+	}
+	for _, selector := range selectors {
+		if selector == "" || selector == sourceID {
+			return true
+		}
+	}
+	return false
+}
+
 func (manager *PluginCapabilityManager) pluginHostDataset(ctx context.Context, candidate pluginhost.Candidate, call pluginsdk.HostRuntimeCall) (any, error) {
 	if manager.datasets == nil {
 		return nil, errPluginHostUnavailable
 	}
 	permission := string(pluginsdk.CapabilityDatasetManage)
-	if !pluginCandidateHasGrant(candidate, permission) {
-		return nil, errPluginHostDenied
-	}
-	declared := false
-	for _, scope := range candidate.Identity.Scopes {
-		if scope == permission {
-			declared = true
-		}
-	}
-	if !declared {
+	if !pluginDatasetScopeGranted(candidate, permission) {
 		return nil, errPluginHostDenied
 	}
 	authority := DatasetAuthorization{ActorID: "plugin/" + candidate.Identity.PluginID, ResourceGroupID: candidate.ResourceGroupID, Manage: true}
@@ -39,16 +60,7 @@ func (manager *PluginCapabilityManager) pluginHostDataset(ctx context.Context, c
 	if json.Unmarshal(call.Payload, &identity) != nil || pluginsdk.ValidatePolicyIdentity(identity.SourceID) != nil {
 		return nil, errPluginHostInvalid
 	}
-	// Empty selector explicitly means the granted resource group; otherwise the
-	// exact source ID must appear in the Host's administrator grant projection.
-	selectors := candidate.GrantSelectors[permission]
-	allowed := len(selectors) == 0
-	for _, selector := range selectors {
-		if selector == "" || selector == identity.SourceID {
-			allowed = true
-		}
-	}
-	if !allowed {
+	if !pluginDatasetSelectorGranted(candidate, permission, identity.SourceID) {
 		return nil, errPluginHostDenied
 	}
 	switch call.Operation {
@@ -75,4 +87,36 @@ func (manager *PluginCapabilityManager) pluginHostDataset(ctx context.Context, c
 		return manager.datasets.Status(ctx, authority, request)
 	}
 	return nil, errors.New("unsupported dataset Host operation")
+}
+
+// pluginHostDatasetSourceRegister implements dataset.source-register. The
+// caller selects the remote URL and update policy; the Host re-verifies
+// restricted network authority and performs the initial prepare/activate.
+func (manager *PluginCapabilityManager) pluginHostDatasetSourceRegister(ctx context.Context, candidate pluginhost.Candidate, call pluginsdk.HostRuntimeCall) (any, error) {
+	if manager.datasets == nil {
+		return nil, errPluginHostUnavailable
+	}
+	permission := string(pluginsdk.CapabilityDatasetSourceRegister)
+	if !pluginDatasetScopeGranted(candidate, permission) {
+		return nil, errPluginHostDenied
+	}
+	var request pluginsdk.DatasetSourceRegisterRequest
+	if decodePluginHostPayload(call.Payload, &request) != nil || request.Validate() != nil {
+		return nil, errPluginHostInvalid
+	}
+	if !pluginDatasetSelectorGranted(candidate, permission, request.Source.ID) {
+		return nil, errPluginHostDenied
+	}
+	authority := DatasetAuthorization{ActorID: "plugin/" + candidate.Identity.PluginID, ResourceGroupID: candidate.ResourceGroupID, Manage: true}
+	// Match the durable HostRuntime replay scope without exposing the global
+	// revision identity as the caller's acknowledgement ID.
+	revisionOperationID := "dataset-runtime-" + pluginHostOperationKey(candidate, call.OperationID)
+	response, err := manager.datasets.RegisterSource(ctx, authority, request, revisionOperationID)
+	if errors.Is(err, ErrInvalidArgument) {
+		return nil, errPluginHostInvalid
+	}
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
 }

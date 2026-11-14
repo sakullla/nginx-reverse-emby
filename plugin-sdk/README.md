@@ -171,6 +171,7 @@ without private configuration injection. Admission query still separately needs
 hosts lacking the optional resolver reject guests that import it at admission.
 
 The manifest permissions `dataset.query`, `dataset.resolve`, `dataset.manage`,
+`dataset.source-register`,
 `runtime.identity`, `network.managed.listen`, `network.managed.dial`, `secret.scoped.read`, and
 `secret.scoped.write` authorize distinct effects. They project the additive RPC
 features `rpc.datasets.v1`, `rpc.dataset-resolve.v1`, `rpc.runtime-identity.v1`,
@@ -183,7 +184,13 @@ existing handshake. Managed network permissions do not imply `network.full`.
 prepared immutable snapshot. `QueryDatasets` performs a bounded local target
 lookup; `ControlDataset`, `DatasetStatus`, and `DatasetCatalog` expose authorized
 source/import/rollback operations, actual per-node desired/applied/last-good
-state, and bounded pages of metadata. `DatasetRuntimeCapability` maps these
+state, and bounded pages of metadata. `RegisterDatasetSource`
+(`dataset.source-register`) lets a plugin create or replace a remote source in
+its own resource group: the request selects only an https URL plus a pinned
+revision/expected-digest or rolling-sha256 checksum URL and a refresh interval,
+while the Host keeps all network authority (no private networks, redirect
+hosts, or credentials) and performs the initial prepare/activate.
+`DatasetRuntimeCapability` maps these
 operations to query, resolve or management authorization. Imports reference complete
 artifacts or pinned remote inputs with expected digests, never inline blobs.
 Formats include GeoIP, GeoSite, complete community input, CIDR, and generic

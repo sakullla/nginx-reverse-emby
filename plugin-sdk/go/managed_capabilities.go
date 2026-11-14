@@ -35,7 +35,7 @@ func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapa
 			}
 		}
 		switch capability {
-		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity:
+		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetSourceRegister, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity:
 			if !available[capability] {
 				return fmt.Errorf("Host does not support required managed capability %q", capability)
 			}
@@ -61,6 +61,8 @@ func DatasetRuntimeCapability(operation string) (HostCapability, error) {
 		return CapabilityDatasetQuery, nil
 	case HostRuntimeDatasetControl, HostRuntimeDatasetStatus, HostRuntimeDatasetCatalog:
 		return CapabilityDatasetManage, nil
+	case HostRuntimeDatasetSourceRegister:
+		return CapabilityDatasetSourceRegister, nil
 	default:
 		return "", fmt.Errorf("unknown dataset operation %q", operation)
 	}

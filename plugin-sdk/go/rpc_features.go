@@ -33,7 +33,7 @@ func RequiredRPCFeatures(scopes []string) []string {
 		case CapabilityPolicyEntryOverlays:
 			features = appendRPCFeature(features, RPCFeaturePolicyControlsV1)
 			features = appendRPCFeature(features, RPCFeaturePolicyEntryOverlaysV1)
-		case CapabilityDatasetQuery, CapabilityDatasetManage:
+		case CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityDatasetSourceRegister:
 			features = appendRPCFeature(features, RPCFeatureDatasetsV1)
 		case CapabilityDatasetResolve:
 			features = appendRPCFeature(features, RPCFeatureDatasetsV1)
