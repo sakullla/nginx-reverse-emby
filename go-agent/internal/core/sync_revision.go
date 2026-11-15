@@ -53,6 +53,7 @@ func (c *SyncController) performRevisionSyncPlan(
 			return c.recordRuntimeError(err)
 		}
 	}
+	plan.Request.RevisionMode = true
 	heartbeatSnapshot, err := c.SyncClient.Sync(ctx, plan.Request)
 	if err != nil {
 		return c.recordSyncError(errors.Join(acknowledgementErr, err))
@@ -65,12 +66,18 @@ func (c *SyncController) performRevisionSyncPlan(
 			return c.recordRuntimeError(err)
 		}
 	}
-	if err := c.ensurePendingUpdate(ctx, heartbeatSnapshot); err != nil {
+	// Upgrade the execution plane before parsing a new revision's plugin
+	// capabilities. Otherwise a revision requiring the new binary can prevent
+	// that very binary from ever being activated. No apply lease is consumed.
+	if err := c.handlePendingUpdate(ctx, heartbeatSnapshot); err != nil {
 		if errors.Is(err, errPackageStagePending) {
 			if acknowledgementErr != nil {
 				return c.recordRuntimeError(acknowledgementErr)
 			}
 			return c.clearLastSyncErrorAfterSuccessfulSync()
+		}
+		if errors.Is(err, ErrRestartRequested) {
+			return errors.Join(acknowledgementErr, err)
 		}
 		return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
 	}

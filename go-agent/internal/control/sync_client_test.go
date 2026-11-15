@@ -20,6 +20,55 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
+func TestRevisionHeartbeatDeliversUpdateBeforePluginValidation(t *testing.T) {
+	generation := model.PluginGeneration{
+		ID: "generation", InstanceID: "new-plugin", OperationID: "upgrade", Revision: 7,
+		PluginID: "plugin", PluginVersion: "1.0.0", PackageDigest: strings.Repeat("a", 64),
+		Runtime:         model.PluginRuntimeDescriptor{Kind: model.PluginRuntimeRPCService, ABI: model.PluginRPCABIV1, HostScope: "agent", Entry: "artifacts/plugin"},
+		Artifact:        model.PluginArtifactDescriptor{ArtifactID: "artifact", PackageIdentity: "plugin@1.0.0", RelativePath: "artifacts/plugin", SHA256: strings.Repeat("b", 64), SizeBytes: 100, Mode: "executable", GOOS: "linux", GOARCH: "amd64", SignatureVerified: true, SignerKeyID: "key", SignerFingerprint: strings.Repeat("c", 64)},
+		ExtensionPoints: []string{"resource.group"}, ConfigVersion: 1, Config: json.RawMessage(`{}`),
+		ResourceBudget: model.PluginResourceBudget{TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 100},
+		Target:         model.PluginTargetBinding{Kind: "agent", ID: "edge", ResourceGroupID: "default", Version: 1},
+		FailurePolicy:  model.PluginFailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},
+	}
+	if err := generation.Validate(7, false); err != nil {
+		t.Fatal(err)
+	}
+	generation.Grants = []model.PluginGrantProjection{{Name: "future.permission"}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agents/heartbeat" {
+			t.Errorf("unexpected artifact request: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sync": map[string]any{
+			"desired_version": "next", "desired_revision": 7, "snapshot_digest": strings.Repeat("a", 64),
+			"version_package_meta": model.VersionPackage{URL: "/panel-api/public/agent-assets/next", SHA256: strings.Repeat("b", 64)},
+			"plugin_generations":   []model.PluginGeneration{generation},
+		}})
+	}))
+	defer server.Close()
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "test"}, server.Client())
+	for _, revisionMode := range []bool{false, true} {
+		acknowledged := false
+		snapshot, err := client.Sync(t.Context(), SyncRequest{
+			RevisionMode:           revisionMode,
+			PluginLogs:             []model.PluginRuntimeLogReport{testPluginRuntimeLogReport(1)},
+			PluginLogsAcknowledged: func() error { acknowledged = true; return nil },
+		})
+		if !revisionMode {
+			if err == nil || !strings.Contains(err.Error(), `grant "future.permission" is invalid`) || acknowledged {
+				t.Fatal("legacy sync bypassed plugin validation")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !acknowledged || snapshot.VersionPackage == nil || snapshot.VersionPackage.URL != server.URL+"/panel-api/public/agent-assets/next" || snapshot.DesiredVersion != "next" {
+			t.Fatalf("update delivery blocked by plugin validation: %+v", snapshot.VersionPackage)
+		}
+	}
+}
+
 func TestRevisionProtocolUsesAuthenticatedPathsAndPayloads(t *testing.T) {
 	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[],"plugin_generations":[],"plugin_dependencies":[],"plugin_policies":[]}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))

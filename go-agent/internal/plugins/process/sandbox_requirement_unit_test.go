@@ -8,6 +8,30 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
+func TestDatasetSandboxPermissionsRemainHostMediated(t *testing.T) {
+	for _, permission := range []string{"dataset.query", "dataset.resolve", "dataset.manage", "dataset.source-register", "dataset.bind", "dataset.unknown"} {
+		t.Run(permission, func(t *testing.T) {
+			r, err := NewSandboxRequirement(SandboxRequirementProjection{
+				PackageDigest:  strings.Repeat("a", 64),
+				Permissions:    []SandboxPermission{SandboxPermission(permission)},
+				ResourceBudget: ManifestResourceBudget{TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000},
+			})
+			if permission == "dataset.unknown" {
+				if err == nil {
+					t.Fatal("unknown permission accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.RequiresPrivilegeBoundary() || r.RequiresFilesystemBoundary() || r.Budget().Network {
+				t.Fatal("dataset permission gained ambient OS authority")
+			}
+		})
+	}
+}
+
 func TestNewSandboxRequirementUsesProcessFloor(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

@@ -56,6 +56,10 @@ type SyncClient struct {
 }
 
 type SyncRequest struct {
+	// RevisionMode leaves plugin preparation to the authenticated revision pull.
+	// Heartbeats must still deliver an Agent update when new plugin permissions
+	// cannot be understood by the currently running binary.
+	RevisionMode              bool
 	CurrentRevision           int
 	LastApplyRevision         int
 	LastApplyStatus           string
@@ -249,9 +253,12 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		syncMeta.VersionPackageURL,
 		syncMeta.VersionSHA256,
 	)
-	if err := c.preparePluginArtifacts(ctx, &snapshot, snapshot.Revision, syncMeta.SnapshotDigest); err != nil {
-		return Snapshot{}, err
+	if !request.RevisionMode {
+		if err := c.preparePluginArtifacts(ctx, &snapshot, snapshot.Revision, syncMeta.SnapshotDigest); err != nil {
+			return Snapshot{}, err
+		}
 	}
+	resolveRevisionPackageURL(c.cfg.MasterURL, snapshot.VersionPackage)
 	// Dataset preparation belongs to the revision lease path, where a failed
 	// candidate can be reported without confusing it with an applied revision.
 	for i := range snapshot.Datasets {

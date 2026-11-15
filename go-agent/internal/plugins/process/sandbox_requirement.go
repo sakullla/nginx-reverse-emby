@@ -203,7 +203,10 @@ func knownSandboxPermission(value SandboxPermission) bool {
 	case SandboxPermission(pluginsdk.PermissionManagedNetworkListen), SandboxPermission(pluginsdk.PermissionManagedNetworkDial), SandboxPermission(pluginsdk.CapabilityDatasetQuery), SandboxPermission(pluginsdk.CapabilityDatasetResolve), SandboxPermission(pluginsdk.PermissionScopedSecretRead), SandboxPermission(pluginsdk.PermissionScopedSecretWrite):
 		return true
 	default:
-		return false
+		// Use the SDK catalog for host-mediated permissions, as the control
+		// plane does. Accepting these adds no ambient OS authority; the host
+		// still checks declared and granted permissions on every operation.
+		return pluginsdk.HostCapability(value).Validate() == nil
 	}
 }
 

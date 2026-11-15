@@ -298,7 +298,7 @@ func TestRevisionSyncPullFailureDoesNotStartAttempt(t *testing.T) {
 	}
 }
 
-func TestRevisionSyncStagesPackageBeforePullingFreshLease(t *testing.T) {
+func TestRevisionSyncUpgradesBeforePullingIncompatibleRevision(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
 	previous := revisionSnapshot(6)
@@ -318,7 +318,7 @@ func TestRevisionSyncStagesPackageBeforePullingFreshLease(t *testing.T) {
 	updater := newCoordinatorTestUpdater(packageURL)
 	client := &revisionClientStub{
 		events: &events, heartbeatSnapshot: heartbeat,
-		pullFunc: func() model.RevisionPull { return revisionPull(7, "fresh-lease-7", "digest-7") },
+		pullErr: errors.New("plugin revision requires the new Agent"),
 	}
 	controller := &SyncController{
 		Store: store, Runtime: runtime, SyncClient: client, Updater: updater,
@@ -354,11 +354,11 @@ func TestRevisionSyncStagesPackageBeforePullingFreshLease(t *testing.T) {
 	waitForRevisionRestart(t, func() error {
 		return controller.PerformSync(t.Context(), control.SyncRequest{})
 	})
-	if countRevisionEvent(events, "pull") != 1 || len(client.starts) != 1 || len(client.reports) != 0 {
-		t.Fatalf("ready pull/start/report = %d/%d/%d, want 1/1/0", countRevisionEvent(events, "pull"), len(client.starts), len(client.reports))
+	if countRevisionEvent(events, "pull") != 0 || len(client.starts) != 0 || len(client.reports) != 0 {
+		t.Fatalf("ready pull/start/report = %d/%d/%d, want 0/0/0", countRevisionEvent(events, "pull"), len(client.starts), len(client.reports))
 	}
-	if client.starts[0].LeaseID != "fresh-lease-7" {
-		t.Fatalf("started lease = %+v, want fresh-lease-7", client.starts[0])
+	if store.applied.Revision != 6 || runtime.ActiveSnapshot().Revision != 6 || store.journal.Candidate != nil {
+		t.Fatal("binary activation must not apply or journal the incompatible revision")
 	}
 	if got := updater.activations(); len(got) != 1 || got[0].desiredVersion != "v7" {
 		t.Fatalf("ready activations = %+v, want current revision desired version", got)
