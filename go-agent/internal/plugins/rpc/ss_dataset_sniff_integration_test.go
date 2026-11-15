@@ -196,7 +196,7 @@ func newSSProcessHost(t *testing.T, root string, secrets ssProcessSecrets) *Host
 
 func newSSProcessCandidate(t *testing.T, binary, artifactDigest, version, instanceID, generation string, services *runtimeServices) HostCandidate {
 	t.Helper()
-	scopes := []string{"storage.read", "storage.write", "event.emit", "service.revocable-resource-handle", "agent.read", string(sdk.CapabilityRuntimeIdentity), sdk.PermissionManagedNetworkListen, sdk.PermissionManagedNetworkDial, sdk.PermissionScopedSecretRead, sdk.PermissionScopedSecretWrite, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve)}
+	scopes := []string{"storage.read", "storage.write", "event.emit", "service.revocable-resource-handle", "agent.read", string(sdk.CapabilityRuntimeIdentity), sdk.PermissionManagedNetworkListen, sdk.PermissionManagedNetworkDial, sdk.PermissionScopedSecretRead, sdk.PermissionScopedSecretWrite, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve), sdk.PermissionPublicCertificateRead, sdk.PermissionPublicCertificateTerminate}
 	permissions := make([]pluginprocess.SandboxPermission, len(scopes))
 	grants := make([]model.PluginGrantProjection, 0, len(scopes))
 	for index, scope := range scopes {

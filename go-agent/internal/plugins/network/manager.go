@@ -218,6 +218,7 @@ type resource struct {
 	accepted                chan *resource
 	datagrams               chan []byte
 	readGate, writeGate     chan struct{}
+	readSize                StreamReadSizer
 	closed                  atomic.Bool
 	readClosed, writeClosed atomic.Bool
 	done                    chan struct{}

@@ -5,6 +5,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -18,13 +19,34 @@ import (
 	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
+type admissionSecretRedeemer struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (*admissionSecretRedeemer) RedeemPluginSecrets(context.Context, model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	return nil, errors.New("unexpected unscoped secret request")
+}
+
+func (r *admissionSecretRedeemer) RedeemScopedPluginSecret(ctx context.Context, _ model.PluginSecretRedemptionRequest) (json.RawMessage, error) {
+	r.entered <- struct{}{}
+	select {
+	case <-r.release:
+		return nil, errors.New("fixture released")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func TestHostAdmissionOverloadUsesRetryableWireError(t *testing.T) {
 	manager := managed.NewManager()
 	defer manager.Close()
 	host := &Host{managed: manager, revoked: map[string]model.PluginGenerationRevokeRequest{}}
 	candidate := HostCandidate{InstanceID: "instance", Generation: "generation", Scopes: []string{sdk.PermissionScopedSecretRead}, services: &runtimeServices{}}
-	ready := make(chan struct{})
-	attempt := &hostAttempt{cleanup: func() error { return nil }, handleReady: ready}
+	candidate.Grants = []model.PluginGrantProjection{{Name: sdk.PermissionScopedSecretRead, ResourceKind: "secret-scope", ResourceID: "fixture"}}
+	redeemer := &admissionSecretRedeemer{entered: make(chan struct{}, managed.MaxActiveOperations), release: make(chan struct{})}
+	host.SetSecretRedeemer(redeemer)
+	attempt := &hostAttempt{cleanup: func() error { return nil }}
 	environment, err := host.startHostRuntime(candidate, attemptSecurity{endpointDirectory: t.TempDir(), dial: DialConfig{Cookie: "test-private-credential"}}, attempt)
 	if err != nil {
 		t.Fatal(err)
@@ -38,8 +60,20 @@ func TestHostAdmissionOverloadUsesRetryableWireError(t *testing.T) {
 	client := &http.Client{Transport: transport}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
+	secretPayload, err := sdk.EncodeScopedSecretRequest(sdk.ScopedSecretRequest{
+		Action:    sdk.ScopedSecretRead,
+		Binding:   attempt.network.Binding(),
+		Reference: sdk.ScopedSecretReference{InstanceID: "instance", ID: "secret", Scope: "fixture", Version: strings.Repeat("a", 43)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := func(operation string) (int, []byte, error) {
-		payload, _ := json.Marshal(sdk.HostRuntimeCall{Operation: operation, Payload: json.RawMessage(`{}`)})
+		inner := json.RawMessage(`{}`)
+		if operation == sdk.HostRuntimeScopedSecret {
+			inner = secretPayload
+		}
+		payload, _ := json.Marshal(sdk.HostRuntimeCall{Operation: operation, Payload: inner})
 		r, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://host"+sdk.PluginHostCallPath, strings.NewReader(string(payload)))
 		r.Header.Set(sdk.HeaderPluginHostCredential, "test-private-credential")
 		response, err := client.Do(r)
@@ -51,27 +85,33 @@ func TestHostAdmissionOverloadUsesRetryableWireError(t *testing.T) {
 		return response.StatusCode, body, err
 	}
 	var workers sync.WaitGroup
-	defer func() { cancel(); close(ready); workers.Wait() }()
-	for i := 0; i < 128; i++ {
+	defer func() { cancel(); close(redeemer.release); workers.Wait() }()
+	finished := make(chan error, managed.MaxActiveOperations)
+	for i := 0; i < managed.MaxActiveOperations; i++ {
 		workers.Add(1)
-		go func() { defer workers.Done(); request(sdk.HostRuntimeScopedSecret) }()
+		go func() {
+			defer workers.Done()
+			_, _, err := request(sdk.HostRuntimeScopedSecret)
+			finished <- err
+		}()
 	}
-	for {
-		status, body, err := request("state.get")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if status == http.StatusTooManyRequests {
-			var response sdk.HostRuntimeResponse
-			if json.Unmarshal(body, &response) != nil || response.Validate() != nil || response.Error == nil || response.Error.Code != sdk.ErrorResourceExhausted || !response.Error.Retryable {
-				t.Fatalf("overload must be a retryable wire error, got %q", body)
-			}
-			break
-		}
+	// Wait until all work slots are actually held. Probing during setup can
+	// reject one of the fixture's own requests and leave the pool unsaturated.
+	for i := 0; i < managed.MaxActiveOperations; i++ {
 		select {
+		case <-redeemer.entered:
+		case err := <-finished:
+			t.Fatalf("blocking request returned before release: %v", err)
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
-		case <-time.After(time.Millisecond):
 		}
+	}
+	status, body, err := request("state.get")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response sdk.HostRuntimeResponse
+	if status != http.StatusTooManyRequests || json.Unmarshal(body, &response) != nil || response.Validate() != nil || response.Error == nil || response.Error.Code != sdk.ErrorResourceExhausted || !response.Error.Retryable {
+		t.Fatalf("overload must be a retryable wire error, got status %d: %q", status, body)
 	}
 }

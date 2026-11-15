@@ -53,8 +53,9 @@ func (resource *resource) read(ctx context.Context, request sdk.ManagedNetworkRe
 	}
 	cleanup := socketDeadline(ctx, connection.SetReadDeadline, request.WaitMS)
 	defer cleanup()
-	buffer := make([]byte, request.MaxBytes)
+	buffer := make([]byte, resource.readSize.Size(request.MaxBytes))
 	n, err := connection.Read(buffer)
+	resource.readSize.Observe(n, len(buffer))
 	if n > 0 {
 		resource.touch()
 		return sdk.ManagedNetworkResponse{Data: buffer[:n], EOF: errors.Is(err, io.EOF)}, nil

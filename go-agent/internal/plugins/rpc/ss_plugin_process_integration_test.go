@@ -101,6 +101,7 @@ func TestIntegrationRealShadowsocksManagedHostProcess(t *testing.T) {
 		string(sdk.CapabilityRuntimeIdentity), sdk.PermissionManagedNetworkListen, sdk.PermissionManagedNetworkDial,
 		sdk.PermissionScopedSecretRead, sdk.PermissionScopedSecretWrite,
 		string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve),
+		sdk.PermissionPublicCertificateRead, sdk.PermissionPublicCertificateTerminate,
 	}
 	permissions := make([]pluginprocess.SandboxPermission, len(scopes))
 	grants := make([]model.PluginGrantProjection, 0, len(scopes))

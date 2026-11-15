@@ -257,6 +257,7 @@ type terminatedStream struct {
 	token                   string
 	conn                    net.Conn
 	readGate, writeGate     chan struct{}
+	readSize                managed.StreamReadSizer
 	closed                  atomic.Bool
 	readClosed, writeClosed atomic.Bool
 	closeOnce               sync.Once
@@ -316,7 +317,7 @@ func (s *terminatedStream) read(ctx context.Context, request sdk.ManagedNetworkR
 	if s.closed.Load() || s.readClosed.Load() {
 		return sdk.ManagedNetworkResponse{}, &sdk.RuntimeError{Code: sdk.ErrorUnavailable, Message: "managed stream is closed"}
 	}
-	buffer := make([]byte, request.MaxBytes)
+	buffer := make([]byte, s.readSize.Size(request.MaxBytes))
 	stop, err := armStreamDeadline(ctx, s.conn.SetReadDeadline, request.WaitMS)
 	if err != nil {
 		return sdk.ManagedNetworkResponse{}, &sdk.RuntimeError{Code: sdk.ErrorUnavailable, Message: "managed stream read failed"}
@@ -326,6 +327,7 @@ func (s *terminatedStream) read(ctx context.Context, request sdk.ManagedNetworkR
 		_ = s.conn.SetReadDeadline(time.Time{})
 	}()
 	n, err := s.conn.Read(buffer)
+	s.readSize.Observe(n, len(buffer))
 	if n > 0 {
 		return sdk.ManagedNetworkResponse{Data: buffer[:n], EOF: errors.Is(err, io.EOF)}, nil
 	}
