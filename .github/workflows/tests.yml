@@ -48,7 +48,7 @@ jobs:
               ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module
               ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
               ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
-              ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi
+              ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi ./internal/plugins/network
               ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm
               ./pkg/acmeflow ./pkg/acmeflow/cloudflare
           - module: panel/backend-go
@@ -110,7 +110,7 @@ jobs:
               ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
               ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
               ./internal/modules/pki ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy
-              ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc
+              ./internal/plugins/hostapi ./internal/plugins/network ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc
               ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
             integration_packages: >-
               ./embedded
@@ -122,6 +122,7 @@ jobs:
               ./internal/modules/http
               ./internal/modules/l4
               ./internal/modules/traffic
+              ./internal/plugins/network
               ./internal/plugins/process
               ./pkg/acmeflow
               ./pkg/acmeflow/cloudflare

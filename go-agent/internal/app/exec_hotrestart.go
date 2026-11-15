@@ -67,6 +67,12 @@ func (a *App) hotRestartReplacement(activationCtx context.Context, binary string
 	// old and new workers replace each other's authenticated task session for
 	// the entire drain window.
 	a.stopTaskClient()
+	// Plugin-managed listeners are process-local, unlike inherited HTTP/L4
+	// listeners. Release them before waiting for established sessions to drain
+	// so the authoritative child can bind its own listeners.
+	if a.rpcHost != nil {
+		a.rpcHost.RetireForReplacement()
+	}
 	ctx := a.hotRestartContext()
 	if a.hotRestartDrain != nil {
 		if err := a.hotRestartDrain(ctx, identity); err != nil && !errors.Is(err, context.Canceled) {
@@ -83,7 +89,9 @@ func (a *App) hotRestartReplacement(activationCtx context.Context, binary string
 	// stable supervisor while every authoritative hot-restart child remains a
 	// replaceable worker. Intermediate children exit after their own handoff,
 	// preventing parent/child/grandchild chains from accumulating.
-	a.closeLocalRuntimes()
+	if err := a.closeDataPlaneRuntimes(); err != nil {
+		log.Printf("[agent] hot restart retired parent cleanup ended with error: %v", err)
+	}
 	journalPath := filepath.Join(a.cfg.DataDir, "hot-restart", "authority.json")
 	supervise := a.hotRestartSupervise
 	if supervise == nil {

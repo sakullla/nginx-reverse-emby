@@ -1126,11 +1126,18 @@ func (a *App) GenerationDrainSnapshot() model.GenerationDrainSnapshot {
 }
 
 func (a *App) closeLocalRuntimes() error {
-	var errs []error
 	if a.packageStages != nil {
 		a.packageStages.Close()
 		a.packageStages = nil
 	}
+	return a.closeDataPlaneRuntimes()
+}
+
+// closeDataPlaneRuntimes also runs inside the package activation callback when
+// retiring a hot-restart parent. It must not close packageStages there: Close
+// waits for that same callback to return. App.Close joins it after activation.
+func (a *App) closeDataPlaneRuntimes() error {
+	var errs []error
 	if a.channelManager != nil {
 		if err := a.channelManager.Close(); err != nil {
 			errs = append(errs, err)

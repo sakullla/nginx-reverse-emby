@@ -247,7 +247,7 @@ func (owner *Owner) newResource(kind, protocol, permission string, parent *resou
 		initialize(resource)
 	}
 	owner.mu.Lock()
-	if owner.closed {
+	if owner.closed || owner.retired {
 		owner.mu.Unlock()
 		if parent != nil {
 			parent.children.Add(-1)
