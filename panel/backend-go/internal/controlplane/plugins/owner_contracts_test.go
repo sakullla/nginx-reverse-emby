@@ -379,6 +379,7 @@ func TestValidatePackageAllowsManagedCapabilitiesByDefault(t *testing.T) {
 		string(pluginsdk.CapabilityPolicyControl), string(pluginsdk.CapabilityPolicyEntryOverlays),
 		pluginsdk.PermissionManagedNetworkListen, pluginsdk.PermissionManagedNetworkDial,
 		pluginsdk.PermissionScopedSecretRead, pluginsdk.PermissionScopedSecretWrite,
+		pluginsdk.PermissionPublicCertificateRead, pluginsdk.PermissionPublicCertificateTerminate,
 	} {
 		t.Run(permission, func(t *testing.T) {
 			t.Parallel()

@@ -185,6 +185,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 			string(pluginsdk.CapabilityPolicyControl), string(pluginsdk.CapabilityPolicyEntryOverlays),
 			pluginsdk.PermissionManagedNetworkListen, pluginsdk.PermissionManagedNetworkDial,
 			pluginsdk.PermissionScopedSecretRead, pluginsdk.PermissionScopedSecretWrite,
+			pluginsdk.PermissionPublicCertificateRead, pluginsdk.PermissionPublicCertificateTerminate,
 		}
 	}
 	if len(options.AllowedExtensionPoints) == 0 {

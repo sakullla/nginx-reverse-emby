@@ -202,6 +202,7 @@ func (h *Host) terminatePublicCertificate(ctx context.Context, candidate HostCan
 	application, err := terminator.HandshakeServer(ctx, request.CertificateID, bridge)
 	if err != nil {
 		if publicCertificateFailureKind(err) == "unavailable" {
+			bridge.cancel()
 			streams.release(request.Handle.Token)
 			return runtimeReply(nil, &sdk.RuntimeError{Code: sdk.ErrorUnavailable, Message: "public certificate is unavailable"})
 		}

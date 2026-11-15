@@ -98,6 +98,8 @@ func TestPublicCertificateTLSFailureDoesNotSubstituteOrLeak(t *testing.T) {
 	applyPublicCertificates(t, manager, []model.ManagedCertificateBundle{{ID: 2, Domain: "two.example", CertPEM: certPEM, KeyPEM: keyPEM}}, []model.ManagedCertificatePolicy{{ID: 2, Domain: "two.example", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain"}})
 	host := &Host{}
 	certs.NewModule(manager).BindPublicCertificateTLS(host.SetPublicCertificateTLS)
+	captured := &publicTLSBridgeCapture{next: host.publicCertificateTerminator()}
+	host.SetPublicCertificateTLS(captured)
 	owner := newPublicCertificateOwner(t)
 	parent, client := acceptPublicCertificateTCP(t, owner)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -105,6 +107,10 @@ func TestPublicCertificateTLSFailureDoesNotSubstituteOrLeak(t *testing.T) {
 	missing := terminatePublicCertificate(t, ctx, host, owner, parent, 1)
 	if missing.Error == nil || missing.Error.Code != sdk.ErrorUnavailable || missing.Error.Message != "public certificate is unavailable" || containsPrivateMaterial(missing.Error.Message) {
 		t.Fatalf("missing certificate = %+v", missing.Error)
+	}
+	bridge, ok := captured.conn.(*publicTLSBridge)
+	if !ok || bridge.ctx.Err() == nil || bridge.closed {
+		t.Fatal("unavailable certificate left the bridge context running or closed the accepted connection")
 	}
 	_ = client.SetWriteDeadline(time.Now().Add(time.Second))
 	if _, err := client.Write([]byte("still-open")); err != nil {
@@ -144,6 +150,18 @@ func TestPublicCertificateTLSFailureDoesNotSubstituteOrLeak(t *testing.T) {
 		t.Fatalf("permission = %+v", denied.Error)
 	}
 	_ = client.Close()
+}
+
+type publicTLSBridgeCapture struct {
+	next interface {
+		HandshakeServer(context.Context, int, net.Conn) (net.Conn, error)
+	}
+	conn net.Conn
+}
+
+func (c *publicTLSBridgeCapture) HandshakeServer(ctx context.Context, certificateID int, raw net.Conn) (net.Conn, error) {
+	c.conn = raw
+	return c.next.HandshakeServer(ctx, certificateID, raw)
 }
 
 func newPublicCertificateManager(t *testing.T) *certs.Manager {
