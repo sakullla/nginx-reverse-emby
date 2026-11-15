@@ -236,7 +236,7 @@ func (s *Server) policyCheckedUDPSession(
 		key := existing.key
 		s.udpMu.Unlock()
 		if blocked {
-			s.closeUDPSession(key)
+			s.closeUDPSessionIfCurrent(key, existing)
 			return nil, nil
 		}
 		if ready != nil {

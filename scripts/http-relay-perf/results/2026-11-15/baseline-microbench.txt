@@ -1,0 +1,39 @@
+goos: windows
+goarch: amd64
+pkg: github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http
+cpu: Intel(R) Core(TM) i7-9700F CPU @ 3.00GHz
+BenchmarkCopyResponseNetworkBody/128-8         	   72622	      9667 ns/op	  13.24 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/128-8         	   53960	     10889 ns/op	  11.76 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/128-8         	   71026	      8587 ns/op	  14.91 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/32768-8       	   59432	     10527 ns/op	3112.90 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/32768-8       	   59710	     10709 ns/op	3059.72 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/32768-8       	   55314	     13801 ns/op	2374.38 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/1048576-8     	   10000	     84787 ns/op	12367.15 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/1048576-8     	   13627	     42108 ns/op	24901.89 MB/s	   33512 B/op	      12 allocs/op
+BenchmarkCopyResponseNetworkBody/1048576-8     	   10000	     53776 ns/op	19498.89 MB/s	   33512 B/op	      12 allocs/op
+PASS
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http	7.165s
+goos: windows
+goarch: amd64
+pkg: github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4
+cpu: Intel(R) Core(TM) i7-9700F CPU @ 3.00GHz
+BenchmarkUDPFlowLookup/1-8 	 1673648	       362.9 ns/op	      96 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/1-8 	 1000000	       703.6 ns/op	      96 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/1-8 	 1000000	       928.8 ns/op	      96 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/1000-8         	   45882	     15260 ns/op	      96 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/1000-8         	   57434	     12173 ns/op	      96 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/1000-8         	   63919	     11227 ns/op	      96 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/10000-8        	    7068	    102987 ns/op	     117 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/10000-8        	    6562	     82639 ns/op	     116 B/op	       7 allocs/op
+BenchmarkUDPFlowLookup/10000-8        	    6612	     89922 ns/op	     116 B/op	       7 allocs/op
+PASS
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4	8.778s
+goos: windows
+goarch: amd64
+pkg: github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay
+cpu: Intel(R) Core(TM) i7-9700F CPU @ 3.00GHz
+BenchmarkUDPStreamPeerFirstPacket-8   	   22418	     31649 ns/op	   65603 B/op	       3 allocs/op
+BenchmarkUDPStreamPeerFirstPacket-8   	   28720	     18212 ns/op	   65603 B/op	       3 allocs/op
+BenchmarkUDPStreamPeerFirstPacket-8   	   39457	     87346 ns/op	   65603 B/op	       3 allocs/op
+PASS
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay	5.653s

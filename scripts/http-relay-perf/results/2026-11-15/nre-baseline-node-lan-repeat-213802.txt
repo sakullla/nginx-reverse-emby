@@ -1,0 +1,31 @@
+UDP_PACKET {"bytes":128,"seconds":0.005372067,"target":"172.31.1.10:7101"}
+2026/11/15 13:38:07.061593 relay2 ready at http://172.31.1.10:8083 in 12.83317ms
+2026/11/15 13:38:07.063733 relay ready at http://172.31.1.10:8082 in 2.007324ms
+2026/11/15 13:38:07.064955 direct ready at http://172.31.1.10:8081 in 1.099878ms
+UDP_PACKET {"bytes":128,"seconds":0.005838542,"target":"172.31.1.10:7102"}
+VERIFY {"name":"l4_half_close_direct","passed":true,"seconds":0.01296159}
+VERIFY {"name":"l4_half_close_relay","passed":true,"seconds":0.019066574}
+VERIFY {"name":"l4_half_close_relay2","passed":true,"seconds":0.026773717}
+UDP_PACKET {"bytes":128,"seconds":0.025153856,"target":"172.31.1.10:7103"}
+VERIFY {"name":"http_direct","passed":true,"seconds":0.066138365}
+VERIFY {"name":"l4_tcp_direct","passed":true,"seconds":0.072563201}
+VERIFY {"name":"l4_tcp_relay2","passed":true,"seconds":0.083405349}
+VERIFY {"name":"l4_tcp_relay","passed":true,"seconds":0.094920005}
+VERIFY {"name":"http_relay","passed":true,"seconds":0.097412207}
+VERIFY {"name":"http_relay2","passed":true,"seconds":0.097478318}
+UDP_PACKET {"bytes":1400,"seconds":0.001769085,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":1400,"seconds":0.002960977,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":1400,"seconds":0.004210379,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":60000,"seconds":0.002026927,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":60000,"seconds":0.002402887,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":60000,"seconds":0.004738464,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":128,"seconds":0.00049458,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":128,"seconds":0.000669408,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":128,"seconds":0.001146985,"target":"172.31.1.10:7103"}
+VERIFY {"name":"l4_udp_direct","passed":true,"seconds":1.214321601}
+VERIFY {"name":"l4_udp_relay","passed":true,"seconds":1.216337326}
+VERIFY {"name":"l4_udp_relay2","passed":true,"seconds":1.240412908}
+RESULT {"name":"http_direct_c1","target":"http://172.31.1.10:8081","concurrency":1,"bytes":5089099776,"seconds":10.000231519,"MBps":485.32313884722174}
+RESULT {"name":"http_relay2_c1","target":"http://172.31.1.10:8083","concurrency":1,"bytes":2552627730,"seconds":10.003371924,"MBps":243.35549292202722}
+RESULT {"name":"l4_relay2_c8","target":"http://172.31.1.10:7003","concurrency":8,"bytes":5692276380,"seconds":10.001449351,"MBps":542.779110804492}
+SUMMARY [{"name":"http_direct_c1","target":"http://172.31.1.10:8081","concurrency":1,"bytes":5089099776,"seconds":10.000231519,"MBps":485.32313884722174},{"name":"http_relay2_c1","target":"http://172.31.1.10:8083","concurrency":1,"bytes":2552627730,"seconds":10.003371924,"MBps":243.35549292202722},{"name":"l4_relay2_c8","target":"http://172.31.1.10:7003","concurrency":8,"bytes":5692276380,"seconds":10.001449351,"MBps":542.779110804492}]

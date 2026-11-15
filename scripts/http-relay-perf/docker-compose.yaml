@@ -6,9 +6,14 @@ services:
     image: nre-http-relay-perf-runner:latest
     container_name: nre-perf
     working_dir: /work
-    command: ["go", "run", "/work/harness.go"]
+    command: ["/usr/local/bin/perf"]
     environment:
       HARNESS_MODE: bench
+
+      HARNESS_MODULE_FIXTURE: ${HARNESS_MODULE_FIXTURE:-}
+      HARNESS_RELAY_TRANSPORT: ${HARNESS_RELAY_TRANSPORT:-tls_tcp}
+      HARNESS_VERIFY: ${HARNESS_VERIFY:-}
+      HARNESS_WAIT_FOR_START: ${HARNESS_WAIT_FOR_START:-}
       HARNESS_MASTER_ADDR: ${HARNESS_MASTER_ADDR:-:8080}
       HARNESS_DIRECT_ADDRESS: ${HARNESS_DIRECT_ADDRESS:-http://172.31.1.10:8081}
       HARNESS_RELAY_ADDRESS: ${HARNESS_RELAY_ADDRESS:-http://172.31.1.10:8082}
@@ -30,8 +35,6 @@ services:
       interval: 200ms
       timeout: 200ms
       retries: 100
-    volumes:
-      - ./harness.go:/work/harness.go:ro
     cap_add:
       - NET_ADMIN
     tmpfs:
@@ -48,12 +51,10 @@ services:
     image: nre-http-relay-perf-runner:latest
     container_name: nre-backend-b
     working_dir: /work
-    command: ["go", "run", "/work/harness.go", "backend"]
+    command: ["/usr/local/bin/perf", "backend"]
     environment:
       HARNESS_MODE: backend
       HARNESS_BACKEND_LISTEN_ADDR: ${HARNESS_BACKEND_LISTEN_ADDR:-:9002}
-    volumes:
-      - ./harness.go:/work/harness.go:ro
     cap_add:
       - NET_ADMIN
     tmpfs:
@@ -67,8 +68,8 @@ services:
   agent-a:
     build:
       context: ../..
-      dockerfile: scripts/http-relay-perf/Dockerfile.agent
-    image: nre-agent-http-relay-perf:latest
+      dockerfile: ${HARNESS_AGENT_DOCKERFILE:-scripts/http-relay-perf/Dockerfile.agent}
+    image: ${HARNESS_AGENT_IMAGE:-nre-agent-http-relay-perf:latest}
     container_name: nre-agent-a
     environment:
       NRE_AGENT_ID: agent-a
@@ -108,7 +109,7 @@ services:
         ipv4_address: 172.31.3.10
 
   relay-b:
-    image: nre-agent-http-relay-perf:latest
+    image: ${HARNESS_AGENT_IMAGE:-nre-agent-http-relay-perf:latest}
     container_name: nre-relay-b
     environment:
       NRE_AGENT_ID: relay-b
@@ -140,7 +141,7 @@ services:
         ipv4_address: 172.31.3.11
 
   relay-c:
-    image: nre-agent-http-relay-perf:latest
+    image: ${HARNESS_AGENT_IMAGE:-nre-agent-http-relay-perf:latest}
     container_name: nre-relay-c
     environment:
       NRE_AGENT_ID: relay-c

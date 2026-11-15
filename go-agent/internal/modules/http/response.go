@@ -347,6 +347,13 @@ type httpStreamingResponseWriter struct {
 	flushed   bool
 }
 
+// ReadFrom reuses the shared copy buffer for network response bodies. Keep
+// copying through Write so streaming flushes and traffic accounting still run.
+// io.Copy continues to prefer a response body's WriterTo when one is available.
+func (w *httpStreamingResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	return traffic.CopyGeneric(w, r)
+}
+
 func (w *httpStreamingResponseWriter) Write(p []byte) (int, error) {
 	// codeql[go/reflected-xss]
 	// HTTP reverse proxy response bodies are streamed verbatim from the configured upstream.

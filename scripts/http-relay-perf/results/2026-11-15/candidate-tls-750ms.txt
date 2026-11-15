@@ -1,0 +1,27 @@
+UDP_PACKET {"bytes":128,"seconds":3.006337089,"target":"172.31.1.10:7101"}
+VERIFY {"name":"l4_half_close_direct","passed":true,"seconds":6.002124384}
+UDP_PACKET {"bytes":1400,"seconds":3.001202664,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":128,"seconds":9.013378398,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":60000,"seconds":3.003131888,"target":"172.31.1.10:7101"}
+VERIFY {"name":"l4_half_close_relay","passed":true,"seconds":12.038975102}
+UDP_PACKET {"bytes":128,"seconds":12.007575195,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":128,"seconds":3.00355903,"target":"172.31.1.10:7101"}
+VERIFY {"name":"l4_udp_direct","passed":true,"seconds":13.264679455}
+UDP_PACKET {"bytes":1400,"seconds":4.502323365,"target":"172.31.1.10:7102"}
+VERIFY {"name":"l4_half_close_relay2","passed":true,"seconds":18.022127914}
+UDP_PACKET {"bytes":1400,"seconds":6.019119098,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":60000,"seconds":10.516193414,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":128,"seconds":7.202598654,"target":"172.31.1.10:7102"}
+VERIFY {"name":"l4_udp_relay","passed":true,"seconds":32.447831959}
+UDP_PACKET {"bytes":60000,"seconds":15.006061523,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":128,"seconds":6.001883262,"target":"172.31.1.10:7103"}
+VERIFY {"name":"l4_udp_relay2","passed":true,"seconds":40.276194609}
+VERIFY {"name":"http_direct","passed":true,"seconds":45.107007283}
+VERIFY {"name":"l4_tcp_direct","passed":true,"seconds":45.119372549}
+VERIFY {"name":"http_relay","passed":true,"seconds":57.16272634}
+VERIFY {"name":"l4_tcp_relay","passed":true,"seconds":61.65784424}
+VERIFY {"name":"http_relay2","passed":true,"seconds":72.684054997}
+VERIFY {"name":"l4_tcp_relay2","passed":true,"seconds":75.494175632}
+2026/11/15 13:47:05.723512 relay2 ready at http://172.31.1.10:8083 in 24.162671742s
+2026/11/15 13:47:16.243280 relay ready at http://172.31.1.10:8082 in 10.519630983s
+2026/11/15 13:47:23.759533 direct ready at http://172.31.1.10:8081 in 7.513494332s

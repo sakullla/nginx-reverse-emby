@@ -266,6 +266,15 @@ func withFrameDeadline(conn net.Conn, fn func() error) error {
 	return withConnDeadline(conn, getRelayFrameTimeout(), fn)
 }
 
+// Opening a path waits for downstream TCP/TLS handshakes and their open
+// acknowledgements as well as the first hop's acknowledgement. A single frame
+// budget cannot cover a cold multi-hop path on a high-latency network.
+func relayOpenTimeout(remainingHops int) time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayFrameTimeout + time.Duration(remainingHops)*(relayDialTimeout+relayHandshakeTimeout+relayFrameTimeout)
+}
+
 func withWriteDeadline(conn net.Conn, timeout time.Duration, fn func() error) error {
 	if timeout <= 0 {
 		return fn()

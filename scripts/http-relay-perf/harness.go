@@ -57,6 +57,7 @@ type snapshot struct {
 	DesiredVersion      string              `json:"desired_version"`
 	DesiredRevision     int64               `json:"desired_revision"`
 	Rules               []httpRule          `json:"rules"`
+	L4Rules             []l4Rule            `json:"l4_rules,omitempty"`
 	RelayListeners      []relayListener     `json:"relay_listeners"`
 	Certificates        []certificateBundle `json:"certificates"`
 	CertificatePolicies []certificatePolicy `json:"certificate_policies"`
@@ -159,35 +160,39 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("mock master listening on %s", cfg.masterAddr)
+	if envString("HARNESS_WAIT_FOR_START", "") == "1" {
+		select {
+		case <-measurementStart:
+		case <-time.After(3 * time.Minute):
+			log.Fatal("netem start gate timed out")
+		}
+	}
 
-	waitForHTTP("direct", cfg.directAddress, 45*time.Second)
-	waitForHTTP("relay", cfg.relayAddress, 45*time.Second)
-	waitForHTTP("relay2", cfg.relay2Address, 45*time.Second)
+	if envString("HARNESS_MODULE_FIXTURE", "") == "1" {
+		select {
+		case <-nodesReady:
+		case <-time.After(time.Minute):
+			log.Fatal("forwarding nodes not ready")
+		}
+	}
+	// Check the longest path first, before any shorter path can warm its pools.
+	waitForHTTP("relay2", cfg.relay2Address, 90*time.Second)
+	waitForHTTP("relay", cfg.relayAddress, 90*time.Second)
+	waitForHTTP("direct", cfg.directAddress, 90*time.Second)
 	if cfg.preMeasureWait > 0 {
 		log.Printf("waiting %s before measurements", cfg.preMeasureWait)
 		time.Sleep(cfg.preMeasureWait)
 	}
-
-	benchmarks := []benchmarkCase{
-		{name: "http_direct_c1", run: func() result {
-			return measureHTTPThroughput("http_direct_c1", cfg.directAddress, 1, cfg.downloadBytes, cfg.c1Duration)
-		}},
-		{name: "http_relay_c1", run: func() result {
-			return measureHTTPThroughput("http_relay_c1", cfg.relayAddress, 1, cfg.downloadBytes, cfg.c1Duration)
-		}},
-		{name: "http_relay2_c1", run: func() result {
-			return measureHTTPThroughput("http_relay2_c1", cfg.relay2Address, 1, cfg.downloadBytes, cfg.c1Duration)
-		}},
-		{name: "http_direct_c8", run: func() result {
-			return measureHTTPThroughput("http_direct_c8", cfg.directAddress, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
-		}},
-		{name: "http_relay_c8", run: func() result {
-			return measureHTTPThroughput("http_relay_c8", cfg.relayAddress, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
-		}},
-		{name: "http_relay2_c8", run: func() result {
-			return measureHTTPThroughput("http_relay2_c8", cfg.relay2Address, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
-		}},
+	if envString("HARNESS_VERIFY", "") == "1" {
+		if err := verifyForwarding(cfg); err != nil {
+			log.Fatal(err)
+		}
+		if cfg.benchmarkFilter == "verify_only" {
+			return
+		}
 	}
+
+	benchmarks := buildBenchmarks(cfg)
 	selected, err := selectBenchmarks(cfg.benchmarkFilter, benchmarks)
 	if err != nil {
 		log.Fatal(err)
@@ -290,6 +295,7 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 		"agent-a": {
 			DesiredVersion:  "perf",
 			DesiredRevision: 1,
+			L4Rules:         verificationL4Rules(cfg),
 			Rules: []httpRule{
 				{
 					ID:          101,
@@ -354,8 +360,8 @@ func newHarnessRelayListener(id int, agentID, publicHost string, publicPort, cer
 		Enabled:                 true,
 		CertificateID:           &certID,
 		TLSMode:                 "pin_only",
-		TransportMode:           "tls_tcp",
-		AllowTransportFallback:  true,
+		TransportMode:           envString("HARNESS_RELAY_TRANSPORT", "tls_tcp"),
+		AllowTransportFallback:  false,
 		ObfsMode:                "off",
 		PinSet:                  []relayPin{{Type: "spki_sha256", Value: pin}},
 		TrustedCACertificateIDs: nil,
@@ -371,6 +377,11 @@ func certIDForRelay(id int) int {
 
 func startMaster(ctx context.Context, address string, snapshots map[string]snapshot) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/node-ready", markNodeReady)
+	mux.HandleFunc("/start", func(w http.ResponseWriter, _ *http.Request) {
+		measurementOnce.Do(func() { close(measurementStart) })
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -406,9 +417,15 @@ func startMaster(ctx context.Context, address string, snapshots map[string]snaps
 }
 
 func startBackend(address string) error {
+	if err := startVerificationBackends(); err != nil {
+		return err
+	}
 	server := &http.Server{
 		Addr: address,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if serveVerificationHTTP(w, r) {
+				return
+			}
 			switch r.URL.Path {
 			case "/healthz":
 				w.WriteHeader(http.StatusOK)
@@ -445,17 +462,22 @@ func serveInfiniteDownload(w http.ResponseWriter, r *http.Request) {
 
 func waitForHTTP(name, address string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
+	defer client.CloseIdleConnections()
 	healthURL := strings.TrimRight(trimHTTPURL(address), "/") + "/healthz"
 	for time.Now().Before(deadline) {
+		start := time.Now()
 		resp, err := client.Get(healthURL)
 		if err == nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				log.Printf("%s ready at %s", name, address)
+				log.Printf("%s ready at %s in %s", name, address, time.Since(start))
 				return
 			}
+		}
+		if envString("HARNESS_MODULE_FIXTURE", "") == "1" {
+			log.Fatalf("cold %s request failed: response=%v error=%v", name, resp, err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -464,6 +486,7 @@ func waitForHTTP(name, address string, timeout time.Duration) {
 
 func measureHTTPThroughput(name, address string, concurrency int, bytesPerConn int64, duration time.Duration) result {
 	client := newHTTPClient(concurrency)
+	defer client.CloseIdleConnections()
 	target := strings.TrimRight(trimHTTPURL(address), "/") + "/download"
 	start := time.Now()
 	if duration > 0 {
@@ -515,6 +538,10 @@ func measureHTTPDuration(client *http.Client, target string, concurrency int, du
 				return
 			}
 			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errCh <- fmt.Errorf("%s returned HTTP %d", target, resp.StatusCode)
+				return
+			}
 			n, err := io.Copy(io.Discard, resp.Body)
 			total.Add(n)
 			if err != nil && ctx.Err() == nil {
@@ -528,6 +555,9 @@ func measureHTTPDuration(client *http.Client, target string, concurrency int, du
 		if err != nil {
 			log.Fatal(err)
 		}
+	}
+	if total.Load() == 0 {
+		log.Fatal("benchmark transferred no data")
 	}
 	return total.Load()
 }
@@ -553,6 +583,10 @@ func measureHTTPFixedBytes(client *http.Client, target string, concurrency int, 
 				return
 			}
 			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errCh <- fmt.Errorf("%s returned HTTP %d", target, resp.StatusCode)
+				return
+			}
 			n, err := io.CopyN(io.Discard, resp.Body, bytesPerConn)
 			total.Add(n)
 			if err != nil {
@@ -718,4 +752,41 @@ func sortResults(results []result) {
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Name < results[j].Name
 	})
+}
+
+func buildBenchmarks(cfg config) []benchmarkCase {
+	benchmarks := []benchmarkCase{
+		{name: "http_direct_c1", run: func() result {
+			return measureHTTPThroughput("http_direct_c1", cfg.directAddress, 1, cfg.downloadBytes, cfg.c1Duration)
+		}},
+		{name: "http_relay_c1", run: func() result {
+			return measureHTTPThroughput("http_relay_c1", cfg.relayAddress, 1, cfg.downloadBytes, cfg.c1Duration)
+		}},
+		{name: "http_relay2_c1", run: func() result {
+			return measureHTTPThroughput("http_relay2_c1", cfg.relay2Address, 1, cfg.downloadBytes, cfg.c1Duration)
+		}},
+		{name: "http_direct_c8", run: func() result {
+			return measureHTTPThroughput("http_direct_c8", cfg.directAddress, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
+		}},
+		{name: "http_relay_c8", run: func() result {
+			return measureHTTPThroughput("http_relay_c8", cfg.relayAddress, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
+		}},
+		{name: "http_relay2_c8", run: func() result {
+			return measureHTTPThroughput("http_relay2_c8", cfg.relay2Address, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
+		}},
+	}
+	for i, name := range []string{"direct", "relay", "relay2"} {
+		address := fmt.Sprintf("http://172.31.1.10:%d", 7001+i)
+		for _, tier := range []struct {
+			suffix      string
+			concurrency int
+			duration    time.Duration
+		}{{"c1", 1, cfg.c1Duration}, {"c8", cfg.c8Concurrency, cfg.c8Duration}} {
+			benchName := "l4_" + name + "_" + tier.suffix
+			benchmarks = append(benchmarks, benchmarkCase{name: benchName, run: func() result {
+				return measureHTTPThroughput(benchName, address, tier.concurrency, cfg.downloadBytes, tier.duration)
+			}})
+		}
+	}
+	return benchmarks
 }

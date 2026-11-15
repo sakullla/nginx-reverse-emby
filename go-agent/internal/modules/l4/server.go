@@ -19,6 +19,9 @@ import (
 const (
 	relayInitialPayloadMax = 32 * 1024
 	defaultUDPReplyTimeout = time.Second
+	// UOT traverses reliable streams: large datagrams can need several RTTs
+	// during TCP slow start or while sharing a multi-hop tunnel with bulk data.
+	defaultRelayedUDPReplyTimeout = 30 * time.Second
 )
 
 type RelayMaterialProvider interface {

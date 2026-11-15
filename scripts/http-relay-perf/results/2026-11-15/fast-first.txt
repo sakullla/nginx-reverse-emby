@@ -1,0 +1,32 @@
+--- FAIL: TestSlowPackageStageDoesNotBlockPeriodicHeartbeats (1.48s)
+    app_test.go:118: condition was not met before timeout
+FAIL
+FAIL	github.com/sakullla/nginx-reverse-emby/go-agent/internal/app	4.213s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/control	4.142s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/core	3.876s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation	0.937s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/model	0.979s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/module	0.366s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs	15.444s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/channel	2.485s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/ddns	0.579s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics	1.019s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress	0.703s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics	0.476s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http	1.795s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4	0.580s
+--- FAIL: TestRelayGenerationPortMoveReleasesInactiveBinding (0.14s)
+    generation_module_test.go:184: retired relay listener still owns 127.0.0.1:55857: listen tcp 127.0.0.1:55857: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+FAIL
+FAIL	github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay	1.682s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability	3.482s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/dockerproxy	2.132s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/hostapi	0.299s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/network	1.108s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy	2.865s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process	0.449s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc	3.586s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/wasm	2.861s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow	4.039s
+ok  	github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow/cloudflare	2.643s
+FAIL

@@ -235,13 +235,14 @@ func (s l4ConnectionSession) ForceClose(context.Context, string) error {
 }
 
 type l4UDPSession struct {
-	server *Server
-	key    string
+	server  *Server
+	key     string
+	session *udpSession
 }
 
 func (s l4UDPSession) ForceClose(context.Context, string) error {
 	if s.server != nil {
-		s.server.closeUDPSession(s.key)
+		s.server.closeUDPSessionIfCurrent(s.key, s.session)
 	}
 	return nil
 }

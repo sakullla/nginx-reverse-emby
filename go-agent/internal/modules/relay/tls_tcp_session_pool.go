@@ -578,7 +578,7 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 
 	waitCtx := ctx
 	cancel := func() {}
-	if timeout := getRelayFrameTimeout(); timeout > 0 {
+	if timeout := relayOpenTimeout(len(req.Chain)); timeout > 0 {
 		waitCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()

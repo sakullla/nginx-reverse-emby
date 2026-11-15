@@ -1,0 +1,29 @@
+UDP_PACKET {"bytes":128,"seconds":0.007427515,"target":"172.31.1.10:7101"}
+2026/11/15 13:42:06.406737 relay2 ready at http://172.31.1.10:8083 in 8.29511ms
+2026/11/15 13:42:06.408414 relay ready at http://172.31.1.10:8082 in 1.569972ms
+2026/11/15 13:42:06.409565 direct ready at http://172.31.1.10:8081 in 1.064317ms
+VERIFY {"name":"l4_half_close_direct","passed":true,"seconds":0.008511434}
+UDP_PACKET {"bytes":128,"seconds":0.015456597,"target":"172.31.1.10:7102"}
+VERIFY {"name":"l4_half_close_relay2","passed":true,"seconds":0.022974422}
+VERIFY {"name":"l4_half_close_relay","passed":true,"seconds":0.024801723}
+UDP_PACKET {"bytes":128,"seconds":0.027777449,"target":"172.31.1.10:7103"}
+VERIFY {"name":"l4_tcp_direct","passed":true,"seconds":0.097798637}
+VERIFY {"name":"http_direct","passed":true,"seconds":0.10166466}
+VERIFY {"name":"http_relay","passed":true,"seconds":0.100283409}
+VERIFY {"name":"l4_tcp_relay","passed":true,"seconds":0.098507815}
+VERIFY {"name":"http_relay2","passed":true,"seconds":0.106965743}
+VERIFY {"name":"l4_tcp_relay2","passed":true,"seconds":0.10766822}
+UDP_PACKET {"bytes":1400,"seconds":0.001873305,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":1400,"seconds":0.003059536,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":1400,"seconds":0.006441007,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":60000,"seconds":0.000971307,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":60000,"seconds":0.00146266,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":60000,"seconds":0.002267749,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":128,"seconds":0.00045295,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":128,"seconds":0.000720879,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":128,"seconds":0.000936003,"target":"172.31.1.10:7103"}
+VERIFY {"name":"l4_udp_direct","passed":true,"seconds":1.212995363}
+VERIFY {"name":"l4_udp_relay","passed":true,"seconds":1.224285404}
+VERIFY {"name":"l4_udp_relay2","passed":true,"seconds":1.239326855}
+RESULT {"name":"http_direct_c1","target":"http://172.31.1.10:8081","concurrency":1,"bytes":11380527098,"seconds":20.000076995,"MBps":542.6637309066996}
+SUMMARY [{"name":"http_direct_c1","target":"http://172.31.1.10:8081","concurrency":1,"bytes":11380527098,"seconds":20.000076995,"MBps":542.6637309066996}]

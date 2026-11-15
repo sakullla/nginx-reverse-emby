@@ -1,9 +1,9 @@
-FROM golang:1.27.0-trixie
+FROM golang:1.27.0-trixie AS builder
+WORKDIR /work
+COPY harness.go verification.go ./
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -o /out/perf harness.go verification.go
 
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends iproute2; \
-    rm -rf /var/lib/apt/lists/*
-
-ENV GOCACHE=/tmp/go-build
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 wget && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/perf /usr/local/bin/perf
 WORKDIR /work

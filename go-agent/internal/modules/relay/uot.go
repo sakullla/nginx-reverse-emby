@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const maxUOTPacketSize = 64 * 1024
+const maxUOTPacketSize = 1<<16 - 1 // The wire length is an unsigned 16-bit integer.
 
 func WriteUOTPacket(w io.Writer, payload []byte) error {
 	return writeUOTPacket(w, payload)
@@ -24,6 +24,41 @@ func ReadUOTPacket(r io.Reader) ([]byte, error) {
 
 func ReadUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
 	return readUOTPacketInto(r, buf)
+}
+
+// UOTReader retains a partially received datagram across read deadlines. Its
+// zero value is ready to use; one reader must own each stream. Returned payloads
+// remain valid until the next ReadPacket call. Storage grows with actual packet
+// sizes instead of reserving 64 KiB for every idle relay association.
+type UOTReader struct {
+	header     [2]byte
+	headerRead int
+	payload    []byte
+	read       int
+}
+
+func (r *UOTReader) ReadPacket(src io.Reader) ([]byte, error) {
+	if r.headerRead < len(r.header) {
+		n, err := io.ReadFull(src, r.header[r.headerRead:])
+		r.headerRead += n
+		if err != nil {
+			return nil, err
+		}
+		size := int(binary.BigEndian.Uint16(r.header[:]))
+		if cap(r.payload) < size {
+			r.payload = make([]byte, size)
+		} else {
+			r.payload = r.payload[:size]
+		}
+	}
+	n, err := io.ReadFull(src, r.payload[r.read:])
+	r.read += n
+	if err != nil {
+		return nil, err
+	}
+	r.headerRead = 0
+	r.read = 0
+	return r.payload, nil
 }
 
 func writeUOTPacket(w io.Writer, payload []byte) error {
@@ -89,8 +124,8 @@ type UDPPacketPeer interface {
 type udpPacketPeer = UDPPacketPeer
 
 type udpStreamPeer struct {
-	conn    net.Conn
-	readBuf []byte
+	conn   net.Conn
+	reader UOTReader
 }
 
 func newUDPStreamPeer(conn net.Conn) udpPacketPeer {
@@ -110,10 +145,7 @@ func (p *udpStreamPeer) SetWriteDeadline(deadline time.Time) error {
 }
 
 func (p *udpStreamPeer) ReadPacket() ([]byte, error) {
-	if p.readBuf == nil {
-		p.readBuf = make([]byte, maxUOTPacketSize)
-	}
-	return readUOTPacketInto(p.conn, p.readBuf)
+	return p.reader.ReadPacket(p.conn)
 }
 
 func (p *udpStreamPeer) WritePacket(payload []byte) error {

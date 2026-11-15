@@ -346,7 +346,7 @@ func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provid
 	}
 
 	var response relayResponse
-	err = withFrameDeadline(relayConn, func() error {
+	err = withConnDeadline(relayConn, relayOpenTimeout(len(request.Chain)), func() error {
 		var readErr error
 		response, readErr = readRelayResponse(relayConn)
 		return readErr

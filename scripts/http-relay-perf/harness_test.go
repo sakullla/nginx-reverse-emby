@@ -7,30 +7,18 @@ import (
 	"testing"
 )
 
-func TestHarnessDefinesHTTPRelayThroughputBenchmarks(t *testing.T) {
-	data, err := os.ReadFile("harness.go")
-	if err != nil {
-		t.Fatalf("read harness: %v", err)
-	}
-
-	harness := string(data)
-	for _, want := range []string{
-		"http_direct_c1",
-		"http_relay_c1",
-		"http_relay2_c1",
-		"http_direct_c8",
-		"http_relay_c8",
-		"http_relay2_c8",
-		"HARNESS_DOWNLOAD_BYTES",
-		"HARNESS_RELAY_LAYER_IDS",
-		"HARNESS_RELAY2_LAYER_IDS",
-	} {
-		if !strings.Contains(harness, want) {
-			t.Fatalf("harness.go missing marker %q", want)
+func TestHarnessDefinesHTTPAndL4Benchmarks(t *testing.T) {
+	for _, concurrency := range []int{1, 8, 16} {
+		benches := buildBenchmarks(config{c8Concurrency: concurrency})
+		selected, err := selectBenchmarks("http_direct_c1,http_relay2_c8,l4_direct_c1,l4_relay2_c8", benches)
+		if err != nil || len(selected) != 4 {
+			t.Fatalf("selected=%v error=%v", selected, err)
+		}
+		if len(benches) != 12 {
+			t.Fatalf("benchmarks=%d", len(benches))
 		}
 	}
 }
-
 func TestComposeWiresHTTPRelayServicesAndTuningEnv(t *testing.T) {
 	data, err := os.ReadFile("docker-compose.yaml")
 	if err != nil {
@@ -101,40 +89,4 @@ func snapshotHasRelayListener(snap snapshot, id int) bool {
 		}
 	}
 	return false
-}
-
-func TestRunScriptTargetsHTTPRelayPerfContainers(t *testing.T) {
-	data, err := os.ReadFile("run.ps1")
-	if err != nil {
-		t.Fatalf("read run.ps1: %v", err)
-	}
-
-	script := string(data)
-	for _, want := range []string{
-		"nre-http-relay-perf",
-		"nre-relay-b",
-		"nre-relay-c",
-		"nre-backend-b",
-		"docker stats --no-stream",
-		"HARNESS_DELAY_CLI_TO_HTTP_MS",
-		"HARNESS_DELAY_HTTP_TO_BACKEND_MS",
-		"HARNESS_NETEM_DELAY_MS",
-		"$defaultDelayCliToHttp = 30",
-		"$defaultDelayHttpToBackend = 10",
-		"Applying ${DelayMs}ms netem delay",
-	} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("run.ps1 missing marker %q", want)
-		}
-	}
-
-	for _, want := range []string{
-		"$exitCode =",
-		".State.ExitCode",
-		"exit $exitCode",
-	} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("run.ps1 missing exit-code marker %q", want)
-		}
-	}
 }

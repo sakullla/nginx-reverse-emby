@@ -1,0 +1,36 @@
+UDP_PACKET {"bytes":128,"seconds":2.016982241,"target":"172.31.1.10:7101"}
+VERIFY {"name":"l4_half_close_direct","passed":true,"seconds":4.012218511}
+UDP_PACKET {"bytes":1400,"seconds":2.00130552,"target":"172.31.1.10:7101"}
+UDP_PACKET {"bytes":128,"seconds":6.005414251,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":60000,"seconds":2.001979869,"target":"172.31.1.10:7101"}
+VERIFY {"name":"l4_half_close_relay","passed":true,"seconds":8.035723252}
+UDP_PACKET {"bytes":128,"seconds":2.000985897,"target":"172.31.1.10:7101"}
+VERIFY {"name":"l4_udp_direct","passed":true,"seconds":9.241842907}
+UDP_PACKET {"bytes":1400,"seconds":3.00180852,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":128,"seconds":10.049764487,"target":"172.31.1.10:7103"}
+VERIFY {"name":"l4_half_close_relay2","passed":true,"seconds":12.011832055}
+UDP_PACKET {"bytes":1400,"seconds":4.0022439,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":60000,"seconds":6.475379201,"target":"172.31.1.10:7102"}
+UDP_PACKET {"bytes":128,"seconds":3.009615148,"target":"172.31.1.10:7102"}
+VERIFY {"name":"l4_udp_relay","passed":true,"seconds":19.70546745}
+UDP_PACKET {"bytes":60000,"seconds":12.039650265,"target":"172.31.1.10:7103"}
+UDP_PACKET {"bytes":128,"seconds":4.008187514,"target":"172.31.1.10:7103"}
+VERIFY {"name":"l4_udp_relay2","passed":true,"seconds":31.303125256}
+VERIFY {"name":"http_direct","passed":true,"seconds":32.238013992}
+VERIFY {"name":"l4_tcp_direct","passed":true,"seconds":35.268596452}
+VERIFY {"name":"http_relay","passed":true,"seconds":39.152631026}
+VERIFY {"name":"l4_tcp_relay","passed":true,"seconds":42.122174381}
+VERIFY {"name":"http_relay2","passed":true,"seconds":51.169549521}
+VERIFY {"name":"l4_tcp_relay2","passed":true,"seconds":54.168126304}
+RESULT {"name":"http_direct_c1","target":"http://172.31.1.10:8081","concurrency":1,"bytes":29848768,"seconds":20.001215857,"MBps":1.4232136496845145}
+RESULT {"name":"http_relay_c1","target":"http://172.31.1.10:8082","concurrency":1,"bytes":24674304,"seconds":20.001290059,"MBps":1.1764866131428169}
+RESULT {"name":"http_relay2_c1","target":"http://172.31.1.10:8083","concurrency":1,"bytes":19595264,"seconds":20.000462363,"MBps":0.9343533994779578}
+RESULT {"name":"http_relay2_c8","target":"http://172.31.1.10:8083","concurrency":8,"bytes":22886358,"seconds":20.000297203,"MBps":1.09129037429528}
+RESULT {"name":"l4_direct_c1","target":"http://172.31.1.10:7001","concurrency":1,"bytes":30698509,"seconds":20.000916683,"MBps":1.4637518894396424}
+RESULT {"name":"l4_relay_c1","target":"http://172.31.1.10:7002","concurrency":1,"bytes":18277858,"seconds":20.000499887,"MBps":0.8715344032401138}
+RESULT {"name":"l4_relay2_c1","target":"http://172.31.1.10:7003","concurrency":1,"bytes":8019223,"seconds":20.000684003,"MBps":0.3823732734084073}
+RESULT {"name":"l4_relay2_c8","target":"http://172.31.1.10:7003","concurrency":8,"bytes":7240713,"seconds":20.00054839,"MBps":0.3452546343189967}
+SUMMARY [{"name":"http_direct_c1","target":"http://172.31.1.10:8081","concurrency":1,"bytes":29848768,"seconds":20.001215857,"MBps":1.4232136496845145},{"name":"http_relay_c1","target":"http://172.31.1.10:8082","concurrency":1,"bytes":24674304,"seconds":20.001290059,"MBps":1.1764866131428169},{"name":"http_relay2_c1","target":"http://172.31.1.10:8083","concurrency":1,"bytes":19595264,"seconds":20.000462363,"MBps":0.9343533994779578},{"name":"http_relay2_c8","target":"http://172.31.1.10:8083","concurrency":8,"bytes":22886358,"seconds":20.000297203,"MBps":1.09129037429528},{"name":"l4_direct_c1","target":"http://172.31.1.10:7001","concurrency":1,"bytes":30698509,"seconds":20.000916683,"MBps":1.4637518894396424},{"name":"l4_relay_c1","target":"http://172.31.1.10:7002","concurrency":1,"bytes":18277858,"seconds":20.000499887,"MBps":0.8715344032401138},{"name":"l4_relay2_c1","target":"http://172.31.1.10:7003","concurrency":1,"bytes":8019223,"seconds":20.000684003,"MBps":0.3823732734084073},{"name":"l4_relay2_c8","target":"http://172.31.1.10:7003","concurrency":8,"bytes":7240713,"seconds":20.00054839,"MBps":0.3452546343189967}]
+2026/11/15 13:24:18.037521 relay2 ready at http://172.31.1.10:8083 in 15.749849561s
+2026/11/15 13:24:25.047899 relay ready at http://172.31.1.10:8082 in 7.012554881s
+2026/11/15 13:24:30.050591 direct ready at http://172.31.1.10:8081 in 5.002546265s

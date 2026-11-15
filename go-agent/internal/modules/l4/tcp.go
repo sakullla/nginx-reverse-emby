@@ -118,7 +118,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}
 	s.observeCandidateSuccess(candidate, connectDuration)
 
-	done := make(chan struct{}, 2)
+	done := make(chan struct{})
 	go func() {
 		if len(initialPayload) > 0 {
 			recorder.Add(int64(len(initialPayload)), 0)
@@ -127,15 +127,11 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		_, _ = copyL4TCP(upstream, downstreamSource, true, recorder)
 		closeTCPWrite(upstream)
 		closeTCPRead(client)
-		done <- struct{}{}
+		close(done)
 	}()
-	go func() {
-		_, _ = copyL4TCP(client, upstream, false, recorder)
-		closeTCPWrite(client)
-		closeTCPRead(upstream)
-		done <- struct{}{}
-	}()
-	<-done
+	_, _ = copyL4TCP(client, upstream, false, recorder)
+	closeTCPWrite(client)
+	closeTCPRead(upstream)
 	<-done
 	recorder.Flush()
 }
@@ -221,20 +217,16 @@ func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.C
 func copyBidirectionalTCP(a net.Conn, b net.Conn, recorder *traffic.Recorder) {
 	recorder = l4RecorderOrAggregate(recorder)
 
-	done := make(chan struct{}, 2)
+	done := make(chan struct{})
 	go func() {
 		_, _ = copyL4TCP(b, a, true, recorder)
 		closeTCPWrite(b)
 		closeTCPRead(a)
-		done <- struct{}{}
+		close(done)
 	}()
-	go func() {
-		_, _ = copyL4TCP(a, b, false, recorder)
-		closeTCPWrite(a)
-		closeTCPRead(b)
-		done <- struct{}{}
-	}()
-	<-done
+	_, _ = copyL4TCP(a, b, false, recorder)
+	closeTCPWrite(a)
+	closeTCPRead(b)
 	<-done
 	recorder.Flush()
 }

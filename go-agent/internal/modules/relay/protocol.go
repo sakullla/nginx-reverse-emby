@@ -98,7 +98,7 @@ func exchangeRelayOpenFrame(conn net.Conn, frame relayOpenFrame) (relayResponse,
 	}
 
 	var response relayResponse
-	err := withFrameDeadline(conn, func() error {
+	err := withConnDeadline(conn, relayOpenTimeout(len(frame.Chain)), func() error {
 		var readErr error
 		response, readErr = readRelayResponse(conn)
 		return readErr

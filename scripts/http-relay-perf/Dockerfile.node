@@ -1,0 +1,13 @@
+FROM golang:1.27.0-trixie AS builder
+WORKDIR /src
+COPY plugin-sdk/ ./plugin-sdk/
+COPY go-agent/ ./go-agent/
+WORKDIR /src/go-agent
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 go build -tags=integration -o /out/proxyperf ./testing/proxyperf
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/proxyperf /usr/local/bin/proxyperf
+ENTRYPOINT ["/usr/local/bin/proxyperf"]

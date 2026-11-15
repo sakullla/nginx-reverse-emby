@@ -269,6 +269,8 @@ cd docs-site && npm ci && npm run dev
 
 ## 参与贡献
 
+HTTP / L4 的本地 Docker 高延迟与多跳验证见 [转发测试说明](scripts/http-relay-perf/README.md)；测试专用 `HARNESS_VERIFY`、`HARNESS_DELAY_*`、`HARNESS_RELAY_TRANSPORT` 等参数及实测限制也在该目录，均不改变生产 Agent 配置。
+
 * 遇到问题或有功能建议：请提交 [Issue](https://github.com/sakullla/nginx-reverse-emby/issues)（附上部署方式与相关日志，注意脱敏 token）
 * 欢迎提交 [Pull Request](https://github.com/sakullla/nginx-reverse-emby/pulls) 改进代码或文档
 * ⭐ 如果这个项目帮到了你，[点个 Star](https://github.com/sakullla/nginx-reverse-emby) 就是最好的支持，也能让更多人发现它

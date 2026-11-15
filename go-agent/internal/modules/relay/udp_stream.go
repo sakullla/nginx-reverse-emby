@@ -42,9 +42,9 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 
 	go func() {
 		defer upstream.Close()
-		buf := make([]byte, maxUOTPacketSize)
+		var reader UOTReader
 		for {
-			payload, err := readUOTPacketInto(clientConn, buf)
+			payload, err := reader.ReadPacket(clientConn)
 			if err != nil {
 				done <- struct{}{}
 				return
@@ -60,13 +60,15 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 
 	go func() {
 		defer clientConn.Close()
+		var writeBuf []byte
 		for {
 			payload, err := upstream.ReadPacket()
 			if err != nil {
 				done <- struct{}{}
 				return
 			}
-			if err := writeUOTPacket(clientConn, payload); err != nil {
+			writeBuf, err = writeUOTPacketInto(clientConn, writeBuf, payload)
+			if err != nil {
 				done <- struct{}{}
 				return
 			}
