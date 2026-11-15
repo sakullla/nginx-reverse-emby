@@ -19,3 +19,14 @@ func TestFinishHostRuntimeResponseKeepsDeadline(t *testing.T) {
 		t.Fatalf("canceled response = %+v", replaced)
 	}
 }
+
+func TestDispatchHostRuntimePublicCertificateListStaysUnsupported(t *testing.T) {
+	host := &Host{}
+	response := host.dispatchHostRuntime(context.Background(), HostCandidate{}, nil, &hostAttempt{}, sdk.HostRuntimeCall{Operation: sdk.HostRuntimePublicCertificate, Payload: []byte(`{"agent_id":"edge-a","key_pem":"SUPER-PRIVATE-KEY-MATERIAL"}`)})
+	if response.Error == nil || response.Error.Code != sdk.ErrorInvalidArgument || response.Error.Message != "HostRuntime operation unsupported" || len(response.Payload) != 0 {
+		t.Fatalf("list response = %+v", response)
+	}
+	if response.Error != nil && (containsPrivateMaterial(response.Error.Message)) {
+		t.Fatal(response.Error.Message)
+	}
+}

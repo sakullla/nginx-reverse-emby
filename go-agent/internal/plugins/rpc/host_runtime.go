@@ -43,7 +43,7 @@ func (h *Host) SetNetworkSessionRegistrar(registrar NetworkSessionRegistrar) {
 func managedRuntimeNeeded(candidate HostCandidate) bool {
 	for _, scope := range candidate.Scopes {
 		switch scope {
-		case sdk.PermissionManagedNetworkListen, sdk.PermissionManagedNetworkDial, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve), sdk.PermissionScopedSecretRead, sdk.PermissionScopedSecretWrite:
+		case sdk.PermissionManagedNetworkListen, sdk.PermissionManagedNetworkDial, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve), sdk.PermissionScopedSecretRead, sdk.PermissionScopedSecretWrite, sdk.PermissionPublicCertificateRead, sdk.PermissionPublicCertificateTerminate:
 			return true
 		}
 	}
@@ -192,8 +192,9 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 		_ = json.NewEncoder(w).Encode(response)
 	})}
 	attempt.network = owner
+	streams := attempt.tlsStreams()
 	previousCleanup := attempt.cleanup
-	attempt.cleanup = func() error { return errors.Join(owner.Close(), server.Close(), previousCleanup()) }
+	attempt.cleanup = func() error { return errors.Join(streams.Close(), owner.Close(), server.Close(), previousCleanup()) }
 	go func() { _ = server.Serve(listener) }()
 	return []string{sdk.EnvPluginHostEndpoint + "=unix:" + path}, nil
 }
@@ -241,8 +242,13 @@ func (h *Host) dispatchHostRuntime(ctx context.Context, candidate HostCandidate,
 		if call.OperationID != "" && call.OperationID != request.RequestID {
 			return runtimeReply(nil, &sdk.RuntimeError{Code: sdk.ErrorInvalidArgument, Message: "network operation identity differs"})
 		}
+		if response, handled, err := h.serveTerminatedTLS(ctx, candidate, attempt, request); handled {
+			return runtimeReply(response, err)
+		}
 		response, err := owner.Handle(ctx, request)
 		return runtimeReply(response, err)
+	case sdk.HostRuntimePublicCertificateTLS:
+		return h.terminatePublicCertificate(ctx, candidate, owner, attempt, call)
 	case sdk.HostRuntimeDatasetResolve:
 		response, err := sdk.CallDatasetResolveHost(ctx, candidate.services.datasets, sdk.DatasetResolveAuthorization{Binding: sdk.DatasetResolveBinding{InstanceID: candidate.InstanceID, Generation: candidate.Generation}, DeclaredScopes: candidate.Scopes, GrantedScopes: candidate.Scopes}, call.Payload)
 		return runtimeReply(response, err)

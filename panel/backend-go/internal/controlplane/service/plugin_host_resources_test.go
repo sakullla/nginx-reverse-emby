@@ -99,6 +99,15 @@ func TestPluginHostMutationsRequireDurableOperationID(t *testing.T) {
 	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeEventList, Payload: eventListPayload}) {
 		t.Fatal("event.list unexpectedly required a mutation operation id")
 	}
+	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimePublicCertificate, Payload: []byte(`{"agent_id":"edge-a"}`)}) {
+		t.Fatal("certificate.public unexpectedly required a mutation operation id")
+	}
+	if pluginHostOperationPermission(pluginsdk.HostRuntimePublicCertificate) != pluginsdk.PermissionPublicCertificateRead {
+		t.Fatal("certificate.public permission mapping changed")
+	}
+	if pluginHostOperationPermission(pluginsdk.HostRuntimePublicCertificateTLS) != pluginsdk.PermissionPublicCertificateTerminate {
+		t.Fatal("certificate.public.tls permission mapping changed")
+	}
 }
 
 func TestPluginHostSecretRevealPreservesMaterialUntilResponseEncoding(t *testing.T) {

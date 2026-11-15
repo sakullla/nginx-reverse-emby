@@ -123,21 +123,23 @@ type RuntimeStatus struct {
 }
 
 type hostAttempt struct {
-	handleReady chan struct{}
-	stopMu      sync.Mutex
-	handle      *pluginprocess.Handle
-	client      LifecycleClient
-	closer      io.Closer
-	cleanup     func() error
-	rpcStopOnce sync.Once
-	rpcStopErr  error
-	closeOnce   sync.Once
-	closeErr    error
-	cleanupMu   sync.Mutex
-	cleanupDone bool
-	cleanupErr  error
-	providers   map[string]*httpBackendProviderAttempt
-	network     *managed.Owner
+	handleReady   chan struct{}
+	stopMu        sync.Mutex
+	handle        *pluginprocess.Handle
+	client        LifecycleClient
+	closer        io.Closer
+	cleanup       func() error
+	rpcStopOnce   sync.Once
+	rpcStopErr    error
+	closeOnce     sync.Once
+	closeErr      error
+	cleanupMu     sync.Mutex
+	cleanupDone   bool
+	cleanupErr    error
+	providers     map[string]*httpBackendProviderAttempt
+	network       *managed.Owner
+	publicTLSOnce sync.Once
+	publicTLS     *publicTLSStreams
 }
 
 type HostedInstance struct {
@@ -191,6 +193,7 @@ type Host struct {
 	dockerRunner            dockerproxy.Runner
 	managed                 *managed.Manager
 	networkSessions         NetworkSessionRegistrar
+	publicTLS               any
 	instances               map[*HostedInstance]struct{}
 	revoked                 map[string]model.PluginGenerationRevokeRequest
 	revocationPath          string

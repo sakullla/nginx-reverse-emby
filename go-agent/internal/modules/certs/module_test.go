@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -47,5 +48,30 @@ func TestModuleAppliesCertificatesAndPublishesTLSMaterial(t *testing.T) {
 	}
 	if _, ok := registry.Resolve(module.ProviderTLSMaterial); !ok {
 		t.Fatal("tls.material provider not registered")
+	}
+}
+
+func TestModuleBindPublicCertificateTLSRequiresManager(t *testing.T) {
+	called := false
+	NewModule(nil).BindPublicCertificateTLS(func(interface {
+		HandshakeServer(context.Context, int, net.Conn) (net.Conn, error)
+	}) {
+		called = true
+	})
+	if called {
+		t.Fatal("nil certificate manager was bound")
+	}
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	var got interface {
+		HandshakeServer(context.Context, int, net.Conn) (net.Conn, error)
+	}
+	NewModule(manager).BindPublicCertificateTLS(func(terminator interface {
+		HandshakeServer(context.Context, int, net.Conn) (net.Conn, error)
+	}) {
+		got = terminator
+	})
+	if got == nil {
+		t.Fatal("certificate module was not bound")
 	}
 }

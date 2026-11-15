@@ -173,6 +173,9 @@ func TestNewWiresRPCHostAsPluginCaller(t *testing.T) {
 	if app.taskClient.PluginCaller() != app.PluginRPCHost() {
 		t.Fatal("production PluginCaller is not the local RPC host")
 	}
+	if !app.PluginRPCHost().PublicCertificateTLSBound() {
+		t.Fatal("production RPC host has no public certificate TLS terminator")
+	}
 }
 
 func TestCapabilityAuditDefaultsOffWithoutRuntimeOrFilesystemEffects(t *testing.T) {

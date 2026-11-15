@@ -121,6 +121,10 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostInstanceConfig(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeEventList:
 		payload, err = manager.pluginHostEventList(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimePublicCertificate:
+		payload, err = manager.pluginHostPublicCertificates(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimePublicCertificateTLS:
+		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation is unsupported", false)
 	case pluginsdk.HostRuntimeDatasetControl, pluginsdk.HostRuntimeDatasetCatalog, pluginsdk.HostRuntimeDatasetStatus:
 		payload, err = manager.pluginHostDataset(ctx, candidate, call)
 	case pluginsdk.HostRuntimeDatasetSourceRegister:
@@ -178,6 +182,10 @@ func pluginHostOperationPermission(operation string) string {
 		return pluginsdk.PermissionStorageWrite
 	case pluginsdk.HostRuntimeEventList:
 		return "event.emit"
+	case pluginsdk.HostRuntimePublicCertificate:
+		return pluginsdk.PermissionPublicCertificateRead
+	case pluginsdk.HostRuntimePublicCertificateTLS:
+		return pluginsdk.PermissionPublicCertificateTerminate
 	case pluginsdk.HostRuntimeDatasetControl, pluginsdk.HostRuntimeDatasetCatalog, pluginsdk.HostRuntimeDatasetStatus:
 		return string(pluginsdk.CapabilityDatasetManage)
 	case pluginsdk.HostRuntimeDatasetSourceRegister:
@@ -244,6 +252,44 @@ func (manager *PluginCapabilityManager) pluginHostNodeAddresses(ctx context.Cont
 	return nil, errPluginHostInvalid
 }
 
+type publicCertificateProjectionLister interface {
+	ListPublicCertificateProjections(context.Context, string) ([]storage.PublicCertificateProjection, error)
+}
+
+func (manager *PluginCapabilityManager) pluginHostPublicCertificates(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (pluginsdk.PublicCertificateListResponse, error) {
+	var input pluginsdk.PublicCertificateListRequest
+	if decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
+		return pluginsdk.PublicCertificateListResponse{}, errPluginHostInvalid
+	}
+	binding, found, err := manager.store.PluginCapabilityTargetBinding(ctx, "agent", input.AgentID)
+	if err != nil {
+		return pluginsdk.PublicCertificateListResponse{}, errPluginHostUnavailable
+	}
+	if !found {
+		return pluginsdk.PublicCertificateListResponse{}, errPluginHostInvalid
+	}
+	if binding.ResourceGroupID != candidate.ResourceGroupID {
+		return pluginsdk.PublicCertificateListResponse{}, errPluginHostDenied
+	}
+	lister, ok := manager.store.(publicCertificateProjectionLister)
+	if !ok {
+		return pluginsdk.PublicCertificateListResponse{}, errPluginHostUnavailable
+	}
+	rows, err := lister.ListPublicCertificateProjections(ctx, input.AgentID)
+	if err != nil {
+		return pluginsdk.PublicCertificateListResponse{}, errPluginHostUnavailable
+	}
+	certificates := make([]pluginsdk.PublicCertificateProjection, 0, len(rows))
+	for _, row := range rows {
+		projection := pluginsdk.PublicCertificateProjection{ID: row.ID, Domain: row.Domain, Enabled: row.Enabled, MaterialAvailable: row.MaterialAvailable}
+		if projection.Validate() != nil {
+			return pluginsdk.PublicCertificateListResponse{}, errPluginHostUnavailable
+		}
+		certificates = append(certificates, projection)
+	}
+	return pluginsdk.PublicCertificateListResponse{Certificates: certificates}, nil
+}
+
 func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) bool {
 	for _, granted := range candidate.Grants {
 		if granted == permission {
@@ -260,7 +306,7 @@ func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
 	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule || call.Operation == pluginsdk.HostRuntimeInstanceConfig {
 		return true
 	}
-	if call.Operation == pluginsdk.HostRuntimeEventList {
+	if call.Operation == pluginsdk.HostRuntimeEventList || call.Operation == pluginsdk.HostRuntimePublicCertificate || call.Operation == pluginsdk.HostRuntimePublicCertificateTLS {
 		return false
 	}
 	if call.Operation == pluginsdk.HostRuntimeHTTPRule {

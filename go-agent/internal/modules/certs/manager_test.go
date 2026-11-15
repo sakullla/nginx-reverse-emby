@@ -12,12 +12,13 @@ import (
 
 	"encoding/json"
 	"encoding/pem"
-
+	"errors"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 
 	"testing"
 	"time"
@@ -611,4 +612,28 @@ type partialStateACMEIssuer struct {
 
 func (i partialStateACMEIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
 	return i.result, i.err
+}
+
+func TestManagerPublicCertificateMissDoesNotCloseTheConnection(t *testing.T) {
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	serverRaw, clientRaw := net.Pipe()
+	t.Cleanup(func() { _ = serverRaw.Close(); _ = clientRaw.Close() })
+	_, err := manager.HandshakeServer(context.Background(), 41, serverRaw)
+	if !errors.Is(err, ErrPublicCertificateUnavailable) || strings.Contains(err.Error(), "PRIVATE") || strings.Contains(err.Error(), "BEGIN") {
+		t.Fatalf("missing certificate = %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, writeErr := clientRaw.Write([]byte("still-open"))
+		done <- writeErr
+	}()
+	buf := make([]byte, 16)
+	n, readErr := serverRaw.Read(buf)
+	if readErr != nil || string(buf[:n]) != "still-open" {
+		t.Fatalf("accepted connection after unavailable handshake = %q %v", buf[:n], readErr)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }

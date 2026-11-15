@@ -640,6 +640,9 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.generations = modules.generations
 	if a.rpcHost != nil {
 		a.rpcHost.SetNetworkSessionRegistrar(modules.generations)
+		if certModule, ok := modules.certReports.(*modulecerts.Module); ok {
+			certModule.BindPublicCertificateTLS(a.rpcHost.SetPublicCertificateTLS)
+		}
 	}
 	a.policyWASM = modules.policyWASM
 	a.rpcGeneration = modules.rpcGeneration
