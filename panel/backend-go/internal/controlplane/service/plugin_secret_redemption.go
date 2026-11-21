@@ -79,7 +79,15 @@ func (s *PluginService) RedeemAgentPluginSecrets(ctx context.Context, agentID st
 	})
 	if err == nil && pending != nil {
 		instanceID := pending.candidate.InstanceID
-		if s.scopedSecretManager == nil || s.scopedSecretManager.finishScopedSecretRevocation(ctx, pending.operation) != nil {
+		if s.scopedSecretManager == nil {
+			return PluginSecretRedemptionResponse{}, errPluginHostUnavailable
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), scopedSecretRevocationTimeout)
+		defer cancel()
+		unlock := s.scopedSecretManager.lockOperation("scoped-secret/" + pending.operation.ID)
+		defer unlock()
+		if s.scopedSecretManager.finishScopedSecretRevocation(ctx, pending.operation) != nil {
 			return PluginSecretRedemptionResponse{}, errPluginHostUnavailable
 		}
 		decoded, decodeErr := pluginsdk.DecodeScopedSecretRequest(request.Scoped)

@@ -388,12 +388,49 @@ func TestScopedSecretSuccessorRequestKeepsDesiredInstanceOnly(t *testing.T) {
 	if len(targets) != 1 || targets[0] != "agent-a" {
 		t.Fatalf("targets = %#v", request.Targets)
 	}
+	current := candidate.Identity.Generation
+	assertSuccessor := func(want bool) {
+		t.Helper()
+		ids, err := store.ScopedSecretSuccessorInstances(t.Context(), candidate.InstanceID)
+		if err != nil || (len(ids) == 1 && ids[0] == candidate.InstanceID) != want || len(ids) > 1 {
+			t.Fatalf("successors = %v, want eligible=%v, err=%v", ids, want, err)
+		}
+	}
+	mustWrite := func(result *gorm.DB) {
+		t.Helper()
+		if result.Error != nil || result.RowsAffected != 1 {
+			t.Fatalf("fixture write: %v rows=%d", result.Error, result.RowsAffected)
+		}
+	}
+	fence := storage.PluginScopedSecretOperationRow{ID: "revoke-local", SecretName: "local", OldVersion: "v1", Action: "revoke", State: "completed"}
+	delivery := storage.PluginScopedSecretDeliveryRow{ID: "delivery-local", SecretName: "local", Version: "v1", InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, GenerationID: current, FenceID: fence.ID, Acknowledged: true}
+	mustWrite(db.Create(&fence))
+	mustWrite(db.Create(&delivery))
+	mustWrite(db.Create(&storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, ActiveGeneration: current, State: "stopped"}))
+	assertSuccessor(true)
+	mustWrite(db.Model(&storage.PluginRuntimeInstanceRow{}).Where("instance_id = ?", candidate.InstanceID).Update("active_generation", "replaced"))
+	assertSuccessor(false)
+	remoteFence := storage.PluginScopedSecretOperationRow{ID: "rotate-agent", SecretName: "remote", OldVersion: "v2", Action: "rotate", State: "pending"}
+	remoteDelivery := storage.PluginScopedSecretDeliveryRow{ID: "delivery-agent", SecretName: "remote", Version: "v2", InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, AgentID: "agent-a", GenerationID: "runtime", ProviderGenerationID: "provider", FenceID: remoteFence.ID}
+	mustWrite(db.Create(&remoteFence))
+	mustWrite(db.Create(&remoteDelivery))
+	mustWrite(db.Create(&storage.PluginAgentRuntimeStatusRow{OperationID: "op", AgentID: "agent-a", InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, Revision: 7, GenerationID: "provider", AuthoritySlot: "active"}))
+	assertSuccessor(false)
+	mustWrite(db.Model(&storage.PluginRuntimeInstanceRow{}).Where("instance_id = ?", candidate.InstanceID).Update("active_generation", current))
+	assertSuccessor(false) // A separate pending fence still has an unacknowledged delivery.
+	mustWrite(db.Model(&storage.PluginRuntimeInstanceRow{}).Where("instance_id = ?", candidate.InstanceID).Update("active_generation", "replaced"))
+	mustWrite(db.Model(&storage.PluginScopedSecretDeliveryRow{}).Where("id = ?", remoteDelivery.ID).Update("acknowledged", true))
+	assertSuccessor(true)
+	mustWrite(db.Model(&storage.PluginAgentRuntimeStatusRow{}).Where("agent_id = ?", "agent-a").Update("generation_id", "provider-replaced"))
+	assertSuccessor(false)
+	mustWrite(db.Model(&storage.PluginRuntimeInstanceRow{}).Where("instance_id = ?", candidate.InstanceID).Update("active_generation", current))
 	if err := db.Model(&storage.PluginInstanceRow{}).Where("id = ?", candidate.InstanceID).Update("desired_enabled", false).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := service.scopedSecretSuccessorRequest(t.Context(), candidate.InstanceID); err != nil || ok {
 		t.Fatalf("disabled instance scheduled a successor: ok=%v err=%v", ok, err)
 	}
+	assertSuccessor(false)
 	if err := db.Model(&storage.PluginInstanceRow{}).Where("id = ?", candidate.InstanceID).Update("desired_enabled", true).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -403,16 +440,22 @@ func TestScopedSecretSuccessorRequestKeepsDesiredInstanceOnly(t *testing.T) {
 	if _, ok, err := service.scopedSecretSuccessorRequest(t.Context(), candidate.InstanceID); err != nil || ok {
 		t.Fatalf("pending operation scheduled another successor: ok=%v err=%v", ok, err)
 	}
+	assertSuccessor(false)
 }
 
 func callScopedSecret(t *testing.T, manager *PluginCapabilityManager, candidate pluginhost.Candidate, request pluginsdk.ScopedSecretRequest) (pluginsdk.ScopedSecretResponse, *pluginsdk.RuntimeError) {
+	t.Helper()
+	return callScopedSecretContext(t, t.Context(), manager, candidate, request)
+}
+
+func callScopedSecretContext(t *testing.T, ctx context.Context, manager *PluginCapabilityManager, candidate pluginhost.Candidate, request pluginsdk.ScopedSecretRequest) (pluginsdk.ScopedSecretResponse, *pluginsdk.RuntimeError) {
 	t.Helper()
 	wire, err := pluginsdk.EncodeScopedSecretRequest(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer clear(wire)
-	response := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeScopedSecret, Payload: wire})
+	response := manager.DispatchPluginHostResource(ctx, candidate, pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeScopedSecret, Payload: wire})
 	defer clear(response.Payload)
 	if response.Error != nil {
 		return pluginsdk.ScopedSecretResponse{}, response.Error
@@ -423,6 +466,94 @@ func callScopedSecret(t *testing.T, manager *PluginCapabilityManager, candidate 
 	}
 	t.Cleanup(decoded.Material.Close)
 	return decoded, nil
+}
+
+type scopedSecretStopRuntime struct {
+	PluginControlPlaneRuntime
+	stop func(context.Context, string, string) error
+}
+
+func (s scopedSecretStopRuntime) StopGeneration(ctx context.Context, instanceID, generation string) error {
+	return s.stop(ctx, instanceID, generation)
+}
+
+func TestScopedSecretRevokeSurvivesRequestCancellationAndRestart(t *testing.T) {
+	for _, mode := range []string{"caller-disconnect", "restart-revoke", "restart-rotate"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, disconnect := context.WithCancel(t.Context())
+			defer disconnect()
+			manager, store, candidate, request := scopedSecretFixture(t)
+			created, failure := callScopedSecret(t, manager, candidate, request)
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			request.Reference = created.Reference
+			read := request
+			read.Action, read.Material = pluginsdk.ScopedSecretRead, nil
+			if _, failure := callScopedSecret(t, manager, candidate, read); failure != nil {
+				t.Fatal(failure)
+			}
+			if mode == "restart-rotate" {
+				request.Action = pluginsdk.ScopedSecretRotate
+			} else {
+				request.Action, request.Material = pluginsdk.ScopedSecretRevoke, nil
+			}
+			stops := 0
+			runtime := scopedSecretStopRuntime{stop: func(hostCtx context.Context, instanceID, generation string) error {
+				if instanceID != candidate.InstanceID || generation != candidate.Identity.Generation {
+					t.Fatalf("unexpected stop %s/%s", instanceID, generation)
+				}
+				stops++
+				disconnect()
+				return hostCtx.Err()
+			}}
+			if mode == "caller-disconnect" {
+				manager.plugins = &PluginService{controlPlaneRuntime: runtime}
+				manager.successorDelay = time.Hour
+				if result, failure := callScopedSecretContext(t, ctx, manager, candidate, request); failure != nil || !result.Revoked {
+					t.Fatalf("request cancellation interrupted committed revoke: %v", failure)
+				}
+				manager.successorMu.Lock()
+				manager.successors[candidate.InstanceID].timer.Stop()
+				manager.successorMu.Unlock()
+			} else {
+				if _, failure := callScopedSecret(t, manager, candidate, request); failure == nil || failure.Code != pluginsdk.ErrorUnavailable {
+					t.Fatalf("missing stop should leave durable pending intent: %v", failure)
+				}
+				manager = &PluginCapabilityManager{store: store, secretVault: manager.secretVault, plugins: &PluginService{controlPlaneRuntime: runtime}}
+				for pass := 0; pass < 2; pass++ {
+					if err := manager.recoverScopedSecretOperations(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if stops != 1 {
+				t.Fatalf("stopped generation %d times", stops)
+			}
+			row, found, err := store.GetSecretByName(t.Context(), pluginScopedSecretName(candidate, request.Reference))
+			if err != nil || !found {
+				t.Fatal("secret metadata missing", err)
+			}
+			if mode == "restart-rotate" {
+				if row.RetiredAt != nil || pluginScopedSecretVersion(row) != created.Reference.Version {
+					t.Fatal("recovery synthesized a new rotation value")
+				}
+				if _, failure := callScopedSecret(t, manager, candidate, read); failure == nil {
+					t.Fatal("recovery released the pending rotation read fence")
+				}
+				return
+			}
+			if row.RetiredAt == nil {
+				t.Fatal("recovery did not retire secret")
+			}
+			if _, err := store.GetSecretVersion(t.Context(), row.ID, row.ActiveVersion); err == nil {
+				t.Fatal("recovery preserved revoked ciphertext")
+			}
+			if pending, err := store.InterruptedScopedSecretOperations(t.Context()); err != nil || len(pending) != 0 {
+				t.Fatalf("pending after recovery: %v %v", pending, err)
+			}
+		})
+	}
 }
 
 func TestScopedSecretVaultLifecycle(t *testing.T) {

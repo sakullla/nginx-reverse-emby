@@ -85,6 +85,40 @@ func (s *GormStore) PendingScopedSecretDeliveries(ctx context.Context, name, ver
 	return rows, err
 }
 
+// Rotations can finish stopping recipients after a restart, but replacing the
+// value requires the caller to replay its original material.
+func (s *GormStore) InterruptedScopedSecretOperations(ctx context.Context) ([]PluginScopedSecretOperationRow, error) {
+	var rows []PluginScopedSecretOperationRow
+	err := s.db.WithContext(ctx).Where("state = ?", "pending").
+		Where("action = ? OR (action = ? AND EXISTS (SELECT 1 FROM plugin_scoped_secret_delivery_rows d WHERE d.fence_id = plugin_scoped_secret_operation_rows.id AND d.acknowledged = ?))", "revoke", "rotate", false).
+		Order("created_at, id").Find(&rows).Error
+	return rows, err
+}
+
+// Only a desired generation that was actually fenced needs a successor. The
+// exact local generation and remote provider generation stay in the ledger
+// across a host restart, including a crash after the last ACK and retirement.
+func (s *GormStore) ScopedSecretSuccessorInstances(ctx context.Context, instanceID string) ([]string, error) {
+	query := s.db.WithContext(ctx).Table("plugin_scoped_secret_delivery_rows AS d").
+		Joins("JOIN plugin_scoped_secret_operation_rows o ON o.id = d.fence_id").
+		Joins("JOIN plugin_instances i ON i.id = d.instance_id AND i.plugin_id = d.plugin_id").
+		Joins("JOIN installed_plugins p ON p.plugin_id = i.plugin_id").
+		Where("p.desired_lifecycle = ? AND i.desired_enabled = ? AND COALESCE(p.pending_operation_id, '') = '' AND COALESCE(i.pending_operation_id, '') = ''", "enabled", true).
+		Where("d.acknowledged = ? AND (o.state = ? OR (o.state = ? AND o.action = ?))", true, "completed", "pending", "rotate").
+		Where(`NOT EXISTS (SELECT 1 FROM plugin_scoped_secret_delivery_rows affected
+			JOIN plugin_scoped_secret_operation_rows pending ON pending.id = affected.fence_id
+			WHERE affected.instance_id = d.instance_id AND pending.state = 'pending'
+			AND (pending.action = 'revoke' OR EXISTS (SELECT 1 FROM plugin_scoped_secret_delivery_rows waiting WHERE waiting.fence_id = pending.id AND waiting.acknowledged = ?)))`, false).
+		Where(`(d.agent_id = '' AND EXISTS (SELECT 1 FROM plugin_runtime_instances r WHERE r.instance_id = d.instance_id AND r.active_generation = d.generation_id))
+			OR (d.agent_id <> '' AND EXISTS (SELECT 1 FROM plugin_agent_runtime_statuses a WHERE a.agent_id = d.agent_id AND a.instance_id = d.instance_id AND a.authority_slot = 'active' AND a.generation_id = d.provider_generation_id))`)
+	if instanceID != "" {
+		query = query.Where("d.instance_id = ?", instanceID)
+	}
+	var ids []string
+	err := query.Distinct("d.instance_id").Order("d.instance_id").Pluck("d.instance_id", &ids).Error
+	return ids, err
+}
+
 func (s *GormStore) AcknowledgeScopedSecretDelivery(ctx context.Context, id, fenceID string) error {
 	result := s.db.WithContext(ctx).Model(&PluginScopedSecretDeliveryRow{}).Where("id = ? AND fence_id = ?", id, fenceID).Update("acknowledged", true)
 	if result.Error != nil {

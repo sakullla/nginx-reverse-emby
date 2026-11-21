@@ -19,7 +19,10 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
-const pluginScopedSecretPurpose = "plugin.scoped-secret.v1"
+const (
+	pluginScopedSecretPurpose     = "plugin.scoped-secret.v1"
+	scopedSecretRevocationTimeout = time.Minute
+)
 
 type scopedSecretPending struct {
 	operation storage.PluginScopedSecretOperationRow
@@ -87,6 +90,13 @@ func (manager *PluginCapabilityManager) dispatchPluginScopedSecret(ctx context.C
 	}
 	err = transactions.SecurityTransaction(ctx, execute)
 	if err == nil && pending != nil {
+		// Stopping the requesting plugin can cancel its own RPC. Once the
+		// intent is committed the host owns the remaining acknowledgements.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), scopedSecretRevocationTimeout)
+		defer cancel()
+		unlock := manager.lockOperation("scoped-secret/" + pending.operation.ID)
+		defer unlock()
 		instanceID := pending.candidate.InstanceID
 		err = manager.finishScopedSecretRevocation(ctx, pending.operation)
 		if err == nil {
@@ -236,11 +246,7 @@ func executePluginScopedSecret(ctx context.Context, store *storage.GormStore, va
 				ProviderGenerationID: recipient.ProviderGenerationID, Revision: recipient.Revision})
 		}
 	case pluginsdk.ScopedSecretRevoke:
-		now := time.Now().UTC()
-		err = store.RetireScopedSecret(ctx, row.ID, row.ActiveVersion, now)
-		if err == nil {
-			err = store.AppendAuditEvent(ctx, storage.AuditEventRow{ID: capabilityAuditID(), ActorID: op.ActorID, CorrelationID: op.CorrelationID, ResourceGroupID: op.ResourceGroupID, Action: "secret.revoke", TargetKind: "secret", TargetID: row.ID, Result: "success", MetadataJSON: "{}", CreatedAt: now})
-		}
+		err = retirePluginScopedSecret(ctx, store, row, op)
 		response.Revoked = err == nil
 	}
 	if err == nil && request.Action != pluginsdk.ScopedSecretRead {
@@ -248,6 +254,14 @@ func executePluginScopedSecret(ctx context.Context, store *storage.GormStore, va
 		err = store.PutScopedSecretOperation(ctx, intent)
 	}
 	return response, err
+}
+
+func retirePluginScopedSecret(ctx context.Context, store *storage.GormStore, row storage.SecretRow, op secrets.OperationContext) error {
+	now := time.Now().UTC()
+	if err := store.RetireScopedSecret(ctx, row.ID, row.ActiveVersion, now); err != nil {
+		return err
+	}
+	return store.AppendAuditEvent(ctx, storage.AuditEventRow{ID: capabilityAuditID(), ActorID: op.ActorID, CorrelationID: op.CorrelationID, ResourceGroupID: op.ResourceGroupID, Action: "secret.revoke", TargetKind: "secret", TargetID: row.ID, Result: "success", MetadataJSON: "{}", CreatedAt: now})
 }
 
 // The Vault's short display fingerprint is not an equality credential. An
@@ -298,7 +312,7 @@ func (manager *PluginCapabilityManager) finishScopedSecretRevocation(ctx context
 		return err
 	}
 	for _, recipient := range recipients {
-		if recipient.FenceID == "" {
+		if recipient.FenceID == "" || recipient.FenceID != operation.ID {
 			return errPluginHostUnavailable
 		}
 		if recipient.AgentID == "" {
@@ -337,6 +351,79 @@ func (manager *PluginCapabilityManager) finishScopedSecretRevocation(ctx context
 		}
 	}
 	return nil
+}
+
+func (manager *PluginCapabilityManager) recoverScopedSecretOperations(ctx context.Context) error {
+	store, ok := manager.store.(*storage.GormStore)
+	if !ok {
+		return nil
+	}
+	operations, err := store.InterruptedScopedSecretOperations(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, operation := range operations {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		err := manager.recoverScopedSecretOperation(ctx, store, operation)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("resume scoped secret %s %s: %w", operation.Action, operation.ID, err))
+		}
+	}
+	ids, err := store.ScopedSecretSuccessorInstances(ctx, "")
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	for _, id := range ids {
+		manager.scheduleScopedSecretSuccessor(id)
+	}
+	return errors.Join(errs...)
+}
+
+func (manager *PluginCapabilityManager) recoverScopedSecretOperation(ctx context.Context, store *storage.GormStore, operation storage.PluginScopedSecretOperationRow) error {
+	ctx, cancel := context.WithTimeout(ctx, scopedSecretRevocationTimeout)
+	defer cancel()
+	unlock := manager.lockOperation("scoped-secret/" + operation.ID)
+	defer unlock()
+	if err := manager.finishScopedSecretRevocation(ctx, operation); err != nil {
+		return err
+	}
+	if operation.Action != pluginsdk.ScopedSecretRevoke {
+		return nil
+	}
+	return store.SecurityTransaction(ctx, func(tx *storage.GormStore) error {
+		intent, found, err := tx.GetScopedSecretOperation(ctx, operation.ID)
+		if err != nil {
+			return err
+		}
+		if !found || intent.Action != operation.Action || intent.SecretName != operation.SecretName || intent.OldVersion != operation.OldVersion {
+			return errPluginHostDenied
+		}
+		if intent.State == "completed" {
+			return nil
+		}
+		// Recheck the fence and exact live version inside the same writer
+		// transaction that destroys the ciphertext and records completion.
+		remaining, err := tx.PendingScopedSecretDeliveries(ctx, intent.SecretName, intent.OldVersion)
+		if err != nil {
+			return err
+		}
+		row, found, err := tx.GetSecretByName(ctx, intent.SecretName)
+		if err != nil {
+			return err
+		}
+		if intent.State != "pending" || len(remaining) != 0 || !found || row.RetiredAt != nil || row.Purpose != pluginScopedSecretPurpose || pluginScopedSecretVersion(row) != intent.OldVersion {
+			return errPluginHostDenied
+		}
+		op := secrets.OperationContext{ActorID: scopedSecretSuccessorActor, CorrelationID: intent.ID, ResourceGroupID: row.ResourceGroupID}
+		if err := retirePluginScopedSecret(ctx, tx, row, op); err != nil {
+			return err
+		}
+		intent.State, intent.NewVersion = "completed", intent.OldVersion
+		return tx.PutScopedSecretOperation(ctx, intent)
+	})
 }
 
 const scopedSecretSuccessorDelay = time.Second
@@ -391,6 +478,14 @@ func (manager *PluginCapabilityManager) runScopedSecretSuccessor(ctx context.Con
 	}
 	if manager.plugins == nil {
 		return nil
+	}
+	unlock := manager.lockOperation("scoped-secret-successor/" + instanceID)
+	defer unlock()
+	if store, ok := manager.store.(*storage.GormStore); ok {
+		ids, err := store.ScopedSecretSuccessorInstances(ctx, instanceID)
+		if err != nil || len(ids) == 0 {
+			return err
+		}
 	}
 	return manager.plugins.republishAfterScopedSecretRevocation(ctx, instanceID)
 }

@@ -1007,6 +1007,9 @@ func (s *PluginService) RecoverPendingPluginOperations(ctx context.Context) erro
 			recoveryErrors = append(recoveryErrors, fmt.Errorf("recover pending plugin operation %q: %w", plugin.PluginID, err))
 		}
 	}
+	if s.scopedSecretManager != nil {
+		recoveryErrors = append(recoveryErrors, s.scopedSecretManager.recoverScopedSecretOperations(ctx))
+	}
 	return errors.Join(recoveryErrors...)
 }
 
