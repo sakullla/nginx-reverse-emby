@@ -86,8 +86,8 @@ func TestNewStoreEnablesSQLiteWALForDefaultDSN(t *testing.T) {
 	if err := store.db.Raw("PRAGMA temp_store").Scan(&tempStore).Error; err != nil {
 		t.Fatalf("PRAGMA temp_store error = %v", err)
 	}
-	if tempStore != 2 {
-		t.Fatalf("temp_store = %d, want 2 (MEMORY)", tempStore)
+	if tempStore != 1 {
+		t.Fatalf("temp_store = %d, want 1 (FILE)", tempStore)
 	}
 }
 

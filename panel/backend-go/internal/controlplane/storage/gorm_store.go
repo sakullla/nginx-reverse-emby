@@ -338,7 +338,8 @@ func withSQLiteLockPragmas(dsn string) string {
 		pragmas = append(pragmas, "_pragma=cache_size(-65536)")
 	}
 	if !hasTempStore && !isSQLiteReadOnlyDSN(dsn) {
-		pragmas = append(pragmas, "_pragma=temp_store(MEMORY)")
+		// VACUUM rebuilds the database in temporary storage, which can outgrow RAM.
+		pragmas = append(pragmas, "_pragma=temp_store(FILE)")
 	}
 	if len(pragmas) == 0 {
 		return dsn
