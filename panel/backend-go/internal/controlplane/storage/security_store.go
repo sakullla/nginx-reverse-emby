@@ -709,11 +709,17 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 				if err := addAgentCertificateBindingsTx(tx, row, affected); err != nil {
 					return err
 				}
+				if err := rejectListenerOwnershipChange(tx, affected); err != nil {
+					return err
+				}
 				if err := addAgentPluginBindingsTx(tx, row, affected, s.LocalAgentID()); err != nil {
 					return err
 				}
 			}
 		} else if movingGroups {
+			if err := rejectListenerOwnershipChange(tx, affected); err != nil {
+				return err
+			}
 			if err := rejectPluginConsumerOwnershipMutationTx(tx, affected); err != nil {
 				return err
 			}
@@ -1036,6 +1042,12 @@ func (s *GormStore) UnbindResource(ctx context.Context, kind, id string) error {
 		return fmt.Errorf("resource kind and id are required")
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if kind == "agent" || kind == "certificate" {
+			target := ResourceBindingRow{ResourceKind: kind, ResourceID: id, ResourceGroupID: defaultResourceGroupID}
+			if err := rejectListenerOwnershipChange(tx, map[string]ResourceBindingRow{kind + "\x00" + id: target}); err != nil {
+				return err
+			}
+		}
 		result := tx.Where("resource_kind = ? AND resource_id = ?", kind, id).Delete(&ResourceBindingRow{})
 		if result.Error != nil {
 			return result.Error

@@ -485,11 +485,12 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded.Certificates = make([]goagentembedded.ManagedCertificateBundle, 0, len(snapshot.Certificates))
 	for _, bundle := range snapshot.Certificates {
 		embedded.Certificates = append(embedded.Certificates, goagentembedded.ManagedCertificateBundle{
-			ID:       bundle.ID,
-			Domain:   bundle.Domain,
-			Revision: bundle.Revision,
-			CertPEM:  bundle.CertPEM,
-			KeyPEM:   bundle.KeyPEM,
+			ID:            bundle.ID,
+			Domain:        bundle.Domain,
+			Revision:      bundle.Revision,
+			CertPEM:       bundle.CertPEM,
+			KeyPEM:        bundle.KeyPEM,
+			ListenerBound: bundle.ListenerBound,
 		})
 	}
 	embedded.CertificatePolicies = make([]goagentembedded.ManagedCertificatePolicy, 0, len(snapshot.CertificatePolicies))

@@ -1097,6 +1097,15 @@ func (s *certificateService) deleteLegacy(ctx context.Context, agentID string, i
 		return current, nil
 	}
 
+	if refs, ok := s.store.(listenerCertificateTargetStore); ok {
+		ids, err := refs.ListenerCertificateAgentIDs(ctx, current.ID, current.Domain)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if len(ids) > 0 {
+			return ManagedCertificate{}, fmt.Errorf("%w: certificate is in use by an AnyTLS listener", ErrInvalidArgument)
+		}
+	}
 	nextRows := append([]storage.ManagedCertificateRow(nil), rows[:targetIndex]...)
 	nextRows = append(nextRows, rows[targetIndex+1:]...)
 	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
@@ -1752,7 +1761,7 @@ func (s *certificateService) persistManagedCertificateIssueSuccessLegacy(
 		commitMaterial()
 	}
 	s.cleanupManagedCertificateMaterialAfterMutation(ctx, originalRows, rows)
-	if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
+	if err := s.syncRotatedCertificate(ctx, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	return next, nil
@@ -1836,6 +1845,21 @@ func (s *certificateService) syncStaticLocalCertificate(ctx context.Context, row
 		return ManagedCertificate{}, err
 	}
 	return next, nil
+}
+
+func (s *certificateService) syncRotatedCertificate(ctx context.Context, cert ManagedCertificate) error {
+	if s.revisionMutation {
+		return nil
+	}
+	agents := append([]string(nil), cert.TargetAgentIDs...)
+	if store, ok := s.store.(listenerCertificateTargetStore); ok {
+		ids, err := store.ListenerCertificateAgentIDs(ctx, cert.ID, cert.Domain)
+		if err != nil {
+			return err
+		}
+		agents = append(agents, ids...)
+	}
+	return s.syncManagedCertificateAgentIDs(ctx, agents, cert.Revision)
 }
 
 func (s *certificateService) syncManagedCertificateAgentIDs(ctx context.Context, agentIDs []string, revision int) error {
@@ -2446,6 +2470,13 @@ func (s *certificateService) certificateMutationTargetAgentIDs(ctx context.Conte
 	for _, certificate := range certificates {
 		if certificate.ID > 0 {
 			certificateIDs[certificate.ID] = struct{}{}
+			if store, ok := s.store.(listenerCertificateTargetStore); ok {
+				ids, err := store.ListenerCertificateAgentIDs(ctx, certificate.ID, certificate.Domain)
+				if err != nil {
+					return nil, err
+				}
+				targetAgentIDs = append(targetAgentIDs, ids...)
+			}
 		}
 		targetAgentIDs = append(targetAgentIDs, certificate.TargetAgentIDs...)
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -470,6 +471,16 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	certBundles, err := s.snapshotCertificateBundles(ctx, relevantCertRows)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	listenerRows, listenerBundles, err := s.listenerOnlyCertificates(ctx, certRows, relevantCertRows, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if len(listenerRows) > 0 {
+		relevantCertRows = append(relevantCertRows, listenerRows...)
+		certBundles = append(certBundles, listenerBundles...)
+		sort.Slice(relevantCertRows, func(i, j int) bool { return relevantCertRows[i].ID < relevantCertRows[j].ID })
+		sort.Slice(certBundles, func(i, j int) bool { return certBundles[i].ID < certBundles[j].ID })
 	}
 	certMaterialDomains := make(map[string]bool, len(certBundles))
 	for _, bundle := range certBundles {
@@ -1193,6 +1204,9 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 			changedCertificates = append(changedCertificates, row)
 			nextCertificates = append(nextCertificates, row)
 		}
+		if err := retireListenerCertificates(tx, originalCertificates, nextCertificates, agentID); err != nil {
+			return err
+		}
 		for _, certificateID := range deletedCertificateIDs {
 			resourceKeys = append(resourceKeys, [2]string{"certificate", strconv.Itoa(certificateID)})
 		}
@@ -1532,6 +1546,9 @@ func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []Managed
 		var existing []ManagedCertificateRow
 		if err := managedCertificatePointerSnapshotQuery(tx).
 			Find(&existing).Error; err != nil {
+			return err
+		}
+		if err := retireListenerCertificates(tx, existing, certs, ""); err != nil {
 			return err
 		}
 		return replaceManagedCertificatesInTransaction(tx, existing, certs)

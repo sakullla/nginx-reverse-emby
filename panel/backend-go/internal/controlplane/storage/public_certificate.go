@@ -25,7 +25,7 @@ func (s *GormStore) ListPublicCertificateProjections(ctx context.Context, agentI
 	if s == nil {
 		return nil, errPublicCertificateProjection
 	}
-	rows, err := s.listManagedCertificatesForAgent(ctx, agentID)
+	rows, err := s.listManagedCertificatesForAgent(ctx, agentID, true)
 	if err != nil {
 		return nil, errPublicCertificateProjection
 	}
@@ -38,7 +38,7 @@ func (s *GormStore) ListPublicCertificateProjections(ctx context.Context, agentI
 	return projections, nil
 }
 
-func (s *GormStore) listManagedCertificatesForAgent(ctx context.Context, agentID string) ([]ManagedCertificateRow, error) {
+func (s *GormStore) listManagedCertificatesForAgent(ctx context.Context, agentID string, includeListeners bool) ([]ManagedCertificateRow, error) {
 	resolvedAgentID := s.resolveAgentID(agentID)
 	httpRows, err := s.ListHTTPRules(ctx, resolvedAgentID)
 	if err != nil {
@@ -80,7 +80,12 @@ func (s *GormStore) listManagedCertificatesForAgent(ctx context.Context, agentID
 	if err != nil {
 		return nil, err
 	}
-	return filterManagedCertificatesForAgent(certRows, resolvedAgentID, httpRows, relayRows), nil
+	rows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, httpRows, relayRows)
+	if !includeListeners {
+		return rows, nil
+	}
+	added, _, err := s.listenerOnlyCertificates(ctx, certRows, rows, resolvedAgentID)
+	return append(rows, added...), err
 }
 
 func (s *GormStore) publicCertificateMaterialAvailable(ctx context.Context, row ManagedCertificateRow) (bool, error) {

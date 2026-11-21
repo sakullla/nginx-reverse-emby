@@ -29,6 +29,10 @@ func (s *GormStore) PutPluginRuntimeState(ctx context.Context, row PluginRuntime
 	if s == nil || strings.TrimSpace(row.InstanceID) == "" || strings.TrimSpace(row.Key) == "" || strings.TrimSpace(row.PluginID) == "" || strings.TrimSpace(row.ResourceGroupID) == "" || len(row.Value) > 1<<20 {
 		return errors.New("plugin runtime state is invalid")
 	}
+	if row.PluginID == ListenerCertificatePlugin && row.Key == ListenerStateKey {
+		return s.StorePluginListeners(ctx, row, nil, 0)
+	}
+	row.CertificateBindings = ""
 	row.Value = append([]byte(nil), row.Value...)
 	row.UpdatedAt = time.Now().UTC()
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{

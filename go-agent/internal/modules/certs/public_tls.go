@@ -3,6 +3,7 @@ package certs
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"net"
 	"strings"
 	"time"
@@ -119,6 +120,17 @@ func (p preparedTLSMaterial) HandshakeServer(ctx context.Context, certificateID 
 
 func handshakePublicServer(ctx context.Context, entry *managedCertificate, cert *tls.Certificate, raw net.Conn) (net.Conn, error) {
 	if ctx == nil || raw == nil || entry == nil || cert == nil || !publicServerEntry(entry) || cert.PrivateKey == nil || len(cert.Certificate) == 0 {
+		return nil, ErrPublicCertificateUnavailable
+	}
+	leaf := cert.Leaf
+	if leaf == nil {
+		var err error
+		leaf, err = x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return nil, ErrPublicCertificateUnavailable
+		}
+	}
+	if leaf.IsCA {
 		return nil, ErrPublicCertificateUnavailable
 	}
 	tlsConn := tls.Server(raw, &tls.Config{

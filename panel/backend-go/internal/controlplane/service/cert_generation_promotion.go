@@ -20,6 +20,10 @@ type managedCertificatePendingSnapshotStore interface {
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 }
 
+type certificateMaterialAudienceStore interface {
+	CertificateMaterialAudience(context.Context, string, int, string) (bool, bool, error)
+}
+
 var errManagedCertificatePromotionTargetsChanged = errors.New("managed certificate promotion targets changed")
 
 func newManagedCertificateMutationExecutor(cfg config.Config, store storage.Store) *revision.Executor {
@@ -95,18 +99,28 @@ func overlayPendingManagedCertificateGenerationsWithResolver(
 		if !found {
 			continue
 		}
-		relevant := pendingManagedCertificateRelevantToSnapshot(cert, agentID, next)
-		if !relevant && resolve != nil {
-			relevant, err = resolve(cert)
+		bundle := pending.Material
+		if authority, ok := store.(certificateMaterialAudienceStore); ok {
+			ordinary, listener, err := authority.CertificateMaterialAudience(ctx, agentID, cert.ID, cert.Domain)
 			if err != nil {
 				return storage.Snapshot{}, err
 			}
+			bundle.ListenerBound = listener && !ordinary
+			if !ordinary && (!listener || !storage.ListenerServerLeafMaterial(bundle)) {
+				continue
+			}
+		} else {
+			relevant := pendingManagedCertificateRelevantToSnapshot(cert, agentID, next)
+			if !relevant && resolve != nil {
+				relevant, err = resolve(cert)
+				if err != nil {
+					return storage.Snapshot{}, err
+				}
+			}
+			if !relevant {
+				continue
+			}
 		}
-		if !relevant {
-			continue
-		}
-
-		bundle := pending.Material
 		bundle.ID = cert.ID
 		bundle.Domain = cert.Domain
 		bundle.Revision = int64(cert.Revision)
@@ -241,7 +255,7 @@ func (s *certificateService) persistManagedCertificateIssueSuccessGeneration(
 		return ManagedCertificate{}, err
 	}
 	s.cleanupManagedCertificateMaterialAfterMutation(ctx, originalRows, rows)
-	if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
+	if err := s.syncRotatedCertificate(ctx, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	return next, nil
@@ -289,7 +303,7 @@ func (s *certificateService) persistManagedCertificateRenewalResultGeneration(
 		return ManagedCertificate{}, err
 	}
 	s.cleanupManagedCertificateMaterialAfterMutation(ctx, originalRows, rows)
-	if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
+	if err := s.syncRotatedCertificate(ctx, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	return next, nil
@@ -412,6 +426,15 @@ func (s *certificateService) managedCertificateGenerationAcknowledged(ctx contex
 	}
 	for _, agentID := range targetAgentIDs {
 		agentID = strings.TrimSpace(agentID)
+		if authority, ok := s.store.(certificateMaterialAudienceStore); ok {
+			ordinary, listener, err := authority.CertificateMaterialAudience(ctx, agentID, cert.ID, cert.Domain)
+			if err != nil {
+				return false, err
+			}
+			if !ordinary && !listener {
+				continue
+			}
+		}
 		capabilities := []string(nil)
 		if s.cfg.EnableLocalAgent && agentID == strings.TrimSpace(s.cfg.LocalAgentID) {
 			capabilities = defaultLocalCapabilities

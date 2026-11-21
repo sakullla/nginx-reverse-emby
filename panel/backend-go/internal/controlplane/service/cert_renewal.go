@@ -52,7 +52,11 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 	var renewalErrors []error
 	for index, row := range rows {
 		cert := managedCertificateFromRow(row)
-		if !s.isManagedCertificateRenewalCandidate(cert, s.now().UTC()) {
+		due, err := s.isManagedCertificateRenewalCandidate(ctx, cert, s.now().UTC())
+		if err != nil {
+			return errors.Join(append(renewalErrors, err)...)
+		}
+		if !due {
 			continue
 		}
 
@@ -121,7 +125,11 @@ func (s *certificateService) renewSingleCertificate(
 	if !freshFound {
 		return false, nil
 	}
-	if !s.isManagedCertificateRenewalCandidate(freshCert, s.now().UTC()) {
+	due, err := s.isManagedCertificateRenewalCandidate(ctx, freshCert, s.now().UTC())
+	if err != nil {
+		return false, err
+	}
+	if !due {
 		return false, nil
 	}
 	if pending, err := s.hasPendingManagedCertificateGeneration(ctx, freshCert.Domain); err != nil {
@@ -250,11 +258,19 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 				return loadErr
 			}
 			fresh, freshIndex, found := findManagedCertificateByID(freshRows, current.ID)
-			if !found || !expectedGeneration.Matches(fresh) || !s.isManagedCertificateRenewalCandidate(fresh, s.now().UTC()) {
+			if !found || !expectedGeneration.Matches(fresh) {
 				next = fresh
 				return nil
 			}
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
+			due, err := txService.isManagedCertificateRenewalCandidate(ctx, fresh, s.now().UTC())
+			if err != nil {
+				return err
+			}
+			if !due {
+				next = fresh
+				return nil
+			}
 			persisted = true
 			next, loadErr = txService.persistManagedCertificateRenewalResultLegacy(
 				ctx, freshRows, freshIndex, fresh, result, issuedMaterial,
@@ -373,16 +389,17 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 	}
 	s.cleanupManagedCertificateMaterialAfterMutation(ctx, originalRows, rows)
 	if result.Changed {
-		if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
+		if err := s.syncRotatedCertificate(ctx, next); err != nil {
 			return ManagedCertificate{}, err
 		}
 	}
 	return next, nil
 }
 
-func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCertificate, now time.Time) bool {
-	if !s.isManagedCertificateRenewalTarget(cert) {
-		return false
+func (s *certificateService) isManagedCertificateRenewalCandidate(ctx context.Context, cert ManagedCertificate, now time.Time) (bool, error) {
+	eligible, err := s.isManagedCertificateRenewalTarget(ctx, cert)
+	if err != nil || !eligible {
+		return false, err
 	}
 	// Honor failure backoff recorded by the issue/renew failure paths: a cert whose next retry is
 	// still in the future is skipped until NextRetryAtUnix elapses. This replaces the old behavior
@@ -392,23 +409,30 @@ func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCe
 	// per-cert issuanceLock serializes it, and the fresh re-check below re-evaluates candidacy
 	// after the lock so a finalized cert is never double-processed.
 	if cert.NextRetryAtUnix > 0 && now.Unix() < cert.NextRetryAtUnix {
-		return false
+		return false, nil
 	}
 	renewAt, ok := parseManagedCertificateRenewAt(cert.ACMEInfo.Renew)
 	if !ok {
-		return true
+		return true, nil
 	}
-	return !renewAt.After(now)
+	return !renewAt.After(now), nil
 }
 
-func (s *certificateService) isManagedCertificateRenewalTarget(cert ManagedCertificate) bool {
+func (s *certificateService) isManagedCertificateRenewalTarget(ctx context.Context, cert ManagedCertificate) (bool, error) {
 	if !cert.Enabled || cert.Scope != "domain" || cert.IssuerMode != "master_cf_dns" || cert.CertificateType != "acme" {
-		return false
+		return false, nil
 	}
 	if localAgentID := strings.TrimSpace(s.cfg.LocalAgentID); localAgentID != "" {
-		return containsString(cert.TargetAgentIDs, localAgentID)
+		if containsString(cert.TargetAgentIDs, localAgentID) {
+			return true, nil
+		}
+		if store, ok := s.store.(listenerCertificateTargetStore); ok && cert.ID > 0 {
+			ids, err := store.ListenerCertificateAgentIDs(ctx, cert.ID, cert.Domain)
+			return len(ids) > 0, err
+		}
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // NextManagedCertificateRenewalRetryAt returns the earliest persisted failure
@@ -427,7 +451,14 @@ func (s *certificateService) NextManagedCertificateRenewalRetryAt(ctx context.Co
 	var next time.Time
 	for _, row := range rows {
 		cert := managedCertificateFromRow(row)
-		if !s.isManagedCertificateRenewalTarget(cert) || cert.NextRetryAtUnix <= 0 {
+		if cert.NextRetryAtUnix <= 0 {
+			continue
+		}
+		eligible, err := s.isManagedCertificateRenewalTarget(ctx, cert)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if !eligible {
 			continue
 		}
 		retryAt := time.Unix(cert.NextRetryAtUnix, 0).UTC()

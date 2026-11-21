@@ -335,13 +335,19 @@ func unregisterMount(ownerPluginID, id string) bool {
 }
 
 func Lookup(routeID string) (handler http.Handler, group ResourceGroup, ok bool) {
+	handler, group, _, _, _, ok = LookupRuntimeUI(routeID)
+	return
+}
+
+// LookupRuntimeUI reads the handler and its owner from the same publication.
+func LookupRuntimeUI(routeID string) (http.Handler, ResourceGroup, string, string, string, bool) {
 	uiMounts.mu.RLock()
 	defer uiMounts.mu.RUnlock()
 	mount, found := uiMounts.byID[strings.TrimSpace(routeID)]
 	if !found || mount.handler == nil {
-		return nil, ResourceGroup{}, false
+		return nil, ResourceGroup{}, "", "", "", false
 	}
-	return mount.handler, mount.group, true
+	return mount.handler, mount.group, mount.owner.PluginID, mount.owner.InstanceID, mount.owner.Generation, true
 }
 
 func ListUIRoutes() []UIRoute {

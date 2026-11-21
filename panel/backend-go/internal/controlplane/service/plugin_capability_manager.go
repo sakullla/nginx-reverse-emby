@@ -80,6 +80,7 @@ type PluginCapabilityManager struct {
 	loadPackage        func(context.Context, storage.PluginPackageRow) (plugins.ValidatedPackage, error)
 	handles            *pluginhost.ResourceHandleBroker
 	actions            *pluginhost.DynamicActionRegistry
+	listenerGrants     sync.Map // request-scoped listener certificate grants
 	operationLocksMu   sync.Mutex
 	operationLocks     map[string]*pluginCapabilityOperationLock
 	secretVault        *secrets.Vault

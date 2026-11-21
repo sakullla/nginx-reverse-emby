@@ -104,18 +104,21 @@ func TestPublicCertificateRefusesInternalDisabledAndMaterialFree(t *testing.T) {
 	internal := mustCreateTLSMaterial(t, certificateSpec{commonName: "internal.example"})
 	public := mustCreateTLSMaterial(t, certificateSpec{commonName: "public.example"})
 	relay := mustCreateTLSMaterial(t, certificateSpec{commonName: internalRelayCADomain})
+	ca := mustCreateTLSMaterial(t, certificateSpec{commonName: "ca.example", isCA: true})
 	if err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
 		uploadedBundle(3, "internal.example", internal),
 		uploadedBundle(5, "public.example", public),
 		uploadedBundle(6, internalRelayCADomain, relay),
+		uploadedBundle(7, "ca.example", ca),
 	}, []model.ManagedCertificatePolicy{
 		uploadedPolicy(3, "internal.example", "internal_ca", "https", true),
 		uploadedPolicy(5, "public.example", "uploaded", "https", false),
 		uploadedPolicy(6, internalRelayCADomain, "uploaded", "https", true),
+		uploadedPolicy(7, "ca.example", "uploaded", "https", true),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []int{3, 5, 6, 99} {
+	for _, id := range []int{3, 5, 6, 7, 99} {
 		serverRaw, clientRaw := net.Pipe()
 		_, err := manager.HandshakeServer(context.Background(), id, serverRaw)
 		if !errors.Is(err, ErrPublicCertificateUnavailable) || strings.Contains(err.Error(), "PRIVATE") || strings.Contains(err.Error(), "BEGIN") {

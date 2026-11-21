@@ -37,7 +37,7 @@ func TestManagedCertificateRenewalTargetIncludesLocalDistribution(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			cert := base
 			cert.TargetAgentIDs = test.targets
-			if got := service.isManagedCertificateRenewalTarget(cert); got != test.want {
+			if got, err := service.isManagedCertificateRenewalTarget(t.Context(), cert); err != nil || got != test.want {
 				t.Fatalf("renewal target = %t, want %t", got, test.want)
 			}
 		})

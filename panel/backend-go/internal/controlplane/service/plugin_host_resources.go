@@ -73,6 +73,18 @@ func (manager *PluginCapabilityManager) DispatchPluginHostResource(ctx context.C
 	if permission == "" || !pluginCandidateHasGrant(candidate, permission) {
 		return pluginHostRuntimeFailure(pluginsdk.ErrorPermissionDenied, "host resource permission was not granted", false)
 	}
+	if call.Operation == "state.get" && call.OperationID != "" {
+		var input pluginHostStatePayload
+		if json.Unmarshal(call.Payload, &input) == nil && (strings.HasPrefix(input.Key, listenerCertificateReadyPrefix) || strings.HasPrefix(input.Key, listenerSecretVersionPrefix)) {
+			return manager.dispatchPluginHostResource(ctx, candidate, call)
+		}
+	}
+	if call.Operation == "state.put" && call.OperationID != "" {
+		var input pluginHostStatePayload
+		if json.Unmarshal(call.Payload, &input) == nil && input.ListenerGrant != "" {
+			return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "listener grants are request-scoped", false)
+		}
+	}
 	if pluginHostChannelReverseIsLookup(call) {
 		return manager.dispatchPluginHostResource(ctx, candidate, call)
 	}
@@ -567,8 +579,9 @@ func pluginHostSecretName(candidate pluginhost.Candidate, ref string) string {
 }
 
 type pluginHostStatePayload struct {
-	Key   string          `json:"key"`
-	Value json.RawMessage `json:"value,omitempty"`
+	ListenerGrant string          `json:"listener_grant,omitempty"`
+	Key           string          `json:"key"`
+	Value         json.RawMessage `json:"value,omitempty"`
 }
 
 func (manager *PluginCapabilityManager) pluginHostStateGet(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (map[string]any, error) {
@@ -576,6 +589,23 @@ func (manager *PluginCapabilityManager) pluginHostStateGet(ctx context.Context, 
 	store, ok := manager.store.(pluginHostResourceStore)
 	if !ok || decodePluginHostPayload(raw, &input) != nil || !validPluginHostRef(input.Key) {
 		return nil, errPluginHostInvalid
+	}
+	if id, ok := strings.CutPrefix(input.Key, listenerSecretVersionPrefix); ok {
+		return manager.listenerScopedSecretVersion(ctx, candidate, id)
+	}
+	if id, ok := strings.CutPrefix(input.Key, listenerCertificateReadyPrefix); ok {
+		if candidate.Identity.PluginID != storage.ListenerCertificatePlugin || !validPluginHostRef(id) {
+			return nil, errPluginHostDenied
+		}
+		certs, ok := manager.store.(listenerCertificateStore)
+		if !ok {
+			return nil, errPluginHostUnavailable
+		}
+		ready, found, err := certs.ListenerCertificateReady(ctx, candidate.InstanceID, id)
+		if err != nil {
+			return nil, errPluginHostUnavailable
+		}
+		return map[string]any{"found": found, "value": ready}, nil
 	}
 	value, found, err := store.GetPluginRuntimeState(ctx, candidate.InstanceID, input.Key)
 	if err != nil {
@@ -593,7 +623,16 @@ func (manager *PluginCapabilityManager) pluginHostStatePut(ctx context.Context, 
 	if !ok || decodePluginHostPayload(raw, &input) != nil || !validPluginHostRef(input.Key) || len(input.Value) == 0 || len(input.Value) > pluginsdk.PluginHostPayloadMaxBytes || !json.Valid(input.Value) {
 		return nil, errPluginHostInvalid
 	}
-	err := store.PutPluginRuntimeState(ctx, storage.PluginRuntimeStateRow{InstanceID: candidate.InstanceID, Key: input.Key, PluginID: candidate.Identity.PluginID, ResourceGroupID: candidate.ResourceGroupID, Value: input.Value})
+	row := storage.PluginRuntimeStateRow{InstanceID: candidate.InstanceID, Key: input.Key, PluginID: candidate.Identity.PluginID, ResourceGroupID: candidate.ResourceGroupID, Value: input.Value}
+	if strings.HasPrefix(input.Key, listenerCertificateReadyPrefix) || strings.HasPrefix(input.Key, listenerSecretVersionPrefix) {
+		return nil, errPluginHostDenied
+	}
+	var err error
+	if input.ListenerGrant != "" {
+		err = manager.storeGrantedListeners(ctx, candidate, row, input.ListenerGrant)
+	} else {
+		err = store.PutPluginRuntimeState(ctx, row)
+	}
 	return map[string]any{"stored": err == nil}, err
 }
 

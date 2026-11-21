@@ -722,11 +722,12 @@ type EgressProfile struct {
 }
 
 type ManagedCertificateBundle struct {
-	ID       int    `json:"id"`
-	Domain   string `json:"domain"`
-	Revision int64  `json:"revision"`
-	CertPEM  string `json:"cert_pem"`
-	KeyPEM   string `json:"key_pem"`
+	ListenerBound bool   `json:"listener_bound,omitempty"`
+	ID            int    `json:"id"`
+	Domain        string `json:"domain"`
+	Revision      int64  `json:"revision"`
+	CertPEM       string `json:"cert_pem"`
+	KeyPEM        string `json:"key_pem"`
 }
 
 type ManagedCertificateReport struct {

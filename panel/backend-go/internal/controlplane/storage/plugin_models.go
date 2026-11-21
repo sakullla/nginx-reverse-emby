@@ -454,12 +454,15 @@ type PluginRuntimeLogRow struct {
 }
 
 type PluginRuntimeStateRow struct {
-	InstanceID      string    `gorm:"primaryKey;size:64"`
-	Key             string    `gorm:"primaryKey;size:190"`
-	PluginID        string    `gorm:"index;size:190;not null"`
-	ResourceGroupID string    `gorm:"index;size:64;not null"`
-	Value           []byte    `gorm:"not null"`
-	UpdatedAt       time.Time `gorm:"not null"`
+	// CertificateBindings is host-owned. Only the authenticated listener save
+	// path may change which agents receive private key material.
+	CertificateBindings string    `gorm:"type:text;not null;default:''" json:"-"`
+	InstanceID          string    `gorm:"primaryKey;size:64"`
+	Key                 string    `gorm:"primaryKey;size:190"`
+	PluginID            string    `gorm:"index;size:190;not null"`
+	ResourceGroupID     string    `gorm:"index;size:64;not null"`
+	Value               []byte    `gorm:"not null"`
+	UpdatedAt           time.Time `gorm:"not null"`
 }
 
 func (PluginRuntimeStateRow) TableName() string { return "plugin_runtime_state" }

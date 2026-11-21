@@ -1266,7 +1266,7 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 			return err
 		}
 		newRevision := maxRevisionInt64(maxRevision, pointer.DesiredRevision) + 1
-		payload, digest, err := copyCoordinatorSnapshotPayload(artifact.Payload, source.Revision, newRevision)
+		payload, digest, err := s.transactionView(tx).copyCoordinatorSnapshotPayload(ctx, request.AgentID, artifact.Payload, source.Revision, newRevision)
 		if err != nil {
 			return err
 		}
@@ -2043,13 +2043,16 @@ func appendCoordinatorEventTx(tx *gorm.DB, revision AgentRevisionRow, eventType 
 	}).Error
 }
 
-func copyCoordinatorSnapshotPayload(payload []byte, sourceRevision, targetRevision int64) ([]byte, string, error) {
+func (s *GormStore) copyCoordinatorSnapshotPayload(ctx context.Context, agent string, payload []byte, sourceRevision, targetRevision int64) ([]byte, string, error) {
 	var snapshot Snapshot
 	if err := json.Unmarshal(payload, &snapshot); err != nil {
 		return nil, "", fmt.Errorf("decode last-known-good snapshot: %w", err)
 	}
 	if snapshot.Revision != sourceRevision {
 		return nil, "", coordinatorStateConflict("last-known-good snapshot revision is %d, want %d", snapshot.Revision, sourceRevision)
+	}
+	if err := s.validateRollbackListenerCertificates(ctx, agent, snapshot.Certificates); err != nil {
+		return nil, "", err
 	}
 	snapshot, _ = FilterSupportedSnapshotResources(snapshot)
 	snapshot.Revision = targetRevision

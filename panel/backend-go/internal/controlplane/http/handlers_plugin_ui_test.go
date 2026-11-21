@@ -86,6 +86,9 @@ func TestPluginUIMountUnavailableWithoutPlugin(t *testing.T) {
 func TestPluginUIMountForwardsAuthorizedRequestToPlugin(t *testing.T) {
 	var gotPath, gotActor, gotGroup, gotClientActor string
 	pluginhost.Register(pluginDeclaration(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-NRE-Listener-Grant") != "" || r.Header.Get("X-NRE-Listener-ID") != "" || r.Header.Get("X-NRE-Listener-Certificate-Domain") != "" {
+			t.Fatal("client listener authority reached guest")
+		}
 		gotPath = r.URL.Path
 		gotActor = r.Header.Get(nreActorHeader)
 		gotGroup = r.Header.Get(nreResourceGroupHeader)
@@ -98,6 +101,9 @@ func TestPluginUIMountForwardsAuthorizedRequestToPlugin(t *testing.T) {
 	router := newPluginUIRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/sample-plugin/api/items", nil)
 	req.Header.Set("X-Panel-Token", "panel-secret")
+	req.Header.Set("X-NRE-Listener-Grant", "forged")
+	req.Header.Set("X-NRE-Listener-ID", "wrong")
+	req.Header.Set("X-NRE-Listener-Certificate-Domain", "forged.example")
 	req.Header.Set(nreActorHeader, "attacker/spoof")
 	req.Header.Set(nreResourceGroupHeader, "attacker/group")
 	req.Header.Set("X-Client-Actor", "kept")

@@ -889,6 +889,8 @@ func writeAccessError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusForbidden, "permission_denied", "permission denied"
 	case errors.Is(err, authz.ErrLastAdministrator):
 		status, code, message = http.StatusConflict, "last_admin_protected", "cannot disable, delete or demote the last sign-in capable full administrator"
+	case errors.Is(err, storage.ErrListenerCertificateOwnership):
+		status, code, message = http.StatusConflict, "listener_certificate_in_use", storage.ErrListenerCertificateOwnership.Error()
 	case errors.Is(err, storage.ErrResourceGroupHasDependencies):
 		status, code, message = http.StatusConflict, "resource_group_in_use", "resource group still has grants or bindings"
 	case errors.Is(err, storage.ErrBuiltinResourceGroup):
