@@ -158,4 +158,13 @@ describe('RuleTable', () => {
     expect(wrapper.emitted('toggle')?.[0]).toEqual([rules[1]])
     expect(wrapper.emitted('select')).toHaveLength(2)
   })
+
+  it('shows an ellipsizing node column only when no agent is selected', () => {
+    const all = mount(RuleTable, { props: { rules }, global: { stubs } })
+    expect(all.get('table').classes()).toContain('rules-table--with-agent')
+    expect(all.findAll('tbody .rules-table__cell-agent')).toHaveLength(2)
+    const one = mount(RuleTable, { props: { rules, agent: { id: 'a', name: 'A' } }, global: { stubs } })
+    expect(one.get('table').classes()).not.toContain('rules-table--with-agent')
+    expect(one.find('.rules-table__cell-agent').exists()).toBe(false)
+  })
 })

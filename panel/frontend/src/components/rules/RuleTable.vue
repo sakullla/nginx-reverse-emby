@@ -80,7 +80,7 @@
               {{ formatBackend(rule) }}
             </span>
           </td>
-          <td v-if="showAgentColumn" class="rules-table__dim">
+          <td v-if="showAgentColumn" class="rules-table__dim rules-table__cell-agent">
             <AgentBadge :item="rule" :agent="agent" />
           </td>
           <td class="rules-table__dim">
@@ -375,10 +375,12 @@ watch(
   min-width: 980px;
 }
 
-/* Extra fixed columns would otherwise squeeze the auto-width frontend column to nothing. */
-.rules-table--with-agent { min-width: 1220px; }
+/* Extra fixed columns would otherwise squeeze the auto-width frontend column to nothing.
+   The node-column variants are condensed (see below) so they still fit the
+   ~1040px table at 1360 without horizontal scroll. */
 .rules-table--selectable { min-width: 1020px; }
-.rules-table--with-agent.rules-table--selectable { min-width: 1280px; }
+.rules-table--with-agent { min-width: 940px; }
+.rules-table--with-agent.rules-table--selectable { min-width: 970px; }
 
 .rules-table th {
   text-align: left;
@@ -404,6 +406,29 @@ watch(
 .rules-table__col-tags { width: 14%; }
 .rules-table__col-traffic { width: 5rem; }
 .rules-table__col-actions { width: 4rem; }
+
+/* 全部节点 mode adds the node column: tighter cell padding and narrower
+   toggle/node/tags columns keep 流量 and 操作 in view at 1360 (table ~1040px)
+   while the backend column still fits "http://192.168.1.12:32400" in full and
+   the frontend column keeps ~200px, in both normal and batch mode. */
+.rules-table.rules-table--with-agent th,
+.rules-table.rules-table--with-agent td {
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+}
+.rules-table--with-agent .rules-table__col-select { width: 1.25rem; }
+.rules-table--with-agent .rules-table__col-toggle { width: 2.25rem; }
+.rules-table--with-agent .rules-table__col-agent { width: 5.5rem; }
+.rules-table--with-agent .rules-table__col-tags { width: 12.5%; }
+
+/* Long node names ellipsize (full name stays in the badge title). */
+.rules-table__cell-agent :deep(.agent-badge) {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
 
 .rules-table__row {
   border-bottom: 1px solid var(--color-border-subtle);

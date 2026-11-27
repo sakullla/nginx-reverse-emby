@@ -573,7 +573,7 @@ function backendTooltip(rule) {
   height: 20px;
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border-strong);
-  background: var(--color-bg-subtle);
+  background: var(--color-bg-active);
   cursor: pointer;
   position: relative;
   box-sizing: border-box;
@@ -598,9 +598,11 @@ function backendTooltip(rule) {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--color-text-inverse);
+  /* Fixed white knob: --color-text-inverse is dark in night themes and the
+     off-state knob would vanish into the dark track. */
+  background: #ffffff;
   transition: transform var(--duration-normal) var(--ease-default);
-  box-shadow: var(--shadow-xs);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.25);
 }
 
 .toggle--on .toggle__knob { transform: translateX(16px); }
