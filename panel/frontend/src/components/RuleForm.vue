@@ -1,26 +1,33 @@
 <template>
-  <form @submit.prevent="handleSubmit" class="rule-form">
+  <form ref="formRef" @submit.prevent="handleSubmit" class="rule-form">
+    <span id="rule-form-tab-error-hint" class="visually-hidden">此分区有需要修正的字段</span>
     <div class="form-tabs rule-form__tabs" role="tablist" aria-label="规则配置分区">
       <button
         type="button"
         role="tab"
         class="form-tabs__btn"
-        :class="{ 'form-tabs__btn--active': activeTab === 'basic' }"
+        data-tab="basic"
+        :class="{ 'form-tabs__btn--active': activeTab === 'basic', 'form-tabs__btn--error': tabErrors.basic }"
         :aria-selected="activeTab === 'basic' ? 'true' : 'false'"
+        :aria-describedby="tabErrors.basic ? 'rule-form-tab-error-hint' : undefined"
         @click="activeTab = 'basic'"
       >
         基础配置
+        <span v-if="tabErrors.basic" class="form-tabs__dot form-tabs__dot--error" title="有错误" aria-hidden="true"></span>
       </button>
       <button
         type="button"
         role="tab"
         class="form-tabs__btn"
-        :class="{ 'form-tabs__btn--active': activeTab === 'headers' }"
+        data-tab="headers"
+        :class="{ 'form-tabs__btn--active': activeTab === 'headers', 'form-tabs__btn--error': tabErrors.headers }"
         :aria-selected="activeTab === 'headers' ? 'true' : 'false'"
+        :aria-describedby="tabErrors.headers ? 'rule-form-tab-error-hint' : undefined"
         @click="activeTab = 'headers'"
       >
         高级配置
-        <span v-if="hasRequestHeaderConfig" class="form-tabs__dot" title="已配置"></span>
+        <span v-if="tabErrors.headers" class="form-tabs__dot form-tabs__dot--error" title="有错误" aria-hidden="true"></span>
+        <span v-else-if="hasRequestHeaderConfig" class="form-tabs__dot" title="已配置"></span>
       </button>
       <button
         type="button"
@@ -76,9 +83,6 @@
         <div class="form-group form-group--block">
           <div class="backends-header">
             <label class="form-label form-label--required">后端</label>
-            <button v-if="form.backend_mode === 'url'" type="button" class="btn btn--sm btn--secondary" @click="addBackend">
-              添加后端
-            </button>
           </div>
           <div v-if="showBackendMode" class="backend-mode" role="group" aria-label="后端类型">
             <button
@@ -98,7 +102,8 @@
               插件提供商
             </button>
           </div>
-          <div v-if="form.backend_mode === 'url'" class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
+          <template v-if="form.backend_mode === 'url'">
+          <div class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
             <div
               v-for="(backend, index) in form.backends"
               :key="backend.id"
@@ -163,12 +168,18 @@
               </button>
             </div>
           </div>
+          <button type="button" class="btn btn--sm btn--secondary backend-add" @click="addBackend">
+            + 添加后端
+          </button>
+          </template>
           <div v-else class="provider-picker">
             <select
               v-model="form.provider_key"
               name="http-backend-provider"
               class="input"
               :class="{ 'input--error': errors.backend }"
+              :aria-invalid="errors.backend ? 'true' : undefined"
+              :aria-describedby="errors.backend ? 'backend-url-error' : undefined"
               :disabled="!providerCatalogReady"
               @change="handleProviderSelectionChange"
             >
@@ -574,9 +585,9 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
-import { useCreateRule, useUpdateRule } from '../hooks/useRules'
+import { formatRuleMutationError, useCreateRule, useUpdateRule } from '../hooks/useRules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import { useAgent } from '../context/AgentContext'
@@ -695,6 +706,29 @@ const errors = ref({
 })
 const dragState = ref({ from: -1, to: -1 })
 const frontendProtocol = ref('https://')
+const formRef = ref(null)
+
+const tabErrors = computed(() => ({
+  basic: Boolean(errors.value.frontend_url || errors.value.backend),
+  headers: headerErrors.value.some((item) => Boolean(item?.name || item?.value)),
+  relay: false
+}))
+
+async function focusFirstInvalidField() {
+  await nextTick()
+  const field = formRef.value?.querySelector?.('[aria-invalid="true"]')
+  if (!field) return
+  if (typeof field.scrollIntoView === 'function') {
+    field.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+  field.focus?.({ preventScroll: true })
+}
+
+function describeSubmitError(error) {
+  const formatted = formatRuleMutationError(error)
+  const message = formatted?.response?.data?.message || formatted?.message || ''
+  return String(message || '').trim() || '保存失败，请稍后重试'
+}
 
 function onDragStart(index) {
   dragState.value = { from: index, to: index }
@@ -1286,7 +1320,10 @@ function validate() {
 }
 
 async function handleSubmit() {
-  if (!validate()) return
+  if (!validate()) {
+    await focusFirstInvalidField()
+    return
+  }
 
   try {
     const validBackends = form.value.backend_mode === 'provider'
@@ -1342,8 +1379,9 @@ async function handleSubmit() {
     }
 
     emit('success')
-  } catch {
-    // API failures are toasted by useRules.
+  } catch (error) {
+    // API failures are also toasted by useRules; keep the form open and show the reason inline.
+    errors.value.submit = describeSubmitError(error)
   }
 }
 </script>
@@ -1428,6 +1466,15 @@ async function handleSubmit() {
   background: var(--color-success);
   flex-shrink: 0;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 18%, transparent);
+}
+
+.form-tabs__dot--error {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+
+.form-tabs__btn--error:not(.form-tabs__btn--active) {
+  color: var(--color-danger);
 }
 
 .rule-form__body {
@@ -1945,6 +1992,13 @@ async function handleSubmit() {
   width: 100%;
 }
 
+.backend-add {
+  width: 100%;
+  margin-top: 0.5rem;
+  justify-content: center;
+  border-style: dashed;
+}
+
 .backend-mode {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2093,6 +2147,8 @@ async function handleSubmit() {
 
 .tag-input {
   width: 100%;
+  box-sizing: border-box;
+  min-height: 2.5rem;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
@@ -2109,9 +2165,11 @@ async function handleSubmit() {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
-  padding: 0.35rem 0.55rem;
+  padding: 0.25rem 0.55rem;
   align-items: center;
-  min-height: 2.5rem;
+  /* 与 .input 的 2.5rem 外高对齐：扣除 .tag-input 的上下边框 */
+  min-height: calc(2.5rem - 2px);
+  box-sizing: border-box;
 }
 
 .tag-input__field {

@@ -367,3 +367,108 @@ describe('L4RuleForm egress profile and relay path', () => {
     expect(mocks.createMutateAsync).not.toHaveBeenCalled()
   })
 })
+
+describe('L4RuleForm usability', () => {
+  beforeEach(() => {
+    mocks.createMutateAsync.mockReset().mockResolvedValue({})
+    mocks.updateMutateAsync.mockReset().mockResolvedValue({})
+  })
+
+  function tabButton(wrapper, tab) {
+    return wrapper.get(`.form-tabs__btn[data-tab="${tab}"]`)
+  }
+
+  it('places the add-backend action below the backend list and appends a row', async () => {
+    const wrapper = mountForm()
+    const list = wrapper.get('.backends-list')
+    const add = wrapper.findAll('button').find((button) => button.text() === '+ 添加后端')
+    expect(add).toBeTruthy()
+    expect(wrapper.get('.backends-header').text()).not.toContain('添加后端')
+    expect(list.element.compareDocumentPosition(add.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    await add.trigger('click')
+    expect(wrapper.findAll('input[placeholder="IP:端口 或 域名:端口"]')).toHaveLength(2)
+  })
+
+  it('marks the basic tab and focuses the first invalid field after a failed submit', async () => {
+    const wrapper = mount(L4RuleForm, {
+      props: { agentId: 'local' },
+      attachTo: document.body,
+      global: { stubs: { RouterLink: true } }
+    })
+    await listenPortInput(wrapper).setValue('25565')
+    await switchTab(wrapper, '转发设置')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const basic = tabButton(wrapper, 'basic')
+    expect(basic.attributes('aria-selected')).toBe('true')
+    expect(basic.find('.form-tabs__dot--error').exists()).toBe(true)
+    expect(basic.attributes('aria-describedby')).toBe('l4-rule-form-tab-error-hint')
+    expect(tabButton(wrapper, 'protocol').find('.form-tabs__dot--error').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').element)
+    wrapper.unmount()
+  })
+
+  it('switches to the forwarding tab and focuses the mode select when the same-port TCP rule is missing', async () => {
+    const wrapper = mount(L4RuleForm, {
+      props: { agentId: 'local', l4Rules: [] },
+      attachTo: document.body,
+      global: { stubs: { RouterLink: true } }
+    })
+    await protocolSelect(wrapper).setValue('udp')
+    await listenPortInput(wrapper).setValue('1080')
+    await switchTab(wrapper, '转发设置')
+    await selectByLabel(wrapper, '模式').setValue('proxy')
+    await switchTab(wrapper, 'Relay')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const protocolTab = tabButton(wrapper, 'protocol')
+    expect(protocolTab.attributes('aria-selected')).toBe('true')
+    expect(protocolTab.find('.form-tabs__dot--error').exists()).toBe(true)
+    const mode = selectByLabel(wrapper, '模式')
+    expect(mode.attributes('aria-invalid')).toBe('true')
+    expect(document.activeElement).toBe(mode.element)
+    wrapper.unmount()
+  })
+
+  it('shows the API rejection in the footer and keeps the form open', async () => {
+    mocks.createMutateAsync.mockRejectedValue({ response: { data: { message: '端口 25565 已被占用' } } })
+    const wrapper = mountForm()
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:9000')
+    await listenPortInput(wrapper).setValue('25565')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('.rule-form__footer .rule-form__submit-error').text()).toContain('端口 25565 已被占用')
+    expect(wrapper.emitted('success')).toBeUndefined()
+    expect(wrapper.get('.rule-form__submit').attributes('disabled')).toBeUndefined()
+  })
+
+  it('disables the submit button and shows a spinner while saving', async () => {
+    let resolveCreate
+    mocks.createMutateAsync.mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve }))
+    const wrapper = mountForm()
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:9000')
+    await listenPortInput(wrapper).setValue('25565')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const submit = wrapper.get('.rule-form__submit')
+    expect(submit.attributes('disabled')).toBeDefined()
+    expect(submit.find('.spinner').exists()).toBe(true)
+
+    await wrapper.get('form').trigger('submit')
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+
+    resolveCreate({})
+    await flushPromises()
+    expect(wrapper.get('.rule-form__submit').find('.spinner').exists()).toBe(false)
+    expect(wrapper.emitted('success')).toHaveLength(1)
+  })
+})

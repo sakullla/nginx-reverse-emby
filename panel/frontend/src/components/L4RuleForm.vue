@@ -1,26 +1,33 @@
 <template>
-  <form class="rule-form" @submit.prevent="handleSubmit">
+  <form ref="formRef" class="rule-form" @submit.prevent="handleSubmit">
+    <span id="l4-rule-form-tab-error-hint" class="visually-hidden">此分区有需要修正的字段</span>
     <div class="form-tabs rule-form__tabs" role="tablist" aria-label="L4 规则配置分区">
       <button
         type="button"
         role="tab"
         class="form-tabs__btn"
-        :class="{ 'form-tabs__btn--active': activeTab === 'basic' }"
+        data-tab="basic"
+        :class="{ 'form-tabs__btn--active': activeTab === 'basic', 'form-tabs__btn--error': tabErrors.basic }"
         :aria-selected="activeTab === 'basic' ? 'true' : 'false'"
+        :aria-describedby="tabErrors.basic ? 'l4-rule-form-tab-error-hint' : undefined"
         @click="activeTab = 'basic'"
       >
         基础配置
+        <span v-if="tabErrors.basic" class="form-tabs__dot form-tabs__dot--error" title="有错误" aria-hidden="true"></span>
       </button>
       <button
         type="button"
         role="tab"
         class="form-tabs__btn"
-        :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }"
+        data-tab="protocol"
+        :class="{ 'form-tabs__btn--active': activeTab === 'protocol', 'form-tabs__btn--error': tabErrors.protocol }"
         :aria-selected="activeTab === 'protocol' ? 'true' : 'false'"
+        :aria-describedby="tabErrors.protocol ? 'l4-rule-form-tab-error-hint' : undefined"
         @click="activeTab = 'protocol'"
       >
         转发设置
-        <span v-if="hasProtocolTuning" class="form-tabs__dot" title="已配置"></span>
+        <span v-if="tabErrors.protocol" class="form-tabs__dot form-tabs__dot--error" title="有错误" aria-hidden="true"></span>
+        <span v-else-if="hasProtocolTuning" class="form-tabs__dot" title="已配置"></span>
       </button>
       <button
         type="button"
@@ -37,7 +44,7 @@
 
     <div class="rule-form__body">
     <!-- Tab 1: 基础配置 -->
-    <div v-show="activeTab === 'basic'" class="form-tab-panel" role="tabpanel">
+    <div v-show="activeTab === 'basic'" class="form-tab-panel" role="tabpanel" data-tab-panel="basic">
       <div class="settings-card">
         <div class="section-header">
           <div>
@@ -82,9 +89,6 @@
         <div v-if="requiresBackends" class="form-group form-group--block">
           <div class="backends-header">
             <label class="form-label form-label--required">后端服务器</label>
-            <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
-              添加后端
-            </button>
           </div>
 
           <div class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
@@ -145,6 +149,9 @@
               </button>
             </div>
           </div>
+          <button type="button" class="btn btn--sm btn--secondary backend-add" @click="addBackend">
+            + 添加后端
+          </button>
           <p class="field-hint">可填多台后端，多后端时按负载策略分发</p>
         </div>
       </div>
@@ -205,7 +212,7 @@
     </div>
 
     <!-- Tab 2: 转发设置 -->
-    <div v-show="activeTab === 'protocol'" class="form-tab-panel" role="tabpanel">
+    <div v-show="activeTab === 'protocol'" class="form-tab-panel" role="tabpanel" data-tab-panel="protocol">
       <div class="settings-card">
         <div class="section-header">
           <div>
@@ -216,11 +223,20 @@
 
         <div class="field-block">
           <label class="form-label form-label--required">模式</label>
-          <select v-model="form.listen_mode" class="input">
+          <select
+            v-model="form.listen_mode"
+            class="input"
+            :class="{ 'input--error': fieldErrors.listen_mode }"
+            :aria-invalid="fieldErrors.listen_mode ? 'true' : undefined"
+            :aria-describedby="fieldErrors.listen_mode ? 'l4-listen-mode-error' : undefined"
+            @change="fieldErrors.listen_mode = ''"
+          >
             <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
             <option value="proxy">SOCKS / HTTP 代理</option>
           </select>
         </div>
+
+        <FieldError v-if="fieldErrors.listen_mode" id="l4-listen-mode-error">{{ fieldErrors.listen_mode }}</FieldError>
 
         <div v-if="form.protocol === 'udp' && form.listen_mode === 'proxy'" class="relay-alert relay-alert--warning">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -331,7 +347,7 @@
     </div>
 
     <!-- Tab 3: Relay 配置 -->
-    <div v-show="activeTab === 'relay'" class="form-tab-panel" role="tabpanel">
+    <div v-show="activeTab === 'relay'" class="form-tab-panel" role="tabpanel" data-tab-panel="relay">
       <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
@@ -407,7 +423,7 @@
       <button
         type="button"
         class="btn btn--secondary"
-        :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
+        :disabled="isSubmitting"
         @click="emit('cancel')"
       >
         取消
@@ -415,16 +431,18 @@
       <button
         type="submit"
         class="btn btn--primary rule-form__submit"
-        :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
+        :disabled="isSubmitting"
+        :aria-busy="isSubmitting ? 'true' : undefined"
       >
-        {{ isEdit ? '保存修改' : '创建规则' }}
+        <span v-if="isSubmitting" class="spinner spinner--sm" aria-hidden="true"></span>
+        <span>{{ isEdit ? '保存修改' : '创建规则' }}</span>
       </button>
     </div>
   </form>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
@@ -521,9 +539,42 @@ const form = ref(createFormState(props.initialData))
 const activeTab = ref('basic')
 const tagInput = ref('')
 const error = ref('')
-const fieldErrors = ref({ listen_port: '' })
+const fieldErrors = ref({ listen_port: '', listen_mode: '' })
 const backendErrors = ref([])
 const dragState = ref({ from: -1, to: -1 })
+const formRef = ref(null)
+const submitting = ref(false)
+const isSubmitting = computed(() => (
+  submitting.value
+  || createL4Rule.isPending?.value === true
+  || updateL4Rule.isPending?.value === true
+))
+
+const tabErrors = computed(() => ({
+  basic: Boolean(fieldErrors.value.listen_port) || backendErrors.value.some(Boolean),
+  protocol: Boolean(fieldErrors.value.listen_mode),
+  relay: false
+}))
+
+const TAB_ORDER = ['basic', 'protocol', 'relay']
+
+async function focusFirstInvalidField() {
+  const firstTab = TAB_ORDER.find((tab) => tabErrors.value[tab])
+  if (firstTab) activeTab.value = firstTab
+  await nextTick()
+  const panel = formRef.value?.querySelector?.(`[data-tab-panel="${activeTab.value}"]`) || formRef.value
+  const field = panel?.querySelector?.('[aria-invalid="true"]')
+  if (!field) return
+  if (typeof field.scrollIntoView === 'function') {
+    field.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+  field.focus?.({ preventScroll: true })
+}
+
+function describeSubmitError(err) {
+  const message = err?.response?.data?.message || err?.message || (typeof err === 'string' ? err : '')
+  return String(message || '').trim() || '保存失败，请稍后重试'
+}
 
 function resetBackendErrors() {
   backendErrors.value = form.value.backends.map(() => '')
@@ -666,7 +717,7 @@ watch(() => props.initialData, (value) => {
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
-  fieldErrors.value = { listen_port: '' }
+  fieldErrors.value = { listen_port: '', listen_mode: '' }
   resetBackendErrors()
 }, { immediate: true })
 
@@ -879,29 +930,32 @@ function buildPayload() {
 }
 
 async function handleSubmit() {
+  if (isSubmitting.value) return
   error.value = ''
-  fieldErrors.value = { listen_port: '' }
+  fieldErrors.value = { listen_port: '', listen_mode: '' }
   backendErrors.value = form.value.backends.map(() => '')
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
   const validBackends = form.value.backends.filter(b => b.host && b.port)
   if (requiresBackends.value && validBackends.length === 0) {
     error.value = '至少需要一个有效的后端服务器'
     backendErrors.value = form.value.backends.map(() => '请填写有效的 IP:端口 或 域名:端口')
-    activeTab.value = 'basic'
+    await focusFirstInvalidField()
     return
   }
   if (!samePortTCPProxyRule.value) {
     error.value = '需要先维护同端口 TCP SOCKS5 入口规则'
-    activeTab.value = 'protocol'
+    fieldErrors.value.listen_mode = '需要先维护同端口 TCP SOCKS5 入口规则'
+    await focusFirstInvalidField()
     return
   }
   const listenPort = Number(form.value.listen_port)
   if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
     error.value = '监听端口必须在 1-65535 之间'
     fieldErrors.value.listen_port = '监听端口必须在 1-65535 之间'
-    activeTab.value = 'basic'
+    await focusFirstInvalidField()
     return
   }
+  submitting.value = true
   try {
     const payload = buildPayload()
     if (isEdit.value) {
@@ -910,8 +964,11 @@ async function handleSubmit() {
       await createL4Rule.mutateAsync(payload)
     }
     emit('success')
-  } catch {
-    // API failures are toasted by useL4Rules.
+  } catch (err) {
+    // API failures are also toasted by useL4Rules; keep the form open and show the reason inline.
+    error.value = describeSubmitError(err)
+  } finally {
+    submitting.value = false
   }
 }
 </script>
@@ -996,6 +1053,15 @@ async function handleSubmit() {
   background: var(--color-success);
   flex-shrink: 0;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 18%, transparent);
+}
+
+.form-tabs__dot--error {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+
+.form-tabs__btn--error:not(.form-tabs__btn--active) {
+  color: var(--color-danger);
 }
 
 .rule-form__body {
@@ -1447,6 +1513,13 @@ async function handleSubmit() {
   width: 100%;
 }
 
+.backend-add {
+  width: 100%;
+  margin-top: 0.5rem;
+  justify-content: center;
+  border-style: dashed;
+}
+
 .backends-list {
   display: flex;
   flex-direction: column;
@@ -1547,6 +1620,8 @@ async function handleSubmit() {
 
 .tag-input {
   width: 100%;
+  box-sizing: border-box;
+  min-height: 2.5rem;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
@@ -1563,9 +1638,11 @@ async function handleSubmit() {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
-  padding: 0.35rem 0.55rem;
+  padding: 0.25rem 0.55rem;
   align-items: center;
-  min-height: 2.5rem;
+  /* 与 .input 的 2.5rem 外高对齐：扣除 .tag-input 的上下边框 */
+  min-height: calc(2.5rem - 2px);
+  box-sizing: border-box;
 }
 
 .tag-input__field {

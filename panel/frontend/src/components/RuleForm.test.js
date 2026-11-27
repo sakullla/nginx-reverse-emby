@@ -31,6 +31,7 @@ vi.mock('@tanstack/vue-query', async () => {
 vi.mock('../api', () => ({ fetchHTTPBackendProviders: vi.fn() }))
 
 vi.mock('../hooks/useRules', () => ({
+  formatRuleMutationError: (error) => error,
   useCreateRule: () => ({ isPending: { value: false }, mutateAsync: mocks.createMutateAsync }),
   useUpdateRule: () => ({ isPending: { value: false }, mutateAsync: mocks.updateMutateAsync })
 }))
@@ -443,6 +444,103 @@ describe('RuleForm HTTP backend provider', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('请选择当前可用的后端')
     expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+  })
+})
+
+describe('RuleForm usability', () => {
+  beforeEach(() => {
+    mocks.createMutateAsync.mockReset().mockResolvedValue({})
+    mocks.updateMutateAsync.mockReset().mockResolvedValue({})
+    mocks.query.data.value = { agentId: 'edge-a', providers: [] }
+    mocks.query.isLoading.value = false
+    mocks.query.isFetching.value = false
+    mocks.query.isError.value = false
+    mocks.query.isSuccess.value = true
+    mocks.query.error.value = null
+  })
+
+  function mountAttached() {
+    return mount(RuleForm, {
+      props: { agentId: 'edge-a', initialData: null },
+      attachTo: document.body,
+      global: { stubs: { RelayChainInput: true, RouterLink: true } }
+    })
+  }
+
+  function tabButton(wrapper, tab) {
+    return wrapper.get(`.form-tabs__btn[data-tab="${tab}"]`)
+  }
+
+  it('places the add-backend action below the backend list and appends a row', async () => {
+    const wrapper = mountForm()
+    await flushPromises()
+    const list = wrapper.get('.backends-list')
+    const add = wrapper.findAll('button').find((button) => button.text() === '+ 添加后端')
+    expect(add).toBeTruthy()
+    expect(wrapper.get('.backends-header').text()).not.toContain('添加后端')
+    expect(list.element.compareDocumentPosition(add.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    await add.trigger('click')
+    expect(wrapper.findAll('.backends-list .protocol-input-group__host')).toHaveLength(2)
+  })
+
+  it('returns to the basic tab, marks it and focuses the first invalid field', async () => {
+    const wrapper = mountAttached()
+    await flushPromises()
+    await tabButton(wrapper, 'headers').trigger('click')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const basic = tabButton(wrapper, 'basic')
+    expect(basic.attributes('aria-selected')).toBe('true')
+    expect(basic.find('.form-tabs__dot--error').exists()).toBe(true)
+    expect(basic.attributes('aria-describedby')).toBe('rule-form-tab-error-hint')
+    expect(document.activeElement).toBe(wrapper.get('#frontend-url').element)
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+
+    await wrapper.get('#frontend-url').setValue('media.example.com')
+    await wrapper.get('#backend-url').setValue('192.168.1.10:8096')
+    expect(tabButton(wrapper, 'basic').find('.form-tabs__dot--error').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('switches to the advanced tab and focuses an invalid custom header', async () => {
+    const wrapper = mountAttached()
+    await flushPromises()
+    await fillFrontend(wrapper)
+    await wrapper.get('#backend-url').setValue('192.168.1.10:8096')
+    await tabButton(wrapper, 'headers').trigger('click')
+    await wrapper.get('.more-toggle').trigger('click')
+    const addHeader = wrapper.findAll('.more-panel button').find((button) => button.text() === '添加')
+    await addHeader.trigger('click')
+    await tabButton(wrapper, 'basic').trigger('click')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const headers = tabButton(wrapper, 'headers')
+    expect(headers.attributes('aria-selected')).toBe('true')
+    expect(headers.find('.form-tabs__dot--error').exists()).toBe(true)
+    expect(tabButton(wrapper, 'basic').find('.form-tabs__dot--error').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('input[placeholder="X-Custom-Header"]').element)
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows the API rejection in the footer and keeps the form open', async () => {
+    mocks.createMutateAsync.mockRejectedValue({ response: { data: { message: '前端地址已被其它规则使用' } } })
+    const wrapper = mountForm()
+    await flushPromises()
+    await fillFrontend(wrapper)
+    await wrapper.get('#backend-url').setValue('192.168.1.10:8096')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.rule-form__footer .rule-form__submit-error').text()).toContain('前端地址已被其它规则使用')
+    expect(wrapper.emitted('success')).toBeUndefined()
   })
 })
 
