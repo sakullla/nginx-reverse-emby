@@ -835,6 +835,14 @@ watch(
   }
 )
 
+// Background refetches can drop rules (e.g. deleted elsewhere); keep the count honest.
+watch(pageRuleKeys, (keys) => {
+  if (bulkBusy.value || !bulk.hasSelection.value) return
+  const visible = new Set(keys)
+  const kept = bulk.selectedList.value.filter((key) => visible.has(key))
+  if (kept.length !== bulk.selectedCount.value) bulk.setSelection(kept)
+})
+
 watch(canBulk, (available) => {
   if (!available && bulkMode.value && !bulkBusy.value) exitBulkMode()
 })

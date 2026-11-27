@@ -15,15 +15,15 @@ let rulesData
 let capturedListOptions
 let listState
 let deleteMutateAsync
+let listDataRef
 const mountedWrappers = []
 const queryClients = []
 
 function listPageResult(items) {
   const list = Array.isArray(items) ? items : []
+  listDataRef = ref({ items: list, total: list.length, page: 1, page_size: 20 })
   return {
-    data: {
-      value: { items: list, total: list.length, page: 1, page_size: 20 }
-    },
+    data: listDataRef,
     isLoading: ref(false),
     isError: listState.isError,
     error: listState.error,
@@ -540,6 +540,21 @@ describe('RulesPage bulk mode', () => {
     expect(dialog.props('show')).toBe(true)
     expect(dialog.props('error')).toBe('已删除 2 项，失败 1 项：规则被引用')
     expect(wrapper.findComponent({ name: 'RuleTable' }).props('selectedKeys')).toEqual(['1:3'])
+  })
+
+  it('drops selected keys that disappear after a background refetch', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await enterBulk(wrapper)
+    wrapper.findComponent({ name: 'RuleTable' }).vm.$emit('select-all')
+    await flushPromises()
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 3 项')
+
+    const remaining = rulesData.filter((rule) => rule.id !== 2)
+    listDataRef.value = { items: remaining, total: remaining.length, page: 1, page_size: 20 }
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'RuleTable' }).props('selectedKeys')).toEqual(['1:1', '1:3'])
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 2 项')
   })
 
   it.each([
