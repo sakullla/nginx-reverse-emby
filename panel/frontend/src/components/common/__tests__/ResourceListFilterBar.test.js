@@ -62,9 +62,10 @@ function setViewport(width, height) {
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: height })
 }
 
-function mountBar(props = {}) {
+function mountBar(props = {}, slots = {}) {
   const wrapper = mount(ResourceListFilterBar, {
     attachTo: document.body,
+    slots,
     props: {
       agentId: '',
       agents: AGENTS,
@@ -209,6 +210,28 @@ describe('ResourceListFilterBar', () => {
     expect(texts.some((text) => text.includes('标签: emby'))).toBe(true)
     expect(texts.some((text) => text.includes('标签: web'))).toBe(true)
     expect(texts.some((text) => text.includes('emby、web'))).toBe(false)
+  })
+
+  it('renders the agent selector by default', () => {
+    const wrapper = mountBar()
+    expect(wrapper.find('.agent-search-select-stub').exists()).toBe(true)
+  })
+
+  it('omits the agent selector and its condition tag when showAgentSelect is false', () => {
+    const wrapper = mountBar({ showAgentSelect: false, agentId: '2', filterValues: { enabled: '1' } })
+    expect(wrapper.find('.agent-search-select-stub').exists()).toBe(false)
+    expect(wrapper.find('.resource-list-filter-bar__field--agent').exists()).toBe(false)
+    const texts = wrapper.findAll('.resource-list-filter-bar__condition').map((tag) => tag.text())
+    expect(texts.some((text) => text.includes('节点'))).toBe(false)
+    expect(texts.some((text) => text.includes('启用状态: 启用'))).toBe(true)
+  })
+
+  it('renders trailing slot content at the end of the toolbar', () => {
+    const wrapper = mountBar({}, { trailing: '<button class="view-toggle-probe">视图</button>' })
+    const toolbar = wrapper.find('.resource-list-filter-bar__toolbar')
+    const last = toolbar.element.lastElementChild
+    expect(last.classList.contains('resource-list-filter-bar__trailing')).toBe(true)
+    expect(last.querySelector('.view-toggle-probe')).not.toBeNull()
   })
 
   it('removes a single-value condition tag by emitting its baseline', async () => {

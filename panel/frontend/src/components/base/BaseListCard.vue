@@ -49,7 +49,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { softBreakParts } from '../../utils/softBreak.js'
+import { breakableUrl } from '../../utils/breakableUrl.js'
 
 const props = defineProps({
   status: {
@@ -65,7 +65,7 @@ const props = defineProps({
 
 const emit = defineEmits(['click'])
 
-const titleParts = computed(() => softBreakParts(props.title))
+const titleParts = computed(() => breakableUrl(props.title))
 
 function onClick(e) {
   if (!props.clickable) return
@@ -146,17 +146,10 @@ function onKey(e) {
   transition: opacity var(--duration-fast) var(--ease-default);
 }
 
-/* Pointer devices: reveal secondary actions on intent to keep cards calm. */
-@media (hover: hover) and (pointer: fine) {
-  .base-list-card__header-right {
-    opacity: 0.35;
-  }
-
-  .base-list-card:hover .base-list-card__header-right,
-  .base-list-card:focus-within .base-list-card__header-right {
-    opacity: 1;
-  }
-}
+/*
+ * Actions stay fully visible on every device for discoverability (no hover-reveal);
+ * the card's hover border/shadow remains the intent emphasis.
+ */
 
 .base-list-card__title {
   font-family: var(--font-sans);
@@ -169,7 +162,8 @@ function onKey(e) {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  overflow-wrap: break-word;
+  /* Prefer the <wbr> points after . / :, fall back to any point for unbroken tokens. */
+  overflow-wrap: anywhere;
   word-break: normal;
 }
 
@@ -189,9 +183,15 @@ function onKey(e) {
   padding-top: var(--space-1);
 }
 
+/* Mobile: badges may wrap inside the left column, actions stay on the same row, right-aligned. */
 @media (max-width: 640px) {
   .base-list-card__header {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+  }
+
+  .base-list-card__header-left {
+    flex: 1 1 auto;
   }
 
   .base-list-card__header-right {

@@ -1,7 +1,10 @@
 <template>
   <div class="resource-list-filter-bar">
-    <div class="resource-list-filter-bar__toolbar">
-      <div class="resource-list-filter-bar__field resource-list-filter-bar__field--agent">
+    <div
+      class="resource-list-filter-bar__toolbar"
+      :class="{ 'resource-list-filter-bar__toolbar--no-agent': !showAgentSelect }"
+    >
+      <div v-if="showAgentSelect" class="resource-list-filter-bar__field resource-list-filter-bar__field--agent">
         <label v-if="showLabels" class="resource-list-filter-bar__label">节点</label>
         <AgentSearchSelect
           :model-value="agentId"
@@ -259,6 +262,10 @@
           </Transition>
         </Teleport>
       </div>
+
+      <div v-if="$slots.trailing" class="resource-list-filter-bar__trailing">
+        <slot name="trailing" />
+      </div>
     </div>
 
     <div v-if="conditionTags.length" class="resource-list-filter-bar__conditions" aria-label="已选筛选条件">
@@ -292,6 +299,8 @@ import AgentSearchSelect from './AgentSearchSelect.vue'
 
 const props = defineProps({
   agentId: { type: String, default: '' },
+  /** Hide the agent selector for lists that are not scoped by agent (e.g. the agents page). */
+  showAgentSelect: { type: Boolean, default: true },
   agents: { type: Array, default: () => [] },
   /** agentId 等于该值时视为「全部节点」基线，不显示节点条件标签 */
   agentBaseline: { type: String, default: '' },
@@ -419,7 +428,7 @@ function optionLabel(field, value) {
 
 const conditionTags = computed(() => {
   const tags = []
-  if (props.agentId && String(props.agentId) !== String(props.agentBaseline)) {
+  if (props.showAgentSelect && props.agentId && String(props.agentId) !== String(props.agentBaseline)) {
     const agent = (props.agents || []).find((item) => String(item?.id) === String(props.agentId))
     tags.push({ kind: 'agent', key: '__agent__', label: '节点', text: agent?.name || String(props.agentId) })
   }
@@ -715,6 +724,15 @@ onUnmounted(() => {
 .resource-list-filter-bar__label {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
+}
+
+/* Row-end slot (sort, view toggle) pushed to the right edge of the toolbar. */
+.resource-list-filter-bar__trailing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  min-width: 0;
 }
 
 .resource-list-filter-bar__search-shell {
@@ -1345,6 +1363,23 @@ onUnmounted(() => {
     grid-column: 2;
     grid-row: 1;
     align-self: end;
+  }
+
+  .resource-list-filter-bar__trailing {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    margin-left: 0;
+    justify-content: flex-end;
+  }
+
+  /* Without the agent selector the search takes the first row next to the filter trigger. */
+  .resource-list-filter-bar__toolbar--no-agent .resource-list-filter-bar__field--search {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .resource-list-filter-bar__toolbar--no-agent .resource-list-filter-bar__trailing {
+    grid-row: 2;
   }
 
   .resource-list-filter-bar__filter-trigger,
