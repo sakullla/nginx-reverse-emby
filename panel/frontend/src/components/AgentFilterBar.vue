@@ -1,6 +1,41 @@
 <template>
-  <div class="agent-filter-bar">
-    <div class="agent-filter-bar__left">
+  <ResourceListFilterBar
+    class="agent-filter-bar"
+    :show-agent-select="false"
+    :q="searchQuery"
+    search-placeholder="搜索节点名称 / IP / 标签 / #id=..."
+    :filter-fields="filterFields"
+    :filter-values="filterValues"
+    @update:q="value => emit('update:searchQuery', value)"
+    @update:filter="onFilterUpdate"
+  >
+    <template #trailing>
+      <!-- Sort: field + direction -->
+      <div class="sort-control">
+        <select v-model="sortField" class="filter-select" aria-label="排序字段">
+          <option value="last_seen_at">最后活跃</option>
+          <option value="name">名称</option>
+          <option value="http_rules_count">HTTP 规则</option>
+          <option value="l4_rules_count">L4 规则</option>
+        </select>
+        <button
+          class="sort-order-btn"
+          :title="sortOrder === 'asc' ? '切换为降序' : '切换为升序'"
+          :aria-label="sortOrder === 'asc' ? '当前升序，切换为降序' : '当前降序，切换为升序'"
+          :aria-pressed="sortOrder === 'asc'"
+          @click="toggleSortOrder"
+        >
+          <svg v-if="sortOrder === 'asc'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="19" x2="12" y2="5"/>
+            <polyline points="5 12 12 5 19 12"/>
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <polyline points="19 12 12 19 5 12"/>
+          </svg>
+        </button>
+      </div>
+
       <!-- View Toggle -->
       <div class="view-toggle">
         <button
@@ -36,71 +71,17 @@
           </svg>
         </button>
       </div>
-
-      <!-- Filter: Status -->
-      <select v-model="statusFilter" class="filter-select">
-        <option value="">全部状态</option>
-        <option value="online">在线</option>
-        <option value="offline">离线</option>
-        <option value="failed">失败</option>
-        <option value="pending">同步中</option>
-      </select>
-
-      <!-- Filter: Mode -->
-      <select v-model="modeFilter" class="filter-select">
-        <option value="">全部模式</option>
-        <option value="local">本机</option>
-        <option value="master">主控</option>
-        <option value="pull">拉取</option>
-      </select>
-
-      <!-- Filter: Tag -->
-      <select v-model="tagFilter" class="filter-select" :disabled="!availableTags.length">
-        <option value="">全部标签</option>
-        <option v-for="tag in availableTags" :key="tag" :value="tag">{{ tag }}</option>
-      </select>
-
-      <!-- Sort -->
-      <div class="sort-control">
-        <select v-model="sortField" class="filter-select">
-          <option value="last_seen_at">最后活跃</option>
-          <option value="name">名称</option>
-          <option value="http_rules_count">HTTP 规则</option>
-          <option value="l4_rules_count">L4 规则</option>
-        </select>
-        <button
-          class="sort-order-btn"
-          :title="sortOrder === 'asc' ? '切换为降序' : '切换为升序'"
-          :aria-label="sortOrder === 'asc' ? '当前升序，切换为降序' : '当前降序，切换为升序'"
-          :aria-pressed="sortOrder === 'asc'"
-          @click="toggleSortOrder"
-        >
-          <svg v-if="sortOrder === 'asc'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="19" x2="12" y2="5"/>
-            <polyline points="5 12 12 5 19 12"/>
-          </svg>
-          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"/>
-            <polyline points="19 12 12 19 5 12"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-
-    <div class="agent-filter-bar__right">
-      <!-- Clear Filters -->
-      <button v-if="hasActiveFilters" class="clear-filters-btn" @click="clearFilters">
-        清除筛选
-      </button>
-    </div>
-  </div>
+    </template>
+  </ResourceListFilterBar>
 </template>
 
 <script setup>
 import { computed } from 'vue'
+import ResourceListFilterBar from './common/ResourceListFilterBar.vue'
 
 const props = defineProps({
   view: { type: String, required: true },
+  searchQuery: { type: String, default: '' },
   statusFilter: { type: String, required: true },
   modeFilter: { type: String, required: true },
   tagFilter: { type: String, required: true },
@@ -111,38 +92,70 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
-  'update:view', 'update:statusFilter', 'update:modeFilter', 'update:tagFilter',
+  'update:view', 'update:searchQuery', 'update:statusFilter', 'update:modeFilter', 'update:tagFilter',
   'update:sortField', 'update:sortOrder', 'clear-filters', 'toggle-sort-order'
 ])
+
+const STATUS_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'online', label: '在线' },
+  { value: 'offline', label: '离线' },
+  { value: 'failed', label: '失败' },
+  { value: 'pending', label: '同步中' }
+]
+
+const MODE_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'local', label: '本机' },
+  { value: 'master', label: '主控' },
+  { value: 'pull', label: '拉取' }
+]
+
+const filterFields = computed(() => {
+  const fields = [
+    { key: 'status', label: '状态', type: 'chip', defaultValue: '', options: STATUS_OPTIONS },
+    { key: 'mode', label: '模式', type: 'chip', defaultValue: '', options: MODE_OPTIONS }
+  ]
+  // Keep a stale tag filter removable even when no agent carries it anymore.
+  const tags = [...props.availableTags]
+  if (props.tagFilter && !tags.includes(props.tagFilter)) tags.push(props.tagFilter)
+  if (tags.length) {
+    fields.push({
+      key: 'tag',
+      label: '标签',
+      type: 'chip',
+      defaultValue: '',
+      options: [{ value: '', label: '全部' }, ...tags.map((tag) => ({ value: tag, label: tag }))]
+    })
+  }
+  return fields
+})
+
+const filterValues = computed(() => ({
+  status: props.statusFilter,
+  mode: props.modeFilter,
+  tag: props.tagFilter
+}))
+
+const FILTER_EVENTS = {
+  status: 'update:statusFilter',
+  mode: 'update:modeFilter',
+  tag: 'update:tagFilter'
+}
+
+function onFilterUpdate({ key, value }) {
+  const event = FILTER_EVENTS[key]
+  if (event) emit(event, String(value ?? ''))
+}
 
 const view = computed({
   get: () => props.view,
   set: (v) => emit('update:view', v)
 })
-const statusFilter = computed({
-  get: () => props.statusFilter,
-  set: (v) => emit('update:statusFilter', v)
-})
-const modeFilter = computed({
-  get: () => props.modeFilter,
-  set: (v) => emit('update:modeFilter', v)
-})
-const tagFilter = computed({
-  get: () => props.tagFilter,
-  set: (v) => emit('update:tagFilter', v)
-})
 const sortField = computed({
   get: () => props.sortField,
   set: (v) => emit('update:sortField', v)
 })
-const sortOrder = computed({
-  get: () => props.sortOrder,
-  set: (v) => emit('update:sortOrder', v)
-})
-
-function clearFilters() {
-  emit('clear-filters')
-}
 
 function toggleSortOrder() {
   emit('toggle-sort-order')
@@ -150,25 +163,6 @@ function toggleSortOrder() {
 </script>
 
 <style scoped>
-.agent-filter-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
-}
-.agent-filter-bar__left {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-.agent-filter-bar__right {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
 .view-toggle {
   display: flex;
   gap: 2px;
@@ -213,9 +207,10 @@ function toggleSortOrder() {
   box-shadow: var(--shadow-sm);
 }
 .filter-select {
+  min-height: 34px;
   padding: 0.4rem 0.75rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  border: var(--border-width-thick, 1px) solid var(--color-border-default);
   background: var(--color-bg-surface);
   font-size: 0.8125rem;
   color: var(--color-text-primary);
@@ -232,10 +227,6 @@ function toggleSortOrder() {
   border-color: var(--color-primary);
   box-shadow: var(--shadow-focus);
 }
-.filter-select:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 .sort-control {
   display: flex;
   align-items: center;
@@ -246,10 +237,10 @@ function toggleSortOrder() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-default);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-lg);
+  border: var(--border-width-thick, 1px) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -259,65 +250,24 @@ function toggleSortOrder() {
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
-.clear-filters-btn {
-  padding: 0.4rem 0.85rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-default);
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-}
-.clear-filters-btn:hover {
-  color: var(--color-danger);
-  border-color: var(--color-danger);
-  background: var(--color-danger-50);
-}
-@media (max-width: 640px) {
-  .agent-filter-bar {
-    gap: 0.5rem;
-    margin-bottom: 0.75rem;
-  }
-  .agent-filter-bar__left {
-    width: 100%;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  .view-toggle {
-    flex: 0 0 auto;
-  }
-  /* Direct selects share rows in pairs; the one beside view-toggle fills remaining space. */
-  .agent-filter-bar__left > .filter-select {
-    flex: 1 1 calc(50% - 0.4rem);
-    min-width: 0;
-    width: auto;
-    font-size: 0.75rem;
-  }
+@media (max-width: 768px) {
   .sort-control {
-    /* Stay ~half width when alone on the last row instead of stretching full bleed */
-    flex: 1 1 calc(50% - 0.4rem);
-    max-width: calc(50% - 0.2rem);
+    flex: 1 1 auto;
     min-width: 0;
   }
   .sort-control .filter-select {
     flex: 1 1 auto;
+    min-width: 0;
+    min-height: 44px;
   }
   .sort-order-btn {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     flex-shrink: 0;
-    padding: 0;
   }
-  .agent-filter-bar__right {
-    width: 100%;
-    justify-content: flex-end;
-  }
-  .clear-filters-btn {
-    font-size: 0.75rem;
-    padding: 0.375rem 0.5rem;
+  .view-toggle__btn {
+    width: 36px;
+    height: 36px;
   }
 }
 </style>

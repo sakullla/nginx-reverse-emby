@@ -125,6 +125,20 @@ function createQueryClient() {
   })
 }
 
+async function selectHeaderMenu(wrapper, id) {
+  await wrapper.get('[data-testid="detail-action-more"] .base-action-menu__trigger').trigger('click')
+  await nextTick()
+  const item = document.body.querySelector(`[data-testid="base-action-menu-item-${id}"]`)
+  expect(item).not.toBeNull()
+  item.click()
+  await nextTick()
+  return item
+}
+
+function headerMenuIds(wrapper) {
+  return wrapper.getComponent({ name: 'BaseActionMenu' }).props('items').map((item) => item.id)
+}
+
 async function mountPage() {
   const queryClient = createQueryClient()
   const wrapper = mount(AgentDetailPage, {
@@ -330,7 +344,7 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-ddns-domain"]').text()).toContain('edge.example.com')
     expect(wrapper.find('[data-testid="detail-ddns-status"]').text()).toContain('已解析')
     expect(wrapper.find('[data-testid="detail-header-version"]').text()).toContain('v1.2.3')
-    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
+    expect(headerMenuIds(wrapper)).toContain('ddns')
   })
 
   it('keeps IPv4 visible in the collapsed header using the resolved DDNS address as fallback', async () => {
@@ -354,14 +368,13 @@ describe('AgentDetailPage', () => {
     // 未配置时身份行不显示域名/解析徽标;右上角配置入口仍在。
     expect(wrapper.find('[data-testid="detail-ddns-domain"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="detail-ddns-status"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
+    expect(headerMenuIds(wrapper)).toContain('ddns')
   })
 
   it('shows delete confirmation and deletes the agent', async () => {
     const wrapper = await mountPage()
 
-    await wrapper.find('[data-testid="detail-action-delete"]').trigger('click')
-    await nextTick()
+    await selectHeaderMenu(wrapper, 'delete')
 
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
     expect(wrapper.find('.delete-dialog-title').text()).toContain('确认删除节点')
@@ -376,9 +389,12 @@ describe('AgentDetailPage', () => {
   it('protects local agents from edit and delete actions', async () => {
     agentRecord.is_local = true
     const wrapper = await mountPage()
-    const deleteButton = wrapper.find('[data-testid="detail-action-delete"]')
-    expect(deleteButton.element.disabled).toBe(true)
+    const deleteItem = wrapper.getComponent({ name: 'BaseActionMenu' }).props('items').find((item) => item.id === 'delete')
+    expect(deleteItem.disabled).toBe(true)
     expect(wrapper.find('[data-testid="detail-action-edit"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="detail-action-more"] .base-action-menu__trigger').trigger('click')
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="base-action-menu-item-delete"]').disabled).toBe(true)
   })
 
   it('adds tags in the edit modal and submits them in the update payload', async () => {
@@ -769,13 +785,13 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
     expect(wrapper.find('[data-testid="detail-summary-body"]').exists()).toBe(true)
 
-    await wrapper.find('[data-testid="detail-action-collapse"]').trigger('click')
-    await nextTick()
+    await selectHeaderMenu(wrapper, 'collapse')
     expect(wrapper.find('[data-testid="detail-summary-body"]').exists()).toBe(false)
-    // Header actions stay usable while collapsed; the DDNS capsule button lives
-    // in the header and stays reachable.
-    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="detail-action-delete"]').exists()).toBe(true)
+    // Header actions stay usable while collapsed: visible actions plus the more menu.
+    expect(wrapper.find('[data-testid="detail-action-refresh"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-action-apply"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-action-edit"]').exists()).toBe(true)
+    expect(headerMenuIds(wrapper)).toEqual(['collapse', 'ddns', 'delete'])
     expect(localStorage.getItem('nre.agent-detail.summary-collapsed')).toBe('1')
     disposePage(wrapper)
 
@@ -784,8 +800,7 @@ describe('AgentDetailPage', () => {
     const remounted = await mountPage()
     expect(remounted.find('[data-testid="detail-summary-body"]').exists()).toBe(false)
 
-    await remounted.find('[data-testid="detail-action-collapse"]').trigger('click')
-    await nextTick()
+    await selectHeaderMenu(remounted, 'collapse')
     expect(remounted.find('[data-testid="detail-summary-body"]').exists()).toBe(true)
     expect(localStorage.getItem('nre.agent-detail.summary-collapsed')).toBe('0')
   })
@@ -813,8 +828,7 @@ describe('AgentDetailPage', () => {
     }
     const wrapper = await mountPage()
 
-    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
-    await nextTick()
+    await selectHeaderMenu(wrapper, 'ddns')
 
     expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
     // The form must seed the full contract ddns_config (the read path the backend
@@ -844,8 +858,7 @@ describe('AgentDetailPage', () => {
     }
     const wrapper = await mountPage()
 
-    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
-    await nextTick()
+    await selectHeaderMenu(wrapper, 'ddns')
 
     expect(wrapper.find('[data-testid="agent-ddns-form-enabled"]').element.checked).toBe(true)
   })
@@ -859,8 +872,7 @@ describe('AgentDetailPage', () => {
     }
     const wrapper = await mountPage()
 
-    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
-    await nextTick()
+    await selectHeaderMenu(wrapper, 'ddns')
     await wrapper.find('[data-testid="agent-ddns-form-save"]').trigger('click')
     await nextTick()
 
@@ -917,19 +929,22 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="detail-metrics-error"]').exists()).toBe(true)
+    const errorState = wrapper.getComponent({ name: 'ErrorState' })
+    expect(errorState.attributes('data-testid')).toBe('detail-metrics-error')
+    expect(errorState.attributes('role')).toBe('alert')
 
-    await wrapper.find('[data-testid="detail-metrics-retry"]').trigger('click')
+    await errorState.get('button').trigger('click')
     await flushPromises()
 
     expect(fetchAgentStats).toHaveBeenCalledTimes(2)
     expect(wrapper.find('[data-testid="detail-metrics-error"]').exists()).toBe(false)
   })
 
-  it('shows sync status in a single place: the sync-events section', async () => {
+  it('shows sync status beside the name and in the sync-events section, not in system info', async () => {
     agentRecord.last_apply_status = 'success'
     agentRecord.last_apply_message = 'applied at revision 3'
     const wrapper = await mountPage()
+    expect(wrapper.get('.agent-detail__identity-primary [data-testid="detail-header-sync"]').text()).toBe('已同步')
     await expandSection(wrapper, '系统信息')
     await expandSection(wrapper, '同步事件')
 

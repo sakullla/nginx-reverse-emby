@@ -13,10 +13,17 @@
           <div class="agent-detail__identity-primary">
             <span class="agent-detail__name" data-testid="detail-name">{{ agent.name }}</span>
             <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
+            <BaseBadge
+              v-if="agent.last_apply_status"
+              class="agent-detail__status-badge"
+              :tone="syncStatusTone"
+              size="sm"
+              data-testid="detail-header-sync"
+            >{{ syncStatusLabel }}</BaseBadge>
           </div>
           <div class="agent-detail__identity-meta">
             <span v-if="agent.last_seen_at" class="agent-detail__header-meta" data-testid="detail-header-lastseen">{{ timeAgo(agent.last_seen_at) }}</span>
-            <!-- DDNS 域名与解析徽标只在配置后显示;配置入口在右上角 -->
+            <!-- DDNS 域名与解析徽标只在配置后显示;配置入口在右上角更多菜单 -->
             <template v-if="agent.ddns_domain">
               <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
               <button
@@ -57,20 +64,6 @@
             <span class="i-mdi-cloud-upload" aria-hidden="true" />
           </BaseIconButton>
           <BaseIconButton
-            data-testid="detail-action-collapse"
-            :title="summaryCollapsed ? detailLabels.actions.expandSummary : detailLabels.actions.collapseSummary"
-            @click="toggleSummaryCollapsed"
-          >
-            <span :class="summaryCollapsed ? 'i-mdi-chevron-down' : 'i-mdi-chevron-up'" aria-hidden="true" />
-          </BaseIconButton>
-          <BaseIconButton
-            data-testid="detail-ddns-summary"
-            :title="detailLabels.ddns.configButtonTitle"
-            @click="ddnsModalVisible = true"
-          >
-            <span class="i-mdi-earth" aria-hidden="true" />
-          </BaseIconButton>
-          <BaseIconButton
             v-if="!agent?.is_local"
             data-testid="detail-action-edit"
             :title="detailLabels.actions.editAgent"
@@ -78,15 +71,11 @@
           >
             <span class="i-mdi-pencil" aria-hidden="true" />
           </BaseIconButton>
-          <BaseIconButton
-            data-testid="detail-action-delete"
-            tone="danger"
-            :title="agent?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent"
-            :disabled="agent?.is_local"
-            @click="showDeleteConfirm"
-          >
-            <span class="i-mdi-delete" aria-hidden="true" />
-          </BaseIconButton>
+          <BaseActionMenu
+            data-testid="detail-action-more"
+            :items="headerMenuItems"
+            @select="onHeaderMenuSelect"
+          />
         </div>
       </template>
 
@@ -140,20 +129,16 @@
               >{{ displayIPv6 }}</span>
             </div>
           </div>
-          <div
+          <ErrorState
             v-if="metricsLoadError"
+            compact
             class="agent-detail__stats-error"
-            role="alert"
             data-testid="detail-metrics-error"
-          >
-            <span class="agent-detail__stats-error-text">指标查询失败，暂无可用数据</span>
-            <button
-              type="button"
-              class="btn btn--secondary btn--sm"
-              data-testid="detail-metrics-retry"
-              @click="refetchAgentStats"
-            >重试</button>
-          </div>
+            title="指标查询失败"
+            message="暂无可用的主机指标数据"
+            :retrying="metricsRetrying"
+            @retry="retryAgentStats"
+          />
         </section>
 
         <!-- 流量区:健康指标 + 趋势图;分析/管理/校准走原有弹窗 -->
@@ -638,6 +623,8 @@ import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import BaseIconButton from '../components/base/BaseIconButton.vue'
+import BaseActionMenu from '../components/base/BaseActionMenu.vue'
+import ErrorState from '../components/base/ErrorState.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
 import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
 import { useRules } from '../hooks/useRules'
@@ -947,6 +934,38 @@ async function refreshDetail() {
     await Promise.allSettled([refetchAgents?.(), refetchAgentStats()])
   } finally {
     refreshing.value = false
+  }
+}
+
+// Secondary header actions live in the "more" menu; refresh/apply/edit stay visible.
+const headerMenuItems = computed(() => [
+  {
+    id: 'collapse',
+    label: summaryCollapsed.value ? detailLabels.actions.expandSummary : detailLabels.actions.collapseSummary
+  },
+  { id: 'ddns', label: detailLabels.ddns.configButtonTitle },
+  {
+    id: 'delete',
+    label: agent.value?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent,
+    tone: 'danger',
+    disabled: !!agent.value?.is_local
+  }
+])
+
+function onHeaderMenuSelect(item) {
+  if (item.id === 'collapse') toggleSummaryCollapsed()
+  else if (item.id === 'ddns') ddnsModalVisible.value = true
+  else if (item.id === 'delete' && !agent.value?.is_local) showDeleteConfirm()
+}
+
+const metricsRetrying = ref(false)
+async function retryAgentStats() {
+  if (metricsRetrying.value) return
+  metricsRetrying.value = true
+  try {
+    await refetchAgentStats()
+  } finally {
+    metricsRetrying.value = false
   }
 }
 
@@ -1699,21 +1718,7 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__stats-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  padding: var(--space-2-5) var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border-default));
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--color-danger) 6%, var(--color-bg-surface));
-}
-
-.agent-detail__stats-error-text {
-  font-size: var(--text-xs);
-  font-weight: 500;
-  color: var(--color-danger);
+  margin-top: var(--space-3);
 }
 
 .agent-detail__summary-card :deep(.base-list-card__header) {

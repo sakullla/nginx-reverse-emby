@@ -35,11 +35,31 @@
       </div>
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">最后活跃</span>
-        <span data-testid="monitor-card-last-seen">{{ timeAgo(agent.last_seen_at) }}</span>
+        <span data-testid="monitor-card-last-seen">{{ lastSeenText }}</span>
       </div>
     </div>
 
-    <div class="agent-monitor-card__metrics">
+    <div
+      v-if="showOfflinePanel"
+      class="agent-monitor-card__offline"
+      data-testid="monitor-card-offline"
+    >
+      <svg class="agent-monitor-card__offline-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <line x1="1" y1="1" x2="23" y2="23"/>
+        <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+        <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+        <path d="M10.71 5.05A16 16 0 0 1 22.58 9"/>
+        <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+        <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+        <line x1="12" y1="20" x2="12.01" y2="20"/>
+      </svg>
+      <div class="agent-monitor-card__offline-text">
+        <span class="agent-monitor-card__offline-title" data-testid="monitor-card-offline-title">{{ offlineTitle }}</span>
+        <span class="agent-monitor-card__offline-sub" data-testid="monitor-card-offline-last-seen">{{ offlineSubtitle }}</span>
+      </div>
+    </div>
+
+    <div v-else class="agent-monitor-card__metrics">
       <AgentMetricTile
         data-testid="monitor-card-cpu"
         icon="i-mdi-cpu-64-bit"
@@ -93,7 +113,7 @@ import AgentStatusBadge from './AgentStatusBadge.vue'
 import BaseBadge from './base/BaseBadge.vue'
 import BaseIconButton from './base/BaseIconButton.vue'
 import BaseListCard from './base/BaseListCard.vue'
-import { getAgentStatus, getAgentEndpointDisplay, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, getAgentEndpointDisplay, timeAgoLong } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
 
 const props = defineProps({
@@ -114,6 +134,31 @@ const statusTone = computed(() => STATUS_TONE[getAgentStatus(props.agent)] || 'n
 const endpoint = computed(() => getAgentEndpointDisplay(props.agent))
 const metrics = computed(() => props.agent.monitor?.metrics || props.agent.metrics || {})
 const network = computed(() => metrics.value.network || null)
+const isOffline = computed(() => getAgentStatus(props.agent) === 'offline')
+
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== ''
+}
+
+// No CPU/memory/disk reading and no network rate means there is nothing to chart.
+const metricsEmpty = computed(() => {
+  const m = metrics.value
+  const keys = [
+    'cpu_usage_percent', 'cpu_used_cores',
+    'memory_usage_percent', 'memory_used_bytes',
+    'disk_usage_percent', 'disk_used_bytes'
+  ]
+  if (keys.some((key) => hasValue(m[key]))) return false
+  const net = network.value
+  return !(net && (hasValue(net.rx_bytes_per_second) || hasValue(net.tx_bytes_per_second)))
+})
+
+const showOfflinePanel = computed(() => isOffline.value || metricsEmpty.value)
+const lastSeenText = computed(() => (props.agent.last_seen_at ? timeAgoLong(props.agent.last_seen_at) : '从未上报'))
+const offlineTitle = computed(() => (isOffline.value ? '节点离线' : '暂无监控数据'))
+const offlineSubtitle = computed(() => (props.agent.last_seen_at
+  ? `最后在线 ${timeAgoLong(props.agent.last_seen_at)}`
+  : '从未上报'))
 const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.tags.length > 0)
 </script>
 
@@ -125,7 +170,7 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 .agent-monitor-card {
   height: auto;
   align-self: start;
-  gap: var(--space-2-5);
+  gap: var(--space-2);
 }
 
 .agent-monitor-card :deep(.base-list-card__body) {
@@ -206,8 +251,42 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: 1fr;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
   align-items: stretch;
+}
+
+.agent-monitor-card__offline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border: var(--border-width-thin, 1px) dashed var(--color-border-default);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-tertiary);
+}
+
+.agent-monitor-card__offline-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.agent-monitor-card__offline-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+.agent-monitor-card__offline-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+}
+
+.agent-monitor-card__offline-sub {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
 }
 
 .agent-monitor-card__tag {

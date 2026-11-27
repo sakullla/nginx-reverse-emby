@@ -17,13 +17,6 @@
           <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
           <span class="btn-text">{{ isFetching ? '刷新中...' : '刷新' }}</span>
         </button>
-        <div class="search-wrapper" v-if="agents.length" @click="focusSearch">
-          <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input ref="searchInputRef" v-model="searchQuery" name="agent-search" class="search-input" placeholder="搜索节点名称 / IP / 标签 / #id=...">
-          <button v-if="searchQuery" class="clear-btn" @click.stop="searchQuery = ''">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
         <a
           title="查看文档"
           class="btn btn-secondary docs-link agents-page__docs-link"
@@ -55,6 +48,7 @@
     <!-- Filter Bar -->
     <AgentFilterBar
       v-model:view="view"
+      v-model:search-query="searchQuery"
       v-model:status-filter="statusFilter"
       v-model:mode-filter="modeFilter"
       v-model:tag-filter="tagFilter"
@@ -67,23 +61,15 @@
     />
 
     <!-- Load failure: separate from the genuine empty state -->
-    <div
+    <ErrorState
       v-if="isError && !agents.length && !isLoading"
       class="agents-page__error"
-      role="alert"
       data-testid="agents-error"
-    >
-      <div class="agents-page__error-main">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        <div>
-          <div class="agents-page__error-title">节点列表加载失败</div>
-          <div class="agents-page__error-text">请检查控制面连接后重试</div>
-        </div>
-      </div>
-      <button class="btn btn-secondary" data-testid="agents-retry" @click="refreshAgents">重试</button>
-    </div>
+      title="节点列表加载失败"
+      message="请检查控制面连接后重试"
+      :retrying="isFetching"
+      @retry="refreshAgents"
+    />
 
     <!-- Empty with filters -->
     <EmptyState
@@ -368,6 +354,7 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
 import EmptyState from '../components/base/EmptyState.vue'
+import ErrorState from '../components/base/ErrorState.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { createPkiEnrollmentToken } from '../api/pki'
 import { useAgent } from '../context/AgentContext'
@@ -467,10 +454,6 @@ onScopeDispose(() => {
   disposed = true
   clearCopyTimeout()
 })
-
-// Search
-const searchInputRef = ref(null)
-function focusSearch() { searchInputRef.value?.focus() }
 
 async function handleApply() {
   if (!selectedAgentId.value || applying.value) return
@@ -822,7 +805,7 @@ function confirmDelete() {
 .agent-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1.25rem;
+  gap: 1rem;
   /* Avoid equal-height stretch: shorter cards otherwise show empty footer gaps. */
   align-items: start;
 }
@@ -1129,38 +1112,6 @@ function confirmDelete() {
 .form-group { display: flex; flex-direction: column; gap: 0.375rem; }
 .form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
 
-/* Load-failure block: distinct from the empty state */
-.agents-page__error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-  padding: 1rem 1.25rem;
-  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border-default));
-  border-radius: var(--radius-xl);
-  background: color-mix(in srgb, var(--color-danger) 6%, var(--color-bg-surface));
-}
-.agents-page__error-main {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  color: var(--color-danger);
-  min-width: 0;
-}
-.agents-page__error-main svg {
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-.agents-page__error-title {
-  font-weight: 600;
-  font-size: 0.9375rem;
-}
-.agents-page__error-text {
-  font-size: 0.8125rem;
-  opacity: 0.9;
-}
-
 /* Edit-node modal body */
 .edit-modal {
   display: flex;
@@ -1229,7 +1180,7 @@ function confirmDelete() {
   box-shadow: var(--shadow-focus);
 }
 
-/* Tablet: the action cluster (search + four buttons) can claim the whole row,
+/* Tablet: the action cluster (four buttons) can claim the whole row,
    so stack the header instead of crushing the title and stats into a sliver. */
 @media (min-width: 641px) and (max-width: 1023px) {
   .agents-page__header {
@@ -1260,9 +1211,6 @@ function confirmDelete() {
   .agents-page__header-right {
     width: 100%;
     gap: 0.5rem;
-  }
-  .agents-page__header-right :deep(.search-wrapper) {
-    flex-shrink: 0;
   }
   .agents-page__header-right .btn,
   .agents-page__header-right .btn-primary,

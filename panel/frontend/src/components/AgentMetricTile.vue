@@ -312,8 +312,8 @@ const ringDashOffset = computed(() => {
 }
 
 .agent-metric-tile[data-variant="compact"] {
-  padding: var(--space-1-5) var(--space-2);
-  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  gap: var(--space-0-5);
   height: 100%;
   min-height: 0;
   box-sizing: border-box;
@@ -367,8 +367,8 @@ const ringDashOffset = computed(() => {
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-visual {
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 2.4rem;
+  height: 2.4rem;
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-percent {

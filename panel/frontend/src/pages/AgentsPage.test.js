@@ -72,6 +72,12 @@ const EmptyStateStub = {
   template: '<div class="empty-state-stub"><slot name="icon" /><slot /><slot name="action" /></div>'
 }
 
+async function setSearch(wrapper, value) {
+  const bar = wrapper.findComponent({ name: 'AgentFilterBar' })
+  bar.vm.$emit('update:searchQuery', value)
+  await nextTick()
+}
+
 describe('AgentsPage join modal', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -165,10 +171,13 @@ describe('AgentsPage join modal', () => {
       global: { stubs: { BaseModal: BaseModalStub } }
     })
 
-    expect(wrapper.find('[data-testid="agents-error"]').exists()).toBe(true)
+    const errorState = wrapper.findComponent({ name: 'ErrorState' })
+    expect(errorState.exists()).toBe(true)
+    expect(errorState.attributes('data-testid')).toBe('agents-error')
+    expect(errorState.props('title')).toBe('节点列表加载失败')
     expect(wrapper.text()).not.toContain('暂无节点')
 
-    await wrapper.find('[data-testid="agents-retry"]').trigger('click')
+    errorState.vm.$emit('retry')
     expect(refetchAgents).toHaveBeenCalledTimes(1)
   })
 
@@ -222,7 +231,7 @@ describe('AgentsPage list UX', () => {
 
     expect(wrapper.get('[data-testid="agents-subtitle"]').text()).toContain('2 个节点')
 
-    await wrapper.get('input[name="agent-search"]').setValue('edge')
+    await setSearch(wrapper, 'edge')
     await nextTick()
     await nextTick()
 
@@ -230,6 +239,38 @@ describe('AgentsPage list UX', () => {
       query: expect.objectContaining({ search: 'edge' })
     }))
     expect(wrapper.get('[data-testid="agents-subtitle"]').text()).toContain('1 / 2 个节点')
+  })
+
+  it('keeps the search in the filter toolbar even before any agent exists', () => {
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub, EmptyState: EmptyStateStub } }
+    })
+
+    const bar = wrapper.findComponent({ name: 'AgentFilterBar' })
+    expect(bar.exists()).toBe(true)
+    expect(bar.props('searchQuery')).toBe('')
+    expect(wrapper.find('.agents-page__header input').exists()).toBe(false)
+  })
+
+  it('applies status filters emitted by the filter bar', async () => {
+    agentsData.value = [
+      { id: 'edge-1', name: 'edge-1', status: 'online', last_seen_at: new Date().toISOString() },
+      { id: 'core-1', name: 'core-1', status: 'offline', last_seen_at: new Date().toISOString() }
+    ]
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub } }
+    })
+
+    wrapper.findComponent({ name: 'AgentFilterBar' }).vm.$emit('update:statusFilter', 'offline')
+    await nextTick()
+    await nextTick()
+
+    const cards = wrapper.findAllComponents({ name: 'AgentMonitorCard' })
+    expect(cards).toHaveLength(1)
+    expect(cards[0].props('agent').id).toBe('core-1')
+    expect(routerReplace).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ status: 'offline' })
+    }))
   })
 
   it('paginates the list view with ListPagination', async () => {
@@ -299,13 +340,13 @@ describe('AgentsPage list UX', () => {
     expect(wrapper.findComponent({ name: 'AgentTable' }).props('agents')).toHaveLength(5)
 
     // User-side filter input changes still reset to page 1.
-    await wrapper.get('input[name="agent-search"]').setValue('agent-')
+    await setSearch(wrapper, 'agent-')
     await nextTick()
     await nextTick()
     expect(wrapper.findComponent({ name: 'ListPagination' }).props('page')).toBe(1)
 
     // A shrinking list clamps an out-of-range page back into range.
-    await wrapper.get('input[name="agent-search"]').setValue('')
+    await setSearch(wrapper, '')
     await nextTick()
     wrapper.findComponent({ name: 'ListPagination' }).vm.$emit('update:page', 2)
     await nextTick()

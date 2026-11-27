@@ -175,7 +175,10 @@ const mockAgents = [
       status: i % 6 === 5 ? 'offline' : 'online',
       is_local: false,
       outbound_proxy_url: '',
-      last_seen_at: new Date().toISOString(),
+      // Offline nodes were last seen in the past (hours to days) so the UI shows a real "last online" time.
+      last_seen_at: i % 6 === 5
+        ? new Date(Date.now() - (i % 12 === 5 ? 3 * 3600 * 1000 : 2 * 86400 * 1000)).toISOString()
+        : new Date().toISOString(),
       last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`,
       http_rules_count: (i % 20) + 1,
       l4_rules_count: (i % 8) + 1,

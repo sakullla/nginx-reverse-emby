@@ -174,4 +174,54 @@ describe('AgentMonitorCard', () => {
     expect(network.get('[data-testid="agent-metric-tile-network-down"]').text()).toContain('8.00 KiB/s')
     expect(network.get('[data-testid="agent-metric-tile-network-up"]').text()).toContain('3.00 KiB/s')
   })
+
+  it('replaces the metric grid with an offline panel showing the long last-seen time', () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 3600 * 1000).toISOString()
+    const wrapper = mount(AgentMonitorCard, {
+      props: {
+        agent: {
+          id: 'edge-off',
+          name: 'edge-off',
+          status: 'offline',
+          last_seen_at: threeHoursAgo,
+          metrics: { disk_usage_percent: 40, disk_used_bytes: 10, disk_total_bytes: 100 }
+        }
+      }
+    })
+
+    const panel = wrapper.get('[data-testid="monitor-card-offline"]')
+    expect(panel.get('[data-testid="monitor-card-offline-title"]').text()).toBe('节点离线')
+    expect(panel.get('[data-testid="monitor-card-offline-last-seen"]').text()).toBe('最后在线 3 小时前')
+    expect(wrapper.find('[data-testid="monitor-card-cpu"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="monitor-card-network"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('— —')
+    expect(wrapper.get('[data-testid="monitor-card-last-seen"]').text()).toBe('3 小时前')
+  })
+
+  it('reports never-seen offline nodes instead of a placeholder time', () => {
+    const wrapper = mount(AgentMonitorCard, {
+      props: { agent: { id: 'new', name: 'new', status: 'offline' } }
+    })
+
+    expect(wrapper.get('[data-testid="monitor-card-offline-last-seen"]').text()).toBe('从未上报')
+    expect(wrapper.get('[data-testid="monitor-card-last-seen"]').text()).toBe('从未上报')
+  })
+
+  it('uses the panel instead of empty tiles when an online node reports no metrics', () => {
+    const wrapper = mount(AgentMonitorCard, {
+      props: {
+        agent: {
+          id: 'quiet',
+          name: 'quiet',
+          status: 'online',
+          last_seen_at: new Date(Date.now() - 5 * 60000).toISOString(),
+          metrics: { cpu_usage_percent: null, network: {} }
+        }
+      }
+    })
+
+    expect(wrapper.find('[data-testid="monitor-card-offline"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="monitor-card-offline-last-seen"]').text()).toBe('最后在线 5 分钟前')
+    expect(wrapper.find('[data-testid="monitor-card-cpu"]').exists()).toBe(false)
+  })
 })
