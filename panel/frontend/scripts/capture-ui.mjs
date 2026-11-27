@@ -228,6 +228,15 @@ for (const width of widths) {
       await page.getByRole('option', { name: /本机 Agent/ }).click()
     }
 
+    async function chooseAllAgents() {
+      const trigger = page.locator('.agent-search-select__trigger').first()
+      if (!(await trigger.count())) return
+      if ((await trigger.textContent()).includes('全部节点')) return
+      await trigger.click()
+      await page.getByRole('option', { name: '全部节点' }).click()
+      await trigger.filter({ hasText: '全部节点' }).waitFor({ timeout: 4000 })
+    }
+
     async function capture(name) {
       await settle()
       await page.evaluate((activeTheme) => {
@@ -425,6 +434,7 @@ for (const width of widths) {
     if (desktop) {
       await step('rules-list-all', async () => {
         await open('/rules', 'HTTP 规则')
+        await chooseAllAgents()
         await page.getByTitle('列表视图').click()
         await page.locator('table.rules-table tbody tr').first().waitFor({ timeout: 8000 })
         await capture('rules-list-all')
@@ -432,6 +442,7 @@ for (const width of widths) {
       })
       await step('l4-list-all', async () => {
         await open('/l4', 'L4 规则')
+        await chooseAllAgents()
         await page.getByTitle('列表视图').click()
         await page.locator('table.rules-table tbody tr').first().waitFor({ timeout: 8000 })
         await capture('l4-list-all')
