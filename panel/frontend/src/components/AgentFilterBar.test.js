@@ -91,7 +91,9 @@ describe('AgentFilterBar', () => {
   it('keeps sort field, sort direction and view toggle controls', async () => {
     const w = mountBar()
 
-    await w.get('select[aria-label="排序字段"]').setValue('name')
+    await w.get('button[aria-label="排序字段"]').trigger('click')
+    const nameOption = w.findAll('[role="option"]').find((option) => option.text() === '名称')
+    await nameOption.trigger('click')
     expect(w.emitted('update:sortField')?.at(-1)).toEqual(['name'])
 
     await w.get('.sort-order-btn').trigger('click')

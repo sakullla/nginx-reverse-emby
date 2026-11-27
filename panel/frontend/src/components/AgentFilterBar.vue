@@ -12,12 +12,13 @@
     <template #trailing>
       <!-- Sort: field + direction -->
       <div class="sort-control">
-        <select v-model="sortField" class="filter-select" aria-label="排序字段">
-          <option value="last_seen_at">最后活跃</option>
-          <option value="name">名称</option>
-          <option value="http_rules_count">HTTP 规则</option>
-          <option value="l4_rules_count">L4 规则</option>
-        </select>
+        <BaseSelect
+          v-model="sortField"
+          class="sort-select"
+          :options="SORT_OPTIONS"
+          aria-label="排序字段"
+          align="end"
+        />
         <button
           class="sort-order-btn"
           :title="sortOrder === 'asc' ? '切换为降序' : '切换为升序'"
@@ -78,6 +79,7 @@
 <script setup>
 import { computed } from 'vue'
 import ResourceListFilterBar from './common/ResourceListFilterBar.vue'
+import BaseSelect from './base/BaseSelect.vue'
 
 const props = defineProps({
   view: { type: String, required: true },
@@ -95,6 +97,13 @@ const emit = defineEmits([
   'update:view', 'update:searchQuery', 'update:statusFilter', 'update:modeFilter', 'update:tagFilter',
   'update:sortField', 'update:sortOrder', 'clear-filters', 'toggle-sort-order'
 ])
+
+const SORT_OPTIONS = [
+  { value: 'last_seen_at', label: '最后活跃' },
+  { value: 'name', label: '名称' },
+  { value: 'http_rules_count', label: 'HTTP 规则' },
+  { value: 'l4_rules_count', label: 'L4 规则' }
+]
 
 const STATUS_OPTIONS = [
   { value: '', label: '全部' },
@@ -206,26 +215,8 @@ function toggleSortOrder() {
   color: var(--color-primary);
   box-shadow: var(--shadow-sm);
 }
-.filter-select {
-  min-height: 34px;
-  padding: 0.4rem 0.75rem;
-  border-radius: var(--radius-lg);
-  border: var(--border-width-thick, 1px) solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  font-size: 0.8125rem;
-  color: var(--color-text-primary);
-  outline: none;
-  font-family: inherit;
-  cursor: pointer;
-  transition: border-color var(--duration-fast) var(--ease-default),
-    box-shadow var(--duration-fast) var(--ease-default);
-}
-.filter-select:hover {
-  border-color: var(--color-border-strong);
-}
-.filter-select:focus {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
+.sort-select {
+  min-width: 8.5rem;
 }
 .sort-control {
   display: flex;
@@ -255,10 +246,9 @@ function toggleSortOrder() {
     flex: 1 1 auto;
     min-width: 0;
   }
-  .sort-control .filter-select {
+  .sort-control .sort-select {
     flex: 1 1 auto;
     min-width: 0;
-    min-height: 44px;
   }
   .sort-order-btn {
     width: 44px;

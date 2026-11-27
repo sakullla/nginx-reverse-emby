@@ -2,7 +2,10 @@
   <div class="resource-list-filter-bar">
     <div
       class="resource-list-filter-bar__toolbar"
-      :class="{ 'resource-list-filter-bar__toolbar--no-agent': !showAgentSelect }"
+      :class="{
+        'resource-list-filter-bar__toolbar--no-agent': !showAgentSelect,
+        'resource-list-filter-bar__toolbar--compact-trailing': showAgentSelect && showSearch && $slots.trailing
+      }"
     >
       <div v-if="showAgentSelect" class="resource-list-filter-bar__field resource-list-filter-bar__field--agent">
         <label v-if="showLabels" class="resource-list-filter-bar__label">节点</label>
@@ -166,21 +169,64 @@
                         {{ option.label }}
                       </button>
                     </div>
-                    <select
+                    <div
                       v-else-if="field.type === 'select'"
-                      class="resource-list-filter-bar__select"
-                      :value="resolvedValue(field)"
-                      :aria-label="field.label || field.key"
-                      @change="onSelectChange(field, $event.target.value)"
+                      class="resource-list-filter-bar__multi-wrap resource-list-filter-bar__single-wrap"
                     >
-                      <option
-                        v-for="option in field.options || []"
-                        :key="`${field.key}:${option.value}`"
-                        :value="option.value"
+                      <div
+                        v-if="segmentOptions(field).length > SINGLE_SEARCH_THRESHOLD"
+                        class="resource-list-filter-bar__multi-search-shell"
                       >
-                        {{ option.label }}
-                      </option>
-                    </select>
+                        <svg
+                          class="resource-list-filter-bar__multi-search-icon"
+                          width="13"
+                          height="13"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          aria-hidden="true"
+                        >
+                          <circle cx="11" cy="11" r="7" />
+                          <path d="M20 20l-3.5-3.5" />
+                        </svg>
+                        <input
+                          class="resource-list-filter-bar__multi-search"
+                          type="search"
+                          :value="multiSearchOf(field.key)"
+                          :placeholder="`搜索${field.label || field.key}`"
+                          :aria-label="`搜索${field.label || field.key}`"
+                          @input="onMultiSearchInput(field.key, $event.target.value)"
+                        />
+                      </div>
+                      <div
+                        class="resource-list-filter-bar__multi resource-list-filter-bar__single"
+                        role="group"
+                        :aria-label="field.label || field.key"
+                      >
+                        <button
+                          v-for="option in singleCandidateOptions(field)"
+                          :key="`${field.key}:${option.value}`"
+                          type="button"
+                          class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel"
+                          :class="{ 'resource-list-filter-bar__chip--active': resolvedValue(field) === String(option.value) }"
+                          :data-value="option.value"
+                          :aria-pressed="resolvedValue(field) === String(option.value) ? 'true' : 'false'"
+                          :title="option.label"
+                          @click="onSegmentToggle(field, option.value)"
+                        >
+                          {{ option.label }}
+                        </button>
+                        <span
+                          v-if="!segmentOptions(field).length"
+                          class="resource-list-filter-bar__multi-empty"
+                        >暂无可选项</span>
+                        <span
+                          v-else-if="!singleCandidateOptions(field).length"
+                          class="resource-list-filter-bar__multi-empty"
+                        >无匹配项</span>
+                      </div>
+                    </div>
                     <div
                       v-else-if="field.type === 'multi'"
                       class="resource-list-filter-bar__multi-wrap"
@@ -379,6 +425,22 @@ function segmentOptions(field) {
   return (field.options || []).filter((option) => String(option.value) !== baseline)
 }
 
+/** Single-value fields with more options than this get an inline search box. */
+const SINGLE_SEARCH_THRESHOLD = 6
+
+/**
+ * Options for an inline single-select field: the baseline ("全部") is implied by
+ * clearing the active choice. The active option stays visible while searching.
+ */
+function singleCandidateOptions(field) {
+  const query = multiSearchOf(field.key).trim().toLowerCase()
+  const active = resolvedValue(field)
+  return segmentOptions(field).filter((option) => {
+    if (!query || String(option.value) === active) return true
+    return String(option.label ?? option.value).toLowerCase().includes(query)
+  })
+}
+
 function multiSearchOf(fieldKey) {
   return multiSearch[fieldKey] ?? ''
 }
@@ -473,10 +535,6 @@ function clearSearch() {
   if (!hasSearchQuery.value) return
   emit('update:q', '')
   emit('change', { type: 'q', value: '' })
-}
-
-function onSelectChange(field, value) {
-  emitFilter(field.key, String(value))
 }
 
 function onSegmentToggle(field, optionValue) {
@@ -1013,7 +1071,8 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-/* Multi-select (tags) needs the full row for its candidate list. */
+/* Option lists (single-select resources, tags) need the full row. */
+.resource-list-filter-bar__panel-group--select,
 .resource-list-filter-bar__panel-group--multi {
   grid-column: 1 / -1;
 }
@@ -1117,32 +1176,22 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.resource-list-filter-bar__select {
-  min-height: 36px;
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-lg);
-  border: var(--border-width-thick) solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  outline: none;
-  box-sizing: border-box;
-  cursor: pointer;
-  transition: border-color var(--duration-fast) var(--ease-default),
-              box-shadow var(--duration-fast) var(--ease-default),
-              background var(--duration-fast) var(--ease-default);
+.resource-list-filter-bar__single-wrap {
+  padding: var(--space-2);
 }
 
-.resource-list-filter-bar__select:hover {
-  border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border-default));
+.resource-list-filter-bar__single {
+  max-height: 7.5rem;
 }
 
-.resource-list-filter-bar__select:focus {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
-  background: var(--color-bg-surface-raised);
+/* Long resource names (domains, listener names) stay on one line. */
+.resource-list-filter-bar__single .resource-list-filter-bar__chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  line-height: 1.5;
 }
 
 .resource-list-filter-bar__multi-wrap {
@@ -1350,6 +1399,26 @@ onUnmounted(() => {
     grid-row: 3;
     margin-left: 0;
     justify-content: flex-end;
+  }
+
+  /* A compact trailing control (view toggle) shares the search row instead of its own. */
+  .resource-list-filter-bar__toolbar--compact-trailing .resource-list-filter-bar__field--search {
+    grid-column: 1;
+  }
+
+  .resource-list-filter-bar__toolbar--compact-trailing .resource-list-filter-bar__trailing {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: stretch;
+  }
+
+  .resource-list-filter-bar__toolbar--compact-trailing .resource-list-filter-bar__trailing :deep(.view-toggle) {
+    min-height: 44px;
+  }
+
+  .resource-list-filter-bar__toolbar--compact-trailing .resource-list-filter-bar__trailing :deep(.view-toggle__btn) {
+    width: 34px;
+    height: 34px;
   }
 
   /* Without the agent selector the search takes the first row next to the filter trigger. */

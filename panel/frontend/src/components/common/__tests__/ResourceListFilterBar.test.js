@@ -136,15 +136,46 @@ describe('ResourceListFilterBar', () => {
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'enabled', value: '' }]])
   })
 
-  it('emits select changes from the panel', async () => {
+  it('picks a single-select option in the panel and clears it on a second click', async () => {
     const wrapper = mountBar()
     await openPanel(wrapper)
-    const certSelect = panelQueryAll('.resource-list-filter-bar__select')
-      .find((node) => node.getAttribute('aria-label') === '证书')
-    certSelect.value = '7'
-    certSelect.dispatchEvent(new Event('change'))
+    panelQuery('[data-field-key="certificate_id"] button[data-value="7"]').click()
     await nextTick()
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'certificate_id', value: '7' }]])
+
+    await wrapper.setProps({ filterValues: { certificate_id: '7' } })
+    const active = panelQuery('[data-field-key="certificate_id"] button[data-value="7"]')
+    expect(active.getAttribute('aria-pressed')).toBe('true')
+    active.click()
+    await nextTick()
+    expect(wrapper.emitted('update:filter').at(-1)).toEqual([{ key: 'certificate_id', value: '' }])
+  })
+
+  it('searches long single-select option lists while keeping the active choice visible', async () => {
+    const domains = ['a.example', 'b.example', 'c.example', 'd.example', 'e.example', 'f.example', 'emby.media']
+    const certificateField = {
+      key: 'certificate_id',
+      label: '证书',
+      type: 'select',
+      options: [{ value: '', label: '全部' }, ...domains.map((label, index) => ({ value: String(index + 1), label }))]
+    }
+    const wrapper = mountBar({ filterFields: [certificateField], filterValues: { certificate_id: '1' } })
+    await openPanel(wrapper)
+
+    const search = panelQuery('[data-field-key="certificate_id"] input[type="search"]')
+    search.value = 'emby'
+    search.dispatchEvent(new Event('input'))
+    await nextTick()
+
+    const labels = panelQueryAll('[data-field-key="certificate_id"] button[data-value]')
+      .map((button) => button.textContent.trim())
+    expect(labels).toEqual(['a.example', 'emby.media'])
+
+    search.value = 'nothing'
+    search.dispatchEvent(new Event('input'))
+    await wrapper.setProps({ filterValues: {} })
+    expect(panelQuery('[data-field-key="certificate_id"] .resource-list-filter-bar__multi-empty').textContent)
+      .toContain('无匹配项')
   })
 
   it('toggles multi options and emits arrays', async () => {
