@@ -405,12 +405,39 @@ for (const width of widths) {
       await open('/l4', 'L4 规则')
       await capture('l4')
       await chooseLocalAgent()
+      await openFirstMoreMenu(page.locator('.rules-page'))
+      await capture('l4-card-more')
+      await closeMenu()
       await captureBulk('l4-bulk', 'l4-bulk-toggle', 'input.l4-card__checkbox')
+      if (desktop) {
+        await page.getByTitle('列表视图').click()
+        await capture('l4-list')
+        await captureBulk('l4-list-bulk', 'l4-bulk-toggle', 'tbody input.rules-table__checkbox')
+        await page.getByTitle('卡片视图').click()
+      }
       await page.getByRole('button', { name: '添加 L4 规则' }).click()
       await page.getByRole('dialog').waitFor()
       await capture('l4-create')
       await closeDialog()
     })
+
+    // 全部节点 table variants: list view without an agent filter.
+    if (desktop) {
+      await step('rules-list-all', async () => {
+        await open('/rules', 'HTTP 规则')
+        await page.getByTitle('列表视图').click()
+        await page.locator('table.rules-table tbody tr').first().waitFor({ timeout: 8000 })
+        await capture('rules-list-all')
+        await page.getByTitle('卡片视图').click()
+      })
+      await step('l4-list-all', async () => {
+        await open('/l4', 'L4 规则')
+        await page.getByTitle('列表视图').click()
+        await page.locator('table.rules-table tbody tr').first().waitFor({ timeout: 8000 })
+        await capture('l4-list-all')
+        await page.getByTitle('卡片视图').click()
+      })
+    }
 
     await step('certs', async () => {
       await open('/certs', '公网证书')
