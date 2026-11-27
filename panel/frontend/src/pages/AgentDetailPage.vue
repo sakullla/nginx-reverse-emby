@@ -746,7 +746,7 @@ function listMoreLabel(total, key) {
     : `${detailLabels.listFooter.viewAll} ${total} 条`
 }
 
-const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt, isError: agentStatsIsError, refetch: refetchAgentStats } = useQuery({
+const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt, isError: agentStatsIsError, isFetched: agentStatsIsFetched, refetch: refetchAgentStats } = useQuery({
   queryKey: ['agent-stats', agentId],
   queryFn: () => fetchAgentStats(agentId.value),
   enabled: () => !!agentId.value,
@@ -883,7 +883,10 @@ const detailMetricsEmpty = computed(() => {
   const net = networkMetrics.value
   return !(net && (hasMetricValue(net.rx_bytes_per_second) || hasMetricValue(net.tx_bytes_per_second)))
 })
-const showOfflinePanel = computed(() => detailIsOffline.value || detailMetricsEmpty.value)
+// Online nodes: wait for the first stats response before declaring metrics empty,
+// so the panel does not flash "暂无监控数据" while the initial request is in flight.
+const showOfflinePanel = computed(() => detailIsOffline.value
+  || (detailMetricsEmpty.value && agentStatsIsFetched.value))
 const offlineTitle = computed(() => (detailIsOffline.value ? '节点离线' : '暂无监控数据'))
 const lastSeenText = computed(() => (agent.value?.last_seen_at
   ? `最后在线 ${timeAgoLong(agent.value.last_seen_at)}`

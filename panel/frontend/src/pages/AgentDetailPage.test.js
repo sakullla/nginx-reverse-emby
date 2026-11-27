@@ -965,6 +965,20 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-metric-disk"]').exists()).toBe(true)
   })
 
+  it('does not flash 暂无监控数据 for an online node before the first stats response', async () => {
+    agentRecord.status = 'online'
+    let resolveStats
+    fetchAgentStats.mockImplementationOnce(() => new Promise((resolve) => { resolveStats = resolve }))
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="detail-offline"]').exists()).toBe(false)
+
+    resolveStats({ ...currentAgentStats })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="detail-offline-title"]').text()).toBe('暂无监控数据')
+  })
+
   it('shows a metrics error with retry when agent stats fail to load', async () => {
     fetchAgentStats.mockRejectedValueOnce(new Error('stats down'))
     const wrapper = await mountPage()
