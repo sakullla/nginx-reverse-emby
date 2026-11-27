@@ -5,7 +5,7 @@
         <span class="topbar__logo"><BrandMark /></span>
         <span class="topbar__name">Nginx Proxy</span>
       </RouterLink>
-      <nav v-else class="topbar__crumbs" aria-label="当前位置">
+      <nav v-else-if="crumbs.title" class="topbar__crumbs" aria-label="当前位置">
         <template v-if="crumbs.section">
           <component
             :is="crumbs.sectionTo ? 'RouterLink' : 'span'"
@@ -141,7 +141,8 @@ const SECTIONS = {
 
 const crumbs = computed(() => {
   const section = SECTIONS[route.name]
-  const title = String(route.meta?.title || 'Nginx Proxy').split(' · ')[0]
+  // 桌面端品牌只在 Sidebar 显示；缺少路由标题时不回落为品牌名。
+  const title = String(route.meta?.title || '').split(' · ')[0]
   if (!section) return { section: '', sectionTo: null, title }
   if (typeof section === 'string') return { section, sectionTo: null, title }
   return { section: section.label, sectionTo: section.to, title }

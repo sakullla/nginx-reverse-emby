@@ -46,6 +46,28 @@ afterEach(() => {
 })
 
 describe('TrafficTrendChart', () => {
+  it('renders a compact EmptyState with caller-provided title and description', () => {
+    const wrapper = mountChart({
+      points: [],
+      emptyTitle: '暂无流量数据',
+      emptyDescription: '节点上报流量后将在此显示趋势'
+    })
+
+    const empty = wrapper.find('[data-testid="traffic-trend-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.find('.empty-state-container--compact').exists()).toBe(true)
+    expect(empty.find('.empty-state-title').text()).toBe('暂无流量数据')
+    expect(empty.find('.empty-state-description').text()).toBe('节点上报流量后将在此显示趋势')
+    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
+  })
+
+  it('keeps the plain loading text without an EmptyState while loading', () => {
+    const wrapper = mountChart({ points: [], loading: true })
+
+    expect(wrapper.find('[data-testid="traffic-trend-loading"]').text()).toContain('加载中')
+    expect(wrapper.find('.empty-state-container').exists()).toBe(false)
+  })
+
   it('switches between chart, empty, and loading states', async () => {
     const wrapper = mountChart()
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)

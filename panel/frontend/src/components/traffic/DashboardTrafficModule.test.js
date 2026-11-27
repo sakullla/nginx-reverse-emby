@@ -401,4 +401,27 @@ describe('DashboardTrafficModule', () => {
     expect(wrapper.find('.dt-top-rule').exists()).toBe(true)
     expect(wrapper.find('.dt-top-item').exists()).toBe(false)
   })
+
+  it('shows a compact EmptyState with guidance when the TOP list is empty', async () => {
+    aggregateByRequest.all = { ...buildAggregate(), top_rules: [] }
+    const wrapper = await mountModule()
+
+    const rulesBtn = wrapper.findAll('[data-testid="trend-view-btn"]').find((btn) => btn.text() === '按规则')
+    await rulesBtn.trigger('click')
+    await nextTick()
+
+    const empty = wrapper.find('[data-testid="top-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.classes()).toContain('empty-state-container--compact')
+    expect(empty.text()).toContain('暂无规则数据')
+    expect(empty.text()).toContain('规则产生流量后将在此显示排行')
+  })
+
+  it('passes traffic-specific empty copy to the trend chart', async () => {
+    const wrapper = await mountModule()
+
+    const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
+    expect(chart.props('emptyTitle')).toBe('暂无流量数据')
+    expect(chart.props('emptyDescription')).toBe('节点上报流量后将在此显示趋势')
+  })
 })

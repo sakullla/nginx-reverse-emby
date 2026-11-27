@@ -78,6 +78,8 @@
               :series-points="chartSeriesPoints"
               :granularity="granularity"
               :quota-bytes="isRulesView ? null : (selectedSummary?.quota_bytes ?? null)"
+              empty-title="暂无流量数据"
+              empty-description="节点上报流量后将在此显示趋势"
             />
           </div>
         </section>
@@ -98,7 +100,16 @@
                 <div class="dt-top-rule__fill" :style="{ width: topRulePercent(rule) + '%', background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
               </div>
             </div>
-            <p v-if="!topRules.length" class="dt-cell__empty">暂无规则数据</p>
+            <EmptyState
+              v-if="!topRules.length"
+              compact
+              class="dt-cell__empty"
+              data-testid="top-empty"
+              title="暂无规则数据"
+              description="规则产生流量后将在此显示排行"
+            >
+              <template #icon><TopEmptyIcon /></template>
+            </EmptyState>
           </template>
 
           <template v-else>
@@ -107,7 +118,16 @@
               <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
               <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
             </div>
-            <p v-if="!topNodes.length" class="dt-cell__empty">暂无节点数据</p>
+            <EmptyState
+              v-if="!topNodes.length"
+              compact
+              class="dt-cell__empty"
+              data-testid="top-empty"
+              title="暂无节点数据"
+              description="节点上报流量后将在此显示排行"
+            >
+              <template #icon><TopEmptyIcon /></template>
+            </EmptyState>
           </template>
         </section>
       </div>
@@ -116,7 +136,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useTrafficAggregate } from '../../hooks/useTrafficAggregate.js'
@@ -125,9 +145,23 @@ import { getPreferenceDefinition, normalizeTrafficView } from '../../preferences
 import { fetchSystemInfo } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import AgentPicker from '../../components/AgentPicker.vue'
+import EmptyState from '../base/EmptyState.vue'
 import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
 
 const router = useRouter()
+
+const TopEmptyIcon = () => h('svg', {
+  width: 20,
+  height: 20,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  'stroke-width': 1.8,
+  'stroke-linecap': 'round',
+  'aria-hidden': 'true'
+}, [
+  h('path', { d: 'M4 20V10M10 20V4M16 20v-7M22 20H2' })
+])
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -347,7 +381,8 @@ function scalePoints(points, factor) {
 .dashboard-traffic__row {
   display: grid;
   gap: var(--space-4);
-  align-items: stretch;
+  /* 两卡按内容高度,避免 stretch 后图表固定高度留出大块空白 */
+  align-items: start;
 }
 
 .dashboard-traffic__row--main {
@@ -408,14 +443,26 @@ function scalePoints(points, factor) {
 }
 
 .dt-cell__empty {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-muted);
-  padding: var(--space-6) 0;
+  padding: var(--space-6) var(--space-2);
+  animation: none;
+}
+.dt-cell__empty :deep(.empty-state-icon) {
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--space-2);
+  border-radius: var(--radius-lg);
+}
+.dt-cell__empty :deep(.empty-state-icon svg) {
+  width: 20px;
+  height: 20px;
+}
+.dt-cell__empty :deep(.empty-state-title) {
+  margin-bottom: var(--space-1);
   font-size: var(--text-sm);
-  margin: 0;
+}
+.dt-cell__empty :deep(.empty-state-description) {
+  margin-bottom: 0;
+  font-size: var(--text-xs);
 }
 
 /* KPI 仪表行 */

@@ -21,7 +21,21 @@
       role="status"
       aria-live="polite"
     >
-      <span class="traffic-trend-chart__empty-text">{{ loading ? '加载中…' : '暂无数据' }}</span>
+      <span v-if="loading" class="traffic-trend-chart__empty-text">加载中…</span>
+      <EmptyState
+        v-else
+        compact
+        class="traffic-trend-chart__empty-state"
+        :title="emptyTitle"
+        :description="emptyDescription"
+      >
+        <template #icon>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 3v18h18"/>
+            <path d="m7 15 4-4 3 3 5-6"/>
+          </svg>
+        </template>
+      </EmptyState>
     </div>
   </div>
 </template>
@@ -29,6 +43,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes } from '../../utils/trafficStats.js'
+import EmptyState from '../base/EmptyState.vue'
 
 defineOptions({ name: 'TrafficTrendChart' })
 
@@ -50,6 +65,9 @@ const props = defineProps({
   refreshKey: { type: [Number, String], default: '' },
   /** First-load placeholder; default false so Dashboard/other callers stay empty-vs-data only. */
   loading: { type: Boolean, default: false },
+  /** Empty-state copy; callers can provide context-specific wording. */
+  emptyTitle: { type: String, default: '暂无数据' },
+  emptyDescription: { type: String, default: '' },
   /**
    * Optional height override for ApexCharts.
    * Prefer CSS on this host / parent for responsive sizing; when omitted, the
@@ -433,6 +451,28 @@ const chartOptions = computed(() => {
   justify-content: center;
   height: 100%;
   min-height: 0;
+}
+.traffic-trend-chart__empty-state {
+  padding: var(--space-3) var(--space-4);
+  animation: none;
+}
+.traffic-trend-chart__empty-state :deep(.empty-state-icon) {
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--space-2);
+  border-radius: var(--radius-lg);
+}
+.traffic-trend-chart__empty-state :deep(.empty-state-icon svg) {
+  width: 20px;
+  height: 20px;
+}
+.traffic-trend-chart__empty-state :deep(.empty-state-title) {
+  margin-bottom: var(--space-1);
+  font-size: var(--text-sm);
+}
+.traffic-trend-chart__empty-state :deep(.empty-state-description) {
+  margin-bottom: 0;
+  font-size: var(--text-xs);
 }
 .traffic-trend-chart__empty-text {
   font-size: 0.875rem;
