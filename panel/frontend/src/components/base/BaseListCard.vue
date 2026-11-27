@@ -183,11 +183,15 @@ function onKey(e) {
   padding-top: var(--space-1);
 }
 
-/* Mobile: badges may wrap inside the left column, actions stay on the same row, right-aligned. */
+/*
+ * Mobile: badges may wrap inside the left column, actions stay on the same row, right-aligned.
+ * Center both columns on the cross axis: touch devices grow icon buttons to 44px, so top-aligning
+ * would leave the ~20px badge row floating above the button centers.
+ */
 @media (max-width: 640px) {
   .base-list-card__header {
     flex-wrap: nowrap;
-    align-items: flex-start;
+    align-items: center;
   }
 
   .base-list-card__header-left {
