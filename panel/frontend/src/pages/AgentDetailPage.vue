@@ -22,7 +22,7 @@
             >{{ syncStatusLabel }}</BaseBadge>
           </div>
           <div class="agent-detail__identity-meta">
-            <span v-if="agent.last_seen_at" class="agent-detail__header-meta" data-testid="detail-header-lastseen">{{ timeAgo(agent.last_seen_at) }}</span>
+            <span class="agent-detail__header-meta" data-testid="detail-header-lastseen">{{ lastSeenText }}</span>
             <!-- DDNS 域名与解析徽标只在配置后显示;配置入口在右上角更多菜单 -->
             <template v-if="agent.ddns_domain">
               <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
@@ -86,6 +86,37 @@
             <h3 class="agent-detail__zone-title">{{ detailLabels.zones.overview }}</h3>
           </header>
           <div class="agent-detail__info-grid agent-detail__info-grid--resources" data-testid="detail-info-grid">
+            <!-- 查询失败优先于离线面板:错误可重试;离线/无指标时以单个面板替代 '—' 瓦片,与列表卡片一致 -->
+            <ErrorState
+              v-if="metricsLoadError"
+              compact
+              class="agent-detail__metrics-span agent-detail__stats-error"
+              data-testid="detail-metrics-error"
+              title="指标查询失败"
+              message="暂无可用的主机指标数据"
+              :retrying="metricsRetrying"
+              @retry="retryAgentStats"
+            />
+            <div
+              v-else-if="showOfflinePanel"
+              class="agent-detail__metrics-span agent-detail__offline"
+              data-testid="detail-offline"
+            >
+              <svg class="agent-detail__offline-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <line x1="1" y1="1" x2="23" y2="23"/>
+                <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+                <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+                <path d="M10.71 5.05A16 16 0 0 1 22.58 9"/>
+                <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+                <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+                <line x1="12" y1="20" x2="12.01" y2="20"/>
+              </svg>
+              <div class="agent-detail__offline-text">
+                <span class="agent-detail__offline-title" data-testid="detail-offline-title">{{ offlineTitle }}</span>
+                <span class="agent-detail__offline-sub" data-testid="detail-offline-last-seen">{{ lastSeenText }}</span>
+              </div>
+            </div>
+            <template v-else>
             <AgentMetricTile
               data-testid="detail-metric-cpu"
               icon="i-mdi-cpu-64-bit"
@@ -113,6 +144,7 @@
               :tone="barTone(agentMetricsData.disk_usage_percent)"
               display-mode="bar"
             />
+            </template>
             <div
               class="agent-detail__info-item agent-detail__info-item--ip"
               :class="{ 'agent-detail__info-item--ip-empty': !displayIPv4 && !displayIPv6 }"
@@ -129,16 +161,6 @@
               >{{ displayIPv6 }}</span>
             </div>
           </div>
-          <ErrorState
-            v-if="metricsLoadError"
-            compact
-            class="agent-detail__stats-error"
-            data-testid="detail-metrics-error"
-            title="指标查询失败"
-            message="暂无可用的主机指标数据"
-            :retrying="metricsRetrying"
-            @retry="retryAgentStats"
-          />
         </section>
 
         <!-- 流量区:健康指标 + 趋势图;分析/管理/校准走原有弹窗 -->
@@ -636,7 +658,7 @@ import { applyConfig, fetchAgentStats, fetchSystemInfo } from '../api'
 import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSummary, useTrafficTrend, useUpdateTrafficPolicy } from '../hooks/useTraffic'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
-import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgoLong } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage } from '../utils/agentMetrics.js'
 import { agentDetailLabels, ddnsStatusBadge } from '../constants/agentDetailLabels'
 import {
@@ -845,6 +867,27 @@ const metricsLoadError = computed(() =>
   agentStatsIsError.value && !(agent.value?.monitor?.metrics || agent.value?.metrics)
 )
 const networkMetrics = computed(() => agentMetricsData.value.network || null)
+// Same rule as AgentMonitorCard: offline or no CPU/memory/disk/network reading → offline panel.
+const detailIsOffline = computed(() => getAgentStatus(agent.value) === 'offline')
+function hasMetricValue(value) {
+  return value !== null && value !== undefined && value !== ''
+}
+const detailMetricsEmpty = computed(() => {
+  const m = agentMetricsData.value
+  const keys = [
+    'cpu_usage_percent', 'cpu_used_cores',
+    'memory_usage_percent', 'memory_used_bytes',
+    'disk_usage_percent', 'disk_used_bytes'
+  ]
+  if (keys.some((key) => hasMetricValue(m[key]))) return false
+  const net = networkMetrics.value
+  return !(net && (hasMetricValue(net.rx_bytes_per_second) || hasMetricValue(net.tx_bytes_per_second)))
+})
+const showOfflinePanel = computed(() => detailIsOffline.value || detailMetricsEmpty.value)
+const offlineTitle = computed(() => (detailIsOffline.value ? '节点离线' : '暂无监控数据'))
+const lastSeenText = computed(() => (agent.value?.last_seen_at
+  ? `最后在线 ${timeAgoLong(agent.value.last_seen_at)}`
+  : '从未上报'))
 const displayIPv4 = computed(() => agent.value?.last_seen_ipv4 || agent.value?.ddns_status?.last_resolved_ipv4 || '')
 const displayIPv6 = computed(() => agent.value?.last_seen_ipv6 || agent.value?.ddns_status?.last_resolved_ipv6 || '')
 
@@ -1717,8 +1760,43 @@ function packageStatusLabel(status) {
   gap: var(--space-2-5, 0.625rem);
 }
 
-.agent-detail__stats-error {
-  margin-top: var(--space-3);
+.agent-detail__metrics-span {
+  grid-column: span 3;
+}
+
+.agent-detail__offline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--radius-xl);
+  border: var(--border-width-thin, 1px) dashed var(--color-border-default);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-tertiary);
+  min-width: 0;
+}
+
+.agent-detail__offline-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.agent-detail__offline-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+.agent-detail__offline-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+}
+
+.agent-detail__offline-sub {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
 }
 
 .agent-detail__summary-card :deep(.base-list-card__header) {
@@ -2118,6 +2196,10 @@ function packageStatusLabel(status) {
 @media (max-width: 1024px) {
   .agent-detail__info-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-detail__metrics-span {
+    grid-column: 1 / -1;
   }
 }
 

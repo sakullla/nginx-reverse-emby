@@ -924,6 +924,47 @@ describe('AgentDetailPage', () => {
     expect(fetchAgentStats).toHaveBeenCalledTimes(2)
   })
 
+  it('replaces the metric tiles with an offline panel and long last-seen text for offline nodes', async () => {
+    agentRecord.status = 'offline'
+    agentRecord.last_seen_at = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString()
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="detail-offline-title"]').text()).toBe('节点离线')
+    expect(wrapper.find('[data-testid="detail-offline-last-seen"]').text()).toBe('最后在线 2 天前')
+    expect(wrapper.find('[data-testid="detail-header-lastseen"]').text()).toBe('最后在线 2 天前')
+    expect(wrapper.find('[data-testid="detail-metric-cpu"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-metric-memory"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-metric-disk"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-info-ip"]').exists()).toBe(true)
+  })
+
+  it('shows 从未上报 when the node has never reported', async () => {
+    agentRecord.status = 'offline'
+    delete agentRecord.last_seen_at
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="detail-header-lastseen"]').text()).toBe('从未上报')
+    expect(wrapper.find('[data-testid="detail-offline-last-seen"]').text()).toBe('从未上报')
+  })
+
+  it('shows 暂无监控数据 for an online node without metrics and the tiles once metrics exist', async () => {
+    agentRecord.status = 'online'
+    const wrapper = await mountPage()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="detail-offline-title"]').text()).toBe('暂无监控数据')
+    expect(wrapper.find('[data-testid="detail-metric-cpu"]').exists()).toBe(false)
+
+    currentAgentStats = { ...currentAgentStats, metrics: { cpu_usage_percent: 12, memory_usage_percent: 40 } }
+    await wrapper.find('[data-testid="detail-action-refresh"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="detail-offline"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-metric-cpu"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-metric-disk"]').exists()).toBe(true)
+  })
+
   it('shows a metrics error with retry when agent stats fail to load', async () => {
     fetchAgentStats.mockRejectedValueOnce(new Error('stats down'))
     const wrapper = await mountPage()
