@@ -17,11 +17,11 @@ afterEach(() => {
 
 // jsdom has no layout: give tags a width proportional to their text, and the
 // tags cell a configurable width, so the fold logic runs against real elements.
-function mockLayout(tagsWidth) {
+function mockLayout(tagsWidth, moreWidth = 24) {
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function () {
     let width = 0
     if (this.classList.contains('rules-table__tags')) width = tagsWidth
-    else if (this.classList.contains('tag--more')) width = 24
+    else if (this.classList.contains('tag--more')) width = moreWidth
     else if (this.classList.contains('rules-table__service-link')) width = 50
     else if (this.hasAttribute('data-tag')) width = this.textContent.trim().length * 10 + 10
     return { width, height: 20, top: 0, left: 0, right: width, bottom: 20, x: 0, y: 0 }
@@ -29,8 +29,8 @@ function mockLayout(tagsWidth) {
   vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ columnGap: '0px' }))
 }
 
-async function mountMeasured({ rules: list, tagsWidth }) {
-  mockLayout(tagsWidth)
+async function mountMeasured({ rules: list, tagsWidth, moreWidth }) {
+  mockLayout(tagsWidth, moreWidth)
   const wrapper = mount(RuleTable, { props: { rules: list }, global: { stubs } })
   await nextTick()
   await nextTick()
@@ -64,6 +64,16 @@ describe('RuleTable', () => {
     expect(shownTags(narrow.get('.rules-table__tags'))).toEqual([])
     expect(narrow.get('[data-testid="rule-table-tags-more"]').text()).toBe('+2')
     expect(narrow.get('.rules-table__tags').attributes('title')).toBe('averyveryverylongtag, x')
+  })
+
+  it('refits when the rendered +N badge is wider than the space reserved for it', async () => {
+    const wrapper = await mountMeasured({ rules: [rules[0]], tagsWidth: 120, moreWidth: 50 })
+    for (let i = 0; i < 4; i += 1) await nextTick()
+    const tags = wrapper.get('.rules-table__tags')
+    // First pass reserves 28 (emby + web fit); the real badge is 50, so
+    // emby(50) + web(40) + 50 > 120 and web folds too.
+    expect(shownTags(tags)).toEqual(['emby'])
+    expect(tags.get('[data-testid="rule-table-tags-more"]').text()).toBe('+3')
   })
 
   it('reserves room for the service link before fitting tags', async () => {

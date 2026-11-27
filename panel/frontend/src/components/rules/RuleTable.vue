@@ -244,7 +244,18 @@ function hiddenTagCount(rule) {
   return Math.max(0, ruleTags(rule).length - visibleTagCount(rule))
 }
 
-function measureTags() {
+// "+N" width each row's fit reserved; a wider real badge (e.g. "+12") refits.
+const reservedMoreWidth = new Map()
+
+function moreBadgeOutgrown() {
+  for (const [key, el] of tagsEls) {
+    const more = el.querySelector('.tag--more')
+    if (more && more.getBoundingClientRect().width > (reservedMoreWidth.get(key) ?? 0) + 0.5) return true
+  }
+  return false
+}
+
+function measureTags(pass = 0) {
   const next = {}
   for (const [key, el] of tagsEls) {
     // Hidden/unlaid-out tables report 0; keep the previous fit until a resize.
@@ -259,21 +270,35 @@ function measureTags() {
     if (link) available -= link.getBoundingClientRect().width + gap
     const more = el.querySelector('.tag--more')
     const moreWidth = Math.max(more ? more.getBoundingClientRect().width : 0, MORE_BADGE_FALLBACK_WIDTH)
+    reservedMoreWidth.set(key, moreWidth)
     next[key] = fitTagCount(widths, available, gap, moreWidth)
   }
   tagFit.value = next
+  // The badge text changes with the new fit; refit (bounded) if it outgrew its reserve.
+  if (pass < 2) {
+    nextTick(() => { if (moreBadgeOutgrown()) measureTags(pass + 1) })
+  }
+}
+
+function measureAll() {
+  measureTags(0)
 }
 
 let resizeObserver = null
 onMounted(() => {
-  nextTick(measureTags)
+  nextTick(measureAll)
   if (typeof ResizeObserver === 'function' && rootRef.value) {
-    resizeObserver = new ResizeObserver(() => measureTags())
+    resizeObserver = new ResizeObserver(measureAll)
     resizeObserver.observe(rootRef.value)
   }
-  document.fonts?.ready?.then(() => measureTags())
+  // Late web fonts change tag widths without resizing the table.
+  document.fonts?.ready?.then(measureAll)
+  document.fonts?.addEventListener?.('loadingdone', measureAll)
 })
-onBeforeUnmount(() => resizeObserver?.disconnect())
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  document.fonts?.removeEventListener?.('loadingdone', measureAll)
+})
 
 function tagsTitle(rule) {
   return ruleTags(rule).join(', ') || null
@@ -329,7 +354,7 @@ function backendTooltip(rule) {
 
 watch(
   () => [props.rules, props.selectable, props.showTraffic, showAgentColumn.value],
-  () => nextTick(measureTags),
+  () => nextTick(measureAll),
   { deep: true }
 )
 </script>

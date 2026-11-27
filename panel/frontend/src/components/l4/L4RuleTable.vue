@@ -1,6 +1,6 @@
 <template>
   <div ref="rootRef" class="rule-table">
-    <table class="rules-table" :class="{ 'rules-table--with-agent': showAgentColumn }">
+    <table class="rules-table" :class="{ 'rules-table--selectable': selectable, 'rules-table--with-agent': showAgentColumn }">
       <thead>
         <tr>
           <th v-if="selectable" class="rules-table__col-select">
@@ -38,7 +38,7 @@
           :aria-selected="selectable ? (isRowSelected(rule) ? 'true' : 'false') : undefined"
           @click="onRowClick(rule)"
         >
-          <td v-if="selectable" @click.stop>
+          <td v-if="selectable" class="rules-table__cell-select" @click.stop>
             <input
               type="checkbox"
               class="rules-table__checkbox"
@@ -250,7 +250,18 @@ function hiddenTagCount(rule) {
   return Math.max(0, ruleTags(rule).length - visibleTagCount(rule))
 }
 
-function measureTags() {
+// "+N" width each row's fit reserved; a wider real badge (e.g. "+12") refits.
+const reservedMoreWidth = new Map()
+
+function moreBadgeOutgrown() {
+  for (const [key, el] of tagsEls) {
+    const more = el.querySelector('.tag--more')
+    if (more && more.getBoundingClientRect().width > (reservedMoreWidth.get(key) ?? 0) + 0.5) return true
+  }
+  return false
+}
+
+function measureTags(pass = 0) {
   const next = {}
   for (const [key, el] of tagsEls) {
     // Hidden/unlaid-out tables report 0; keep the previous fit until a resize.
@@ -262,24 +273,38 @@ function measureTags() {
     const gap = parseFloat(getComputedStyle(el).columnGap) || 0
     const more = el.querySelector('.tag--more')
     const moreWidth = Math.max(more ? more.getBoundingClientRect().width : 0, MORE_BADGE_FALLBACK_WIDTH)
+    reservedMoreWidth.set(key, moreWidth)
     next[key] = fitTagCount(widths, el.getBoundingClientRect().width, gap, moreWidth)
   }
   tagFit.value = next
+  // The badge text changes with the new fit; refit (bounded) if it outgrew its reserve.
+  if (pass < 2) {
+    nextTick(() => { if (moreBadgeOutgrown()) measureTags(pass + 1) })
+  }
+}
+
+function measureAll() {
+  measureTags(0)
 }
 
 let resizeObserver = null
 onMounted(() => {
-  nextTick(measureTags)
+  nextTick(measureAll)
   if (typeof ResizeObserver === 'function' && rootRef.value) {
-    resizeObserver = new ResizeObserver(() => measureTags())
+    resizeObserver = new ResizeObserver(measureAll)
     resizeObserver.observe(rootRef.value)
   }
-  document.fonts?.ready?.then(() => measureTags())
+  // Late web fonts change tag widths without resizing the table.
+  document.fonts?.ready?.then(measureAll)
+  document.fonts?.addEventListener?.('loadingdone', measureAll)
 })
-onBeforeUnmount(() => resizeObserver?.disconnect())
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  document.fonts?.removeEventListener?.('loadingdone', measureAll)
+})
 watch(
   () => [props.rules, props.selectable, props.showTraffic, showAgentColumn.value],
-  () => nextTick(measureTags),
+  () => nextTick(measureAll),
   { deep: true }
 )
 
@@ -358,14 +383,19 @@ function backendTooltip(rule) {
   border-collapse: collapse;
   /* Fixed layout gives the tags cell a definite width to fold tags against. */
   table-layout: fixed;
-  min-width: 960px;
+  /* Sum of the fixed columns below (border-box: width + 1.5rem padding) plus
+     ~100px for the remainder tags column, so listen/backend keep their widths.
+     All variants fit the ~1040px table at 1360 without horizontal scroll. */
+  min-width: 880px;
 }
 
-.rules-table--with-agent { min-width: 1120px; }
+.rules-table--selectable { min-width: 908px; }
+.rules-table--with-agent { min-width: 1008px; }
+.rules-table--with-agent.rules-table--selectable { min-width: 1036px; }
 
 .rules-table th {
   text-align: left;
-  padding: 0.7rem 1rem;
+  padding: 0.7rem 0.75rem;
   font-size: 0.6875rem;
   font-weight: 650;
   letter-spacing: 0.04em;
@@ -374,16 +404,24 @@ function backendTooltip(rule) {
   white-space: nowrap;
 }
 
-/* Fixed layout: widths are content-box; the listen column takes the remainder. */
-.rules-table__col-toggle { width: 2.5rem; }
-.rules-table__col-status { width: 5.5rem; }
-.rules-table__col-backend { width: 16%; }
+/* Fixed layout: widths are content-box; the tags column takes the remainder.
+   Listen fits "0.0.0.0:65535" / "[::]:65535", backend "192.168.1.20:25565 +1";
+   both are wider than in the pre-T9 auto layout (longer values ellipsize with
+   a title). Measured at 1360 with node + select columns: tags keep ~100px. */
+.rules-table__col-select { width: 1rem; }
+.rules-table__col-toggle { width: 2.25rem; }
+.rules-table__col-status { width: 5rem; }
+.rules-table__col-listen { width: 7.5rem; }
+.rules-table__col-backend { width: 11rem; }
 .rules-table__col-lb { width: 3.5rem; }
-.rules-table__col-agent { width: 8rem; }
-.rules-table__col-tags { width: 14%; }
-.rules-table__col-select { width: 1.75rem; }
-.rules-table__col-traffic { width: 6rem; }
-.rules-table__col-actions { width: 4rem; }
+.rules-table__col-agent { width: 6.25rem; }
+.rules-table__col-traffic { width: 5rem; }
+.rules-table__col-actions { width: 4.25rem; }
+
+.rules-table th.rules-table__col-select,
+.rules-table__cell-select {
+  padding-right: 0;
+}
 
 .rules-table__checkbox {
   width: 16px;
@@ -419,7 +457,7 @@ function backendTooltip(rule) {
 }
 
 .rules-table td {
-  padding: 0.75rem 1rem;
+  padding: 0.75rem;
   vertical-align: middle;
   overflow: hidden;
 }

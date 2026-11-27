@@ -24,20 +24,20 @@ afterEach(() => {
 
 // jsdom has no layout: tags get a width proportional to their text and the
 // tags cell a configurable width, so the fold logic runs against real elements.
-function mockLayout(tagsWidth) {
+function mockLayout(tagsWidth, moreWidth = 24) {
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function () {
     let width = 0
     if (this.classList.contains('rules-table__tags')) width = tagsWidth
-    else if (this.classList.contains('tag--more')) width = 24
+    else if (this.classList.contains('tag--more')) width = moreWidth
     else if (this.hasAttribute('data-tag')) width = this.textContent.trim().length * 10 + 10
     return { width, height: 20, top: 0, left: 0, right: width, bottom: 20, x: 0, y: 0 }
   })
   vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ columnGap: '0px' }))
 }
 
-async function mountMeasured(rules, tagsWidth) {
-  mockLayout(tagsWidth)
-  const wrapper = mount(L4RuleTable, { props: { rules }, attachTo: document.body })
+async function mountMeasured(rules, tagsWidth, moreWidth, props = {}) {
+  mockLayout(tagsWidth, moreWidth)
+  const wrapper = mount(L4RuleTable, { props: { rules, ...props }, attachTo: document.body })
   wrappers.push(wrapper)
   await nextTick()
   await nextTick()
@@ -70,6 +70,22 @@ describe('L4RuleTable tags', () => {
     const narrow = await mountMeasured([longRule], 120)
     expect(shownTags(narrow.get('.rules-table__tags'))).toEqual([])
     expect(narrow.get('[data-testid="l4-tags-more"]').text()).toBe('+1')
+  })
+
+  it('refits when the rendered +N badge is wider than the space reserved for it', async () => {
+    const wrapper = await mountMeasured([baseRule], 120, 50)
+    for (let i = 0; i < 4; i += 1) await nextTick()
+    const tags = wrapper.get('.rules-table__tags')
+    // First pass reserves 28 (one + two fit); the real badge is 50, so two folds too.
+    expect(shownTags(tags)).toEqual(['one'])
+    expect(tags.get('[data-testid="l4-tags-more"]').text()).toBe('+3')
+  })
+
+  it('marks bulk mode on the table so the layout reserves the select column', async () => {
+    const wrapper = await mountMeasured([baseRule], 400, 24, { selectable: true })
+    expect(wrapper.get('table').classes()).toEqual(expect.arrayContaining(['rules-table--selectable', 'rules-table--with-agent']))
+    expect(wrapper.find('th.rules-table__col-listen').exists()).toBe(true)
+    expect(wrapper.find('tbody td.rules-table__cell-select input').exists()).toBe(true)
   })
 
   it('refits when the rules change', async () => {
