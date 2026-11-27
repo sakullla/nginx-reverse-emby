@@ -61,10 +61,22 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
   })
 
+  it('exposes a single status live region in the empty state', () => {
+    const wrapper = mountChart({ points: [] })
+
+    const empty = wrapper.find('[data-testid="traffic-trend-empty"]')
+    expect(empty.attributes('role')).toBeUndefined()
+    expect(empty.attributes('aria-live')).toBeUndefined()
+    expect(wrapper.findAll('[role="status"]')).toHaveLength(1)
+  })
+
   it('keeps the plain loading text without an EmptyState while loading', () => {
     const wrapper = mountChart({ points: [], loading: true })
 
-    expect(wrapper.find('[data-testid="traffic-trend-loading"]').text()).toContain('加载中')
+    const loading = wrapper.find('[data-testid="traffic-trend-loading"]')
+    expect(loading.text()).toContain('加载中')
+    expect(loading.attributes('role')).toBe('status')
+    expect(loading.attributes('aria-live')).toBe('polite')
     expect(wrapper.find('.empty-state-container').exists()).toBe(false)
   })
 

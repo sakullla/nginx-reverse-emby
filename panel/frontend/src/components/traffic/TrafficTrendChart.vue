@@ -18,8 +18,8 @@
       v-else
       class="traffic-trend-chart__empty"
       :data-testid="loading ? 'traffic-trend-loading' : 'traffic-trend-empty'"
-      role="status"
-      aria-live="polite"
+      :role="loading ? 'status' : undefined"
+      :aria-live="loading ? 'polite' : undefined"
     >
       <span v-if="loading" class="traffic-trend-chart__empty-text">加载中…</span>
       <EmptyState
