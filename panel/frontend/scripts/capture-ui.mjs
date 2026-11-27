@@ -263,6 +263,31 @@ for (const width of widths) {
       await page.getByText(readyText, { exact: false }).first().waitFor({ timeout: 20000 })
     }
 
+    const visibleMenu = () => page.locator('[data-testid="base-action-menu-panel"]:visible')
+
+    async function openFirstMoreMenu(scope) {
+      await scope.getByTitle('更多操作').first().click()
+      await visibleMenu().first().waitFor({ timeout: 4000 })
+    }
+
+    async function closeMenu() {
+      await page.keyboard.press('Escape')
+      await visibleMenu().first().waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {})
+    }
+
+    // Enter bulk mode via the page toggle, select the first two rules, capture, then exit.
+    async function captureBulk(name, toggleTestId, checkboxSelector) {
+      await page.locator(`[data-testid="${toggleTestId}"]`).click()
+      const boxes = page.locator(checkboxSelector)
+      await boxes.first().waitFor({ timeout: 4000 })
+      await boxes.nth(0).check()
+      await boxes.nth(1).check()
+      await page.getByRole('toolbar', { name: '批量操作' }).waitFor({ timeout: 4000 })
+      await capture(name)
+      await page.getByRole('toolbar', { name: '批量操作' }).locator('[data-bulk-action="cancel"]').click()
+      await boxes.first().waitFor({ state: 'detached', timeout: 4000 })
+    }
+
     async function closeDialog() {
       await page.keyboard.press('Escape')
       await page.getByRole('dialog').waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {})
@@ -324,6 +349,14 @@ for (const width of widths) {
     await step('agents', async () => {
       await open('/agents', '节点管理')
       await capture('agents')
+      await page.getByRole('button', { name: '筛选' }).click()
+      await page.getByRole('button', { name: '离线', exact: true }).waitFor({ timeout: 4000 })
+      await capture('agents-filter')
+      await page.getByRole('button', { name: '离线', exact: true }).click()
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(200)
+      await capture('agents-offline')
+      await open('/agents', '节点管理')
       if (!desktop) return
       await page.getByTitle('列表视图').click()
       await page.waitForTimeout(200)
@@ -338,6 +371,10 @@ for (const width of widths) {
     await step('agent-detail', async () => {
       await open('/agents/local', '本机 Agent')
       await capture('agent-detail')
+      await page.locator('[data-testid="detail-action-more"]').getByTitle('更多操作').click()
+      await visibleMenu().first().waitFor({ timeout: 4000 })
+      await capture('agent-detail-more')
+      await closeMenu()
     })
 
     await step('rules', async () => {
@@ -346,9 +383,14 @@ for (const width of widths) {
       await chooseLocalAgent()
       await page.getByRole('button', { name: '添加规则' }).waitFor()
       await capture('rules-agent')
+      await openFirstMoreMenu(page.locator('.rules-page'))
+      await capture('rules-card-more')
+      await closeMenu()
+      await captureBulk('rules-bulk', 'rules-bulk-toggle', 'input.rule-card__select')
       if (desktop) {
         await page.getByTitle('列表视图').click()
         await capture('rules-list')
+        await captureBulk('rules-list-bulk', 'rules-bulk-toggle', 'tbody input.rules-table__checkbox')
       }
       await page.getByRole('button', { name: '添加规则' }).click()
       await page.getByRole('dialog').waitFor()
@@ -363,6 +405,7 @@ for (const width of widths) {
       await open('/l4', 'L4 规则')
       await capture('l4')
       await chooseLocalAgent()
+      await captureBulk('l4-bulk', 'l4-bulk-toggle', 'input.l4-card__checkbox')
       await page.getByRole('button', { name: '添加 L4 规则' }).click()
       await page.getByRole('dialog').waitFor()
       await capture('l4-create')
