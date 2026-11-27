@@ -3,6 +3,17 @@
     <table class="rules-table">
       <thead>
         <tr>
+          <th v-if="selectable" class="rules-table__col-select">
+            <input
+              ref="selectAllRef"
+              type="checkbox"
+              class="rules-table__checkbox"
+              aria-label="全选当前页"
+              :checked="allSelected"
+              :disabled="!rules.length"
+              @change="$emit('select-all')"
+            >
+          </th>
           <th class="rules-table__col-toggle"></th>
           <th class="rules-table__col-status">状态</th>
           <th>监听地址</th>
@@ -10,29 +21,46 @@
           <th class="rules-table__col-lb">均衡</th>
           <th v-if="showAgentColumn">节点</th>
           <th>标签</th>
+          <th v-if="showTraffic" class="rules-table__col-traffic">流量</th>
           <th class="rules-table__col-actions">操作</th>
         </tr>
       </thead>
       <tbody>
         <tr
           v-for="rule in rules"
-          :key="`${rule.agent_id || ''}:${rule.id}`"
+          :key="ruleKey(rule)"
           class="rules-table__row"
-          :class="{ 'rules-table__row--disabled': !rule.enabled }"
+          :class="{
+            'rules-table__row--disabled': !rule.enabled,
+            'rules-table__row--selectable': selectable,
+            'rules-table__row--selected': selectable && isRowSelected(rule)
+          }"
+          :aria-selected="selectable ? (isRowSelected(rule) ? 'true' : 'false') : undefined"
+          @click="onRowClick(rule)"
         >
-          <td>
+          <td v-if="selectable" @click.stop>
+            <input
+              type="checkbox"
+              class="rules-table__checkbox"
+              :checked="isRowSelected(rule)"
+              :aria-label="`选择规则 ${listenTitle(rule)}`"
+              @change="$emit('select', rule)"
+            >
+          </td>
+          <td @click.stop>
             <button
               type="button"
               class="toggle"
               :class="{ 'toggle--on': rule.enabled }"
               :aria-label="rule.enabled ? '停用规则' : '启用规则'"
               :title="rule.enabled ? '停用' : '启用'"
+              :disabled="selectable"
               @click="$emit('toggle', rule)"
             >
               <span class="toggle__knob"></span>
             </button>
           </td>
-          <td>
+          <td class="rules-table__dim">
             <div class="rules-table__status">
               <BaseBadge shape="square" mono :tone="getProtocolBadge(rule.protocol).tone">
                 {{ getProtocolBadge(rule.protocol).label }}
@@ -42,50 +70,65 @@
               </BaseBadge>
             </div>
           </td>
-          <td>
+          <td class="rules-table__dim">
             <div class="rules-table__url-cell">
               <span class="rules-table__id">#{{ rule.id }}</span>
               <span class="rules-table__url" :title="listenTitle(rule)">{{ listenTitle(rule) }}</span>
             </div>
           </td>
-          <td>
+          <td class="rules-table__dim">
             <span class="rules-table__url rules-table__url--backend" :title="backendTooltip(rule)">
               {{ formatBackend(rule) }}
             </span>
           </td>
-          <td>
+          <td class="rules-table__dim">
             <BaseBadge shape="square" mono :tone="getLBLabel(rule.load_balancing?.strategy).tone">
               {{ getLBLabel(rule.load_balancing?.strategy).label }}
             </BaseBadge>
           </td>
-          <td v-if="showAgentColumn">
+          <td v-if="showAgentColumn" class="rules-table__dim">
             <AgentBadge :item="rule" :agent="agent" />
           </td>
-          <td>
-            <div class="rules-table__tags">
-              <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
-              <span v-if="!(rule.tags || []).length" class="rules-table__empty-cell">—</span>
+          <td class="rules-table__dim">
+            <div class="rules-table__tags" :title="tagsTitle(rule)">
+              <span v-for="tag in visibleTags(rule)" :key="tag" class="tag">{{ tag }}</span>
+              <span v-if="hiddenTagCount(rule) > 0" class="tag tag--more" data-testid="l4-tags-more">+{{ hiddenTagCount(rule) }}</span>
+              <span v-if="!ruleTags(rule).length" class="rules-table__empty-cell">—</span>
             </div>
           </td>
-          <td>
+          <td v-if="showTraffic" class="rules-table__dim" @click.stop>
+            <TrafficBar
+              v-if="trafficOf(rule)"
+              compact
+              :accounted="trafficOf(rule).accounted_bytes"
+              :rx="trafficOf(rule).rx_bytes"
+              :tx="trafficOf(rule).tx_bytes"
+              :node-total="nodeTotalOf(rule)"
+              @click="$emit('traffic-click', rule)"
+            />
+            <span v-else class="rules-table__empty-cell">—</span>
+          </td>
+          <td @click.stop>
             <div class="rules-table__actions">
-              <button type="button" class="btn-icon" title="编辑" @click="$emit('edit', rule)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <button
+                type="button"
+                class="btn-icon"
+                title="编辑"
+                aria-label="编辑"
+                :disabled="selectable"
+                @click="$emit('edit', rule)"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                 </svg>
               </button>
-              <button type="button" class="btn-icon btn-icon--danger" title="删除" @click="$emit('delete', rule)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                </svg>
-              </button>
+              <BaseActionMenu v-if="!selectable" :items="menuItemsFor(rule)" @select="onMenuSelect(rule, $event)" />
             </div>
           </td>
         </tr>
         <tr v-if="!rules.length" class="empty-state-row">
-          <td :colspan="showAgentColumn ? 8 : 7" class="empty-state">暂无数据</td>
+          <td :colspan="columnCount" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -93,23 +136,101 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watchEffect } from 'vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge, getProtocolBadge, getLBLabel } from '../../utils/enumLabels.js'
+import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 import BaseBadge from '../base/BaseBadge.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
+import TrafficBar from '../traffic/TrafficBar.vue'
+
+const MAX_VISIBLE_TAGS = 2
 
 const props = defineProps({
   rules: { type: Array, default: () => [] },
-  agent: { type: Object, default: null }
+  agent: { type: Object, default: null },
+  /** Bulk selection mode: checkbox column, row click toggles selection. */
+  selectable: { type: Boolean, default: false },
+  /** Selected keys in `${agent_id}:${id}` form. */
+  selectedKeys: { type: Array, default: () => [] },
+  allSelected: { type: Boolean, default: false },
+  indeterminate: { type: Boolean, default: false },
+  /** (rule) => traffic summary bucket | null */
+  trafficFor: { type: Function, default: null },
+  /** (rule) => node total bytes */
+  nodeTotalFor: { type: Function, default: null },
+  showTraffic: { type: Boolean, default: true }
 })
-defineEmits(['toggle', 'edit', 'delete'])
+const emit = defineEmits(['toggle', 'edit', 'delete', 'copy', 'diagnose', 'traffic-click', 'select', 'select-all'])
+
+const selectAllRef = ref(null)
+watchEffect(() => {
+  if (selectAllRef.value) selectAllRef.value.indeterminate = props.indeterminate
+})
 
 // Page-selected agent means every row would repeat the same node badge.
 const showAgentColumn = computed(() => !props.agent)
+const selectedKeySet = computed(() => new Set(props.selectedKeys))
+const columnCount = computed(() => 7 + (showAgentColumn.value ? 1 : 0) + (props.showTraffic ? 1 : 0) + (props.selectable ? 1 : 0))
+
+function ruleKey(rule) {
+  return `${rule?.agent_id || ''}:${rule?.id}`
+}
+
+function isRowSelected(rule) {
+  return selectedKeySet.value.has(ruleKey(rule))
+}
+
+function onRowClick(rule) {
+  if (props.selectable) emit('select', rule)
+}
 
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, props.agent)
+}
+
+function ruleTags(rule) {
+  return Array.isArray(rule?.tags) ? rule.tags : []
+}
+
+function visibleTags(rule) {
+  return ruleTags(rule).slice(0, MAX_VISIBLE_TAGS)
+}
+
+function hiddenTagCount(rule) {
+  return Math.max(0, ruleTags(rule).length - MAX_VISIBLE_TAGS)
+}
+
+function tagsTitle(rule) {
+  return ruleTags(rule).join(', ') || undefined
+}
+
+function trafficOf(rule) {
+  const raw = props.trafficFor ? props.trafficFor(rule) : null
+  return raw == null ? null : normalizeTrafficSummaryBucket(raw)
+}
+
+function nodeTotalOf(rule) {
+  return props.nodeTotalFor ? Number(props.nodeTotalFor(rule)) || 0 : 0
+}
+
+function canDiagnose(rule) {
+  return String(rule?.protocol || '').toLowerCase() === 'tcp'
+}
+
+function menuItemsFor(rule) {
+  return [
+    { id: 'copy', label: '复制' },
+    ...(canDiagnose(rule) ? [{ id: 'diagnose', label: '诊断' }] : []),
+    { id: 'delete', label: '删除', tone: 'danger' }
+  ]
+}
+
+function onMenuSelect(rule, item) {
+  if (item?.id === 'copy') emit('copy', rule)
+  else if (item?.id === 'diagnose') emit('diagnose', rule)
+  else if (item?.id === 'delete') emit('delete', rule)
 }
 
 function listenTitle(rule) {
@@ -154,7 +275,7 @@ function backendTooltip(rule) {
 .rules-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 720px;
+  min-width: 860px;
 }
 
 .rules-table th {
@@ -171,7 +292,24 @@ function backendTooltip(rule) {
 .rules-table__col-toggle { width: 3rem; }
 .rules-table__col-status { width: 7.5rem; }
 .rules-table__col-lb { width: 4.5rem; }
+.rules-table__col-select { width: 2.5rem; }
+.rules-table__col-traffic { width: 8rem; }
 .rules-table__col-actions { width: 5.25rem; }
+
+.rules-table__checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+
+.rules-table__row--selectable { cursor: pointer; }
+
+.rules-table__row--selected,
+.rules-table__row--selected:hover {
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
 
 .rules-table__row {
   border-bottom: 1px solid var(--color-border-subtle);
@@ -186,8 +324,9 @@ function backendTooltip(rule) {
   background: var(--color-bg-hover);
 }
 
-.rules-table__row--disabled {
-  opacity: 0.62;
+/* Dim content cells only; the toggle and actions keep full contrast. */
+.rules-table__row--disabled .rules-table__dim {
+  opacity: 0.6;
 }
 
 .rules-table td {
@@ -238,8 +377,24 @@ function backendTooltip(rule) {
 .rules-table__tags {
   display: flex;
   gap: 0.25rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
   max-width: 12rem;
+  overflow: hidden;
+}
+
+.rules-table__tags .tag:not(.tag--more) {
+  min-width: 0;
+  max-width: 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+}
+
+.tag--more {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
 }
 
 .rules-table__empty-cell {
@@ -249,7 +404,13 @@ function backendTooltip(rule) {
 
 .rules-table__actions {
   display: flex;
+  align-items: center;
   gap: 0.2rem;
+}
+
+.rules-table__actions .btn-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .rules-table__actions .btn-icon {
@@ -280,20 +441,29 @@ function backendTooltip(rule) {
   width: 36px;
   height: 20px;
   border-radius: var(--radius-full);
-  border: none;
+  border: 1px solid var(--color-border-strong);
   background: var(--color-bg-subtle);
   cursor: pointer;
   position: relative;
+  box-sizing: border-box;
   transition: background var(--duration-normal) var(--ease-default);
   padding: 0;
 }
 
-.toggle--on { background: var(--color-primary); }
+.toggle--on {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
 
 .toggle__knob {
   position: absolute;
-  top: var(--space-0-5);
-  left: var(--space-0-5);
+  top: 1px;
+  left: 1px;
   width: 16px;
   height: 16px;
   border-radius: 50%;

@@ -25,7 +25,22 @@
           </svg>
           <span class="btn-text">查看文档</span>
         </a>
-        <ViewToggle v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery)" v-model:view="view" />
+        <button
+          v-if="canBulk"
+          type="button"
+          class="btn btn-secondary"
+          :class="{ 'btn--active': selectionMode }"
+          data-testid="l4-bulk-toggle"
+          :aria-pressed="selectionMode ? 'true' : 'false'"
+          :title="selectionMode ? '退出批量模式' : '批量操作'"
+          @click="toggleSelectionMode"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/><polyline points="4.5 6.5 6 8 8.5 5"/>
+            <line x1="13" y1="6.5" x2="21" y2="6.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><line x1="13" y1="17.5" x2="21" y2="17.5"/>
+          </svg>
+          <span class="btn-text">{{ selectionMode ? '退出批量' : '批量' }}</span>
+        </button>
         <button v-if="canCreate" class="btn btn-primary" title="添加 L4 规则" aria-label="添加 L4 规则" @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -48,7 +63,11 @@
       @update:agent-id="handleAgentSelect"
       @update:q="searchQuery = $event"
       @update:filter="onFilterUpdate"
-    />
+    >
+      <template v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery)" #trailing>
+        <ViewToggle v-model:view="view" />
+      </template>
+    </ResourceListFilterBar>
 
     <!-- No agents available -->
     <EmptyState
@@ -66,32 +85,44 @@
       </template>
     </EmptyState>
 
-    <!-- Filter active, no rules -->
+    <!-- List load failed and nothing to show -->
+    <ErrorState
+      v-else-if="showListError"
+      title="L4 规则加载失败"
+      :message="listErrorMessage"
+      :retrying="isRefetching"
+      @retry="retryList"
+    />
+
+    <!-- Filters active but nothing matched (server-side or #id search) -->
+    <EmptyState
+      v-else-if="showNoMatch"
+      title="没有匹配的结果"
+      :description="activeFilterDescription"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </template>
+      <template #action>
+        <button type="button" class="btn btn-secondary" data-testid="l4-clear-filters" @click="clearFilters">清除筛选</button>
+      </template>
+    </EmptyState>
+
+    <!-- Truly empty -->
     <EmptyState
       v-else-if="hasAgentFilter && !rules.length && !exactL4Match && !isLoading && !_crossSearching"
-      :title="hasActiveFilters ? '没有匹配的 L4 规则' : '暂无 L4 规则'"
-      :description="!hasActiveFilters && !canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
+      title="暂无 L4 规则"
+      :description="canCreate ? '添加一条 TCP/UDP 转发规则开始使用' : '全部节点视图下请先选择具体节点再新建'"
     >
       <template #icon>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
         </svg>
       </template>
-      <template v-if="!hasActiveFilters && canCreate" #action>
+      <template v-if="canCreate" #action>
         <button class="btn btn-primary" @click="startCreate">添加第一条规则</button>
-      </template>
-    </EmptyState>
-
-    <!-- No search results -->
-    <EmptyState
-      v-if="hasAgentFilter && rules.length && !filteredRules.length && !_crossSearching"
-      title="没有匹配的 L4 规则"
-      description=""
-    >
-      <template #icon>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
       </template>
     </EmptyState>
 
@@ -104,6 +135,9 @@
         :agent="selectedAgent"
         :traffic="trafficForRule(rule)"
         :agent-node-total="nodeTotalFor(rule)"
+        :selectable="selectionMode"
+        :selected="selection.isSelected(ruleKey(rule))"
+        @select="toggleRuleSelection"
         @edit="startEdit"
         @delete="startDelete"
         @copy="handleCopy"
@@ -118,9 +152,21 @@
       v-show="hasAgentFilter && filteredRules.length && view === 'list'"
       :rules="filteredRules"
       :agent="selectedAgent"
+      :selectable="selectionMode"
+      :selected-keys="selection.selectedList.value"
+      :all-selected="selection.isAllSelected.value"
+      :indeterminate="selection.isIndeterminate.value"
+      :traffic-for="trafficForRule"
+      :node-total-for="nodeTotalFor"
+      :show-traffic="trafficStatsEnabled"
+      @select="toggleRuleSelection"
+      @select-all="selection.toggleAll()"
       @edit="startEdit"
       @toggle="toggleRule"
+      @copy="handleCopy"
+      @diagnose="openDiagnostic"
       @delete="startDelete"
+      @traffic-click="openTrendModal"
     />
 
     <ListPagination
@@ -129,6 +175,17 @@
       :page-size="pageSize"
       :total="listTotal"
       @update:page="page = $event"
+    />
+
+    <BulkActionBar
+      v-if="selectionMode && hasAgentFilter && filteredRules.length"
+      :count="selection.selectedCount.value"
+      :busy="bulkBusy"
+      :progress="bulkProgress"
+      @enable="runBulkToggle(true)"
+      @disable="runBulkToggle(false)"
+      @delete="startBulkDelete"
+      @cancel="exitSelectionMode"
     />
 
     <!-- Loading — skeleton mirrors the target layout so the swap feels seamless -->
@@ -157,6 +214,19 @@
     >
       <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="formAgentId" :l4-rules="rules" @success="closeCopy" @cancel="closeCopy" />
     </BaseModal>
+
+    <!-- Bulk delete -->
+    <DeleteConfirmDialog
+      :show="bulkDeleteOpen"
+      title="批量删除规则"
+      :message="`将删除已选的 ${selection.selectedCount.value} 条 L4 规则，删除后立即失效且无法恢复。`"
+      :name="`${selection.selectedCount.value} 条 L4 规则`"
+      confirm-text="确认删除"
+      :loading="bulkBusy"
+      :error="bulkDeleteError"
+      @confirm="confirmBulkDelete"
+      @cancel="closeBulkDelete"
+    />
 
     <!-- Delete Modal -->
     <DeleteConfirmDialog
@@ -207,15 +277,16 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useL4RulesList, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
 import { useCreateQueryParam } from '../hooks/useCreateQueryParam'
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchL4Rules, fetchAllAgentsL4Rules, fetchRelayListeners, fetchAllAgentsRelayListeners, fetchEgressProfiles } from '../api'
+import { fetchL4Rules, fetchAllAgentsL4Rules, fetchRelayListeners, fetchAllAgentsRelayListeners, fetchEgressProfiles, updateL4Rule as apiUpdateL4Rule, deleteL4Rule as apiDeleteL4Rule } from '../api'
+import { invalidateResourceList } from '../hooks/useResourceListQuery'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
@@ -230,6 +301,10 @@ import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
 import EmptyState from '../components/base/EmptyState.vue'
+import ErrorState from '../components/base/ErrorState.vue'
+import BulkActionBar from '../components/common/BulkActionBar.vue'
+import { useBulkSelection } from '../composables/useBulkSelection'
+import { runBulk, summarizeBulk } from '../utils/runBulk'
 import ListPagination from '../components/common/ListPagination.vue'
 import L4RuleTable from '../components/l4/L4RuleTable.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
@@ -439,7 +514,14 @@ const listFilters = computed(() => ({
   relayListenerId: relayListenerIdValue.value || undefined
 }))
 
-const { data: _rulesPage, isLoading } = useL4RulesList({
+const {
+  data: _rulesPage,
+  isLoading,
+  isError: listIsError,
+  error: listError,
+  refetch: refetchList,
+  isRefetching: listIsRefetching
+} = useL4RulesList({
   agentFilter,
   page,
   pageSize,
@@ -449,6 +531,23 @@ const { data: _rulesPage, isLoading } = useL4RulesList({
   enabled: hasAgentFilter
 })
 const rules = computed(() => _rulesPage.value?.items ?? [])
+
+// Error / empty states: keep stale rows on refetch failure (hook toasts), show
+// ErrorState only when there is nothing to display.
+const isRefetching = computed(() => Boolean(listIsRefetching?.value))
+const showListError = computed(() => (
+  hasAgentFilter.value
+  && Boolean(listIsError?.value)
+  && !rules.value.length
+  && !isLoading.value
+))
+const listErrorMessage = computed(() => {
+  const err = listError?.value
+  return err?.response?.data?.message || err?.message || '请检查网络或稍后重试'
+})
+function retryList() {
+  refetchList?.()
+}
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
 const { nodeTotalFor, trafficFor: trafficForRule } = useTrafficSummaryForResources({
@@ -607,6 +706,167 @@ function handleCandidateSelect(candidate) {
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 
+const showNoMatch = computed(() => (
+  hasAgentFilter.value
+  && hasActiveFilters.value
+  && !filteredRules.value.length
+  && !exactL4Match.value
+  && !isLoading.value
+  && !_crossSearching.value
+  && !showListError.value
+))
+
+const activeFilterDescription = computed(() => {
+  const parts = []
+  const q = String(searchQuery.value || '').trim()
+  if (q) parts.push(`搜索“${q}”`)
+  if (enabledStatusValue.value) parts.push(enabledStatusValue.value === 'true' ? '已启用' : '已停用')
+  if (syncValue.value) parts.push(syncValue.value === 'applied' ? '已同步' : '待同步')
+  if (tagsValue.value.length) parts.push(`标签 ${tagsValue.value.join('、')}`)
+  if (egressProfileIdValue.value) parts.push('出口配置')
+  if (relayListenerIdValue.value) parts.push('中转监听')
+  return parts.length ? `当前条件：${parts.join(' · ')}` : '调整或清除筛选条件后重试'
+})
+
+function clearFilters() {
+  setUrlFilter('enabled', '')
+  setUrlFilter('sync', '')
+  setUrlFilter('tags', [])
+  setUrlFilter('egress_profile_id', '')
+  setUrlFilter('relay_listener_id', '')
+  setUrlFilter('search', '', { immediate: true })
+}
+
+// ---- Bulk selection --------------------------------------------------------
+const queryClient = useQueryClient()
+
+function ruleKey(rule) {
+  return `${rule?.agent_id || ''}:${rule?.id}`
+}
+
+const pageRuleKeys = computed(() => filteredRules.value.map(ruleKey))
+const selection = useBulkSelection(pageRuleKeys)
+const selectionMode = ref(false)
+const bulkBusy = ref(false)
+const bulkProgress = ref(null)
+const bulkDeleteOpen = ref(false)
+const bulkDeleteError = ref('')
+
+const canBulk = computed(() => hasAgentFilter.value && filteredRules.value.length > 0)
+
+function toggleSelectionMode() {
+  if (selectionMode.value) exitSelectionMode()
+  else selectionMode.value = true
+}
+
+function exitSelectionMode() {
+  if (bulkBusy.value) return
+  selectionMode.value = false
+  selection.clear()
+}
+
+function toggleRuleSelection(rule) {
+  if (!selectionMode.value) return
+  selection.toggle(ruleKey(rule))
+}
+
+// Leaving the result set invalidates the selection.
+watch(
+  [agentFilter, searchQuery, enabledStatusValue, syncValue, tagsValue, egressProfileIdValue, relayListenerIdValue, page],
+  () => { selection.clear() }
+)
+
+watch(canBulk, (value) => {
+  if (!value && !bulkBusy.value) {
+    selectionMode.value = false
+    selection.clear()
+  }
+})
+
+function onSelectionKeydown(event) {
+  if (event.key !== 'Escape' || !selectionMode.value) return
+  if (bulkDeleteOpen.value || bulkBusy.value) return
+  exitSelectionMode()
+}
+onMounted(() => window.addEventListener('keydown', onSelectionKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onSelectionKeydown))
+
+function selectedRules() {
+  const byKey = new Map(filteredRules.value.map((rule) => [ruleKey(rule), rule]))
+  return selection.selectedList.value.map((key) => byKey.get(key)).filter(Boolean)
+}
+
+function mutationTargetFor(rule) {
+  const resolved = resolveMutationAgentId(rule, agentFilter.value, { fallbackAgentId: agentId.value })
+  if (!resolved.agentId) throw new Error(resolved.error || '缺少节点归属，无法执行该操作')
+  return resolved.agentId
+}
+
+async function executeBulk(task, actionLabel) {
+  const targets = selectedRules()
+  if (!targets.length) return null
+  const byKey = new Map(targets.map((rule) => [ruleKey(rule), rule]))
+  bulkBusy.value = true
+  bulkProgress.value = { done: 0, total: targets.length }
+  try {
+    const result = await runBulk([...byKey.keys()], (key) => task(byKey.get(key)), {
+      onProgress: (progress) => { bulkProgress.value = progress },
+      onSettled: async () => {
+        invalidateResourceList(queryClient, 'l4Rules')
+        queryClient.invalidateQueries({ queryKey: ['agents'] })
+      }
+    })
+    // Failed rules stay selected so the user can retry them.
+    selection.setSelection(result.failed)
+    const summary = summarizeBulk(result, actionLabel)
+    if (result.failed.length) messageStore.error(summary, `批量${actionLabel}未全部完成`)
+    else messageStore.success(summary)
+    return { result, summary }
+  } finally {
+    bulkBusy.value = false
+    bulkProgress.value = null
+  }
+}
+
+async function runBulkToggle(enabled) {
+  if (bulkBusy.value) return
+  await executeBulk(
+    (rule) => apiUpdateL4Rule(mutationTargetFor(rule), rule.id, { enabled }),
+    enabled ? '启用' : '禁用'
+  )
+}
+
+function startBulkDelete() {
+  if (bulkBusy.value || !selection.selectedCount.value) return
+  bulkDeleteError.value = ''
+  bulkDeleteOpen.value = true
+}
+
+function closeBulkDelete() {
+  if (bulkBusy.value) return
+  bulkDeleteOpen.value = false
+  bulkDeleteError.value = ''
+}
+
+async function confirmBulkDelete() {
+  if (bulkBusy.value) return
+  const outcome = await executeBulk(
+    (rule) => apiDeleteL4Rule(mutationTargetFor(rule), rule.id),
+    '删除'
+  )
+  if (!outcome) {
+    bulkDeleteOpen.value = false
+    return
+  }
+  if (outcome.result.failed.length) {
+    bulkDeleteError.value = outcome.summary
+    return
+  }
+  bulkDeleteOpen.value = false
+  bulkDeleteError.value = ''
+  selectionMode.value = false
+}
+
 // Modals
 const showAddForm = ref(false)
 const editingRule = ref(null)
@@ -758,6 +1018,11 @@ function closeDiagnostic() {
   color: var(--color-text-primary);
   letter-spacing: -0.03em;
   line-height: 1.25;
+}
+
+.rules-page__header-right .btn--active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .rules-page__subtitle {
