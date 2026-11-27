@@ -286,14 +286,111 @@ describe('ResourceListFilterBar', () => {
     const panel = panelRoot()
     expect(panel).not.toBeNull()
     expect(panel.getAttribute('aria-label')).toBe('筛选条件')
-    expect(panelQuery('[data-group="status"]')).not.toBeNull()
-    expect(panelQuery('[data-group="resource"]')).not.toBeNull()
+    expect(panelQuery('[data-group="enabled"]')).not.toBeNull()
+    expect(panelQuery('[data-group="certificate_id"]')).not.toBeNull()
     expect(panelQuery('[data-group="tags"]')).not.toBeNull()
 
     panelQuery('.resource-list-filter-bar__panel-close').click()
     await nextTick()
     expect(panelRoot()).toBeNull()
     expect(wrapper.find('.resource-list-filter-bar__filter-trigger').attributes('aria-expanded')).toBe('false')
+  })
+
+  it('renders each chip/select/multi field as its own group titled with the field label', async () => {
+    const wrapper = mountBar()
+    await openPanel(wrapper)
+    const groups = panelQueryAll('.resource-list-filter-bar__panel-group')
+    const titles = groups.map((group) =>
+      group.querySelector('.resource-list-filter-bar__panel-group-title').textContent.trim()
+    )
+    // single-value fields first (chip, then select), tags last
+    expect(titles).toEqual(['启用状态', '同步状态', '证书', '标签'])
+    expect(groups.map((group) => group.dataset.group)).toEqual(['enabled', 'sync', 'certificate_id', 'tags'])
+    for (const group of groups) {
+      expect(group.querySelectorAll('[data-field-key]')).toHaveLength(1)
+    }
+  })
+
+  it('gives same-type chip fields (e.g. agent status/mode) separate titles', async () => {
+    const wrapper = mountBar({
+      showAgentSelect: false,
+      filterFields: [
+        { key: 'status', label: '状态', type: 'chip', options: [{ value: '', label: '全部' }, { value: 'online', label: '在线' }] },
+        { key: 'mode', label: '模式', type: 'chip', options: [{ value: '', label: '全部' }, { value: 'pull', label: '拉取' }] }
+      ]
+    })
+    await openPanel(wrapper)
+    const titles = panelQueryAll('.resource-list-filter-bar__panel-group-title').map((node) => node.textContent.trim())
+    expect(titles).toEqual(['状态', '模式'])
+  })
+
+  it('layers the desktop panel above the sidebar and right-aligns it to a right-side trigger', async () => {
+    setViewport(1360, 900)
+    const wrapper = mountBar()
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ left: 240, right: 1360, top: 0, bottom: 900, width: 1120, height: 900 })
+    document.body.appendChild(main)
+    main.appendChild(wrapper.element)
+    wrapper.find('.resource-list-filter-bar__filter-trigger').element.getBoundingClientRect = () => (
+      { left: 1220, right: 1300, top: 100, bottom: 134, width: 80, height: 34 }
+    )
+
+    await openPanel(wrapper)
+    const style = panelRoot().style
+    expect(style.zIndex).toBe('var(--z-popover, 600)')
+    expect(style.width).toBe('608px')
+    expect(style.left).toBe(`${1300 - 608}px`)
+  })
+
+  it('left-aligns the panel to a left-side trigger so it never crosses the content left edge', async () => {
+    setViewport(1360, 900)
+    const wrapper = mountBar({ showAgentSelect: false })
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ left: 240, right: 1360, top: 0, bottom: 900, width: 1120, height: 900 })
+    document.body.appendChild(main)
+    main.appendChild(wrapper.element)
+    // Trigger sits right after the search box near the sidebar edge.
+    wrapper.find('.resource-list-filter-bar__filter-trigger').element.getBoundingClientRect = () => (
+      { left: 560, right: 640, top: 100, bottom: 134, width: 80, height: 34 }
+    )
+
+    await openPanel(wrapper)
+    const style = panelRoot().style
+    expect(style.left).toBe('560px')
+    expect(Number.parseInt(style.left, 10)).toBeGreaterThanOrEqual(240)
+    expect(style.transformOrigin).toBe('top left')
+  })
+
+  it('clamps the panel inside the content area and the viewport right edge', async () => {
+    setViewport(1024, 800)
+    const wrapper = mountBar()
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ left: 240, right: 1024, top: 0, bottom: 800, width: 784, height: 800 })
+    document.body.appendChild(main)
+    main.appendChild(wrapper.element)
+    wrapper.find('.resource-list-filter-bar__filter-trigger').element.getBoundingClientRect = () => (
+      { left: 260, right: 340, top: 100, bottom: 134, width: 80, height: 34 }
+    )
+
+    await openPanel(wrapper)
+    const style = panelRoot().style
+    const left = Number.parseInt(style.left, 10)
+    const width = Number.parseInt(style.width, 10)
+    expect(left).toBeGreaterThanOrEqual(240)
+    expect(left + width).toBeLessThanOrEqual(1024 - 16)
+  })
+
+  it('docks the compact panel full width inside a 390px viewport', async () => {
+    setViewport(390, 844)
+    const wrapper = mountBar()
+    await openPanel(wrapper)
+    const style = panelRoot().style
+    expect(style.left).toBe('12px')
+    expect(style.width).toBe(`${390 - 24}px`)
+    expect(style.zIndex).toBe('var(--z-popover, 600)')
   })
 
   it('caps a compact panel to the viewport space above the bottom navigation', async () => {

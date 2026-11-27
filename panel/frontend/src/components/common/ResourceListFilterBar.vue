@@ -130,129 +130,124 @@
 
               <div class="resource-list-filter-bar__panel-body">
                 <section
-                  v-for="group in panelGroups"
-                  :key="group.key"
+                  v-for="field in orderedPanelFields"
+                  :key="field.key"
                   class="resource-list-filter-bar__panel-group"
-                  :class="`resource-list-filter-bar__panel-group--${group.key}`"
-                  :data-group="group.key"
+                  :class="`resource-list-filter-bar__panel-group--${field.type}`"
+                  :data-group="field.key"
                 >
-                  <h3 class="resource-list-filter-bar__panel-group-title">{{ group.title }}</h3>
+                  <h3
+                    :id="groupTitleId(field)"
+                    class="resource-list-filter-bar__panel-group-title"
+                  >{{ field.label || field.key }}</h3>
                   <div
-                    class="resource-list-filter-bar__panel-group-grid"
-                    :class="`resource-list-filter-bar__panel-group-grid--${group.key}`"
+                    class="resource-list-filter-bar__panel-field"
+                    :class="`resource-list-filter-bar__panel-field--${field.type}`"
+                    :data-field-key="field.key"
                   >
                     <div
-                      v-for="field in group.fields"
-                      :key="field.key"
-                      class="resource-list-filter-bar__panel-field"
-                      :class="`resource-list-filter-bar__panel-field--${field.type}`"
-                      :data-field-key="field.key"
+                      v-if="field.type === 'chip'"
+                      class="resource-list-filter-bar__segments"
+                      role="group"
+                      :aria-label="field.label || field.key"
                     >
-                      <label class="resource-list-filter-bar__label">{{ field.label || field.key }}</label>
+                      <button
+                        v-for="option in segmentOptions(field)"
+                        :key="`${field.key}:${option.value}`"
+                        type="button"
+                        class="resource-list-filter-bar__segment"
+                        :class="{ 'resource-list-filter-bar__segment--active': resolvedValue(field) === String(option.value) }"
+                        :data-value="option.value"
+                        :aria-pressed="resolvedValue(field) === String(option.value) ? 'true' : 'false'"
+                        @click="onSegmentToggle(field, option.value)"
+                      >
+                        {{ option.label }}
+                      </button>
+                    </div>
+                    <select
+                      v-else-if="field.type === 'select'"
+                      class="resource-list-filter-bar__select"
+                      :value="resolvedValue(field)"
+                      :aria-label="field.label || field.key"
+                      @change="onSelectChange(field, $event.target.value)"
+                    >
+                      <option
+                        v-for="option in field.options || []"
+                        :key="`${field.key}:${option.value}`"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <div
+                      v-else-if="field.type === 'multi'"
+                      class="resource-list-filter-bar__multi-wrap"
+                    >
                       <div
-                        v-if="field.type === 'chip'"
-                        class="resource-list-filter-bar__segments"
+                        v-if="selectedMultiOptions(field).length"
+                        class="resource-list-filter-bar__multi-selected"
+                        role="group"
+                        :aria-label="`已选${field.label || field.key}`"
+                      >
+                        <button
+                          v-for="option in selectedMultiOptions(field)"
+                          :key="`${field.key}:selected:${option.value}`"
+                          type="button"
+                          class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel resource-list-filter-bar__chip--active"
+                          :title="`移除 ${option.label}`"
+                          @click="onMultiToggle(field, option.value)"
+                        >
+                          <span>{{ option.label }}</span>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="resource-list-filter-bar__multi-search-shell">
+                        <svg
+                          class="resource-list-filter-bar__multi-search-icon"
+                          width="13"
+                          height="13"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          aria-hidden="true"
+                        >
+                          <circle cx="11" cy="11" r="7" />
+                          <path d="M20 20l-3.5-3.5" />
+                        </svg>
+                        <input
+                          class="resource-list-filter-bar__multi-search"
+                          type="search"
+                          :value="multiSearchOf(field.key)"
+                          :placeholder="`搜索${field.label || field.key}`"
+                          :aria-label="`搜索${field.label || field.key}`"
+                          @input="onMultiSearchInput(field.key, $event.target.value)"
+                        />
+                      </div>
+                      <div
+                        class="resource-list-filter-bar__multi resource-list-filter-bar__multi-candidates"
                         role="group"
                         :aria-label="field.label || field.key"
                       >
                         <button
-                          v-for="option in segmentOptions(field)"
-                          :key="`${field.key}:${option.value}`"
+                          v-for="option in candidateMultiOptions(field)"
+                          :key="`${field.key}:candidate:${option.value}`"
                           type="button"
-                          class="resource-list-filter-bar__segment"
-                          :class="{ 'resource-list-filter-bar__segment--active': resolvedValue(field) === String(option.value) }"
-                          :data-value="option.value"
-                          :aria-pressed="resolvedValue(field) === String(option.value) ? 'true' : 'false'"
-                          @click="onSegmentToggle(field, option.value)"
+                          class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel"
+                          @click="onMultiToggle(field, option.value)"
                         >
                           {{ option.label }}
                         </button>
-                      </div>
-                      <select
-                        v-else-if="field.type === 'select'"
-                        class="resource-list-filter-bar__select"
-                        :value="resolvedValue(field)"
-                        :aria-label="field.label || field.key"
-                        @change="onSelectChange(field, $event.target.value)"
-                      >
-                        <option
-                          v-for="option in field.options || []"
-                          :key="`${field.key}:${option.value}`"
-                          :value="option.value"
-                        >
-                          {{ option.label }}
-                        </option>
-                      </select>
-                      <div
-                        v-else-if="field.type === 'multi'"
-                        class="resource-list-filter-bar__multi-wrap"
-                      >
-                        <div
-                          v-if="selectedMultiOptions(field).length"
-                          class="resource-list-filter-bar__multi-selected"
-                          role="group"
-                          :aria-label="`已选${field.label || field.key}`"
-                        >
-                          <button
-                            v-for="option in selectedMultiOptions(field)"
-                            :key="`${field.key}:selected:${option.value}`"
-                            type="button"
-                            class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel resource-list-filter-bar__chip--active"
-                            :title="`移除 ${option.label}`"
-                            @click="onMultiToggle(field, option.value)"
-                          >
-                            <span>{{ option.label }}</span>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-                              <path d="M18 6L6 18M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                        <div class="resource-list-filter-bar__multi-search-shell">
-                          <svg
-                            class="resource-list-filter-bar__multi-search-icon"
-                            width="13"
-                            height="13"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            aria-hidden="true"
-                          >
-                            <circle cx="11" cy="11" r="7" />
-                            <path d="M20 20l-3.5-3.5" />
-                          </svg>
-                          <input
-                            class="resource-list-filter-bar__multi-search"
-                            type="search"
-                            :value="multiSearchOf(field.key)"
-                            :placeholder="`搜索${field.label || field.key}`"
-                            :aria-label="`搜索${field.label || field.key}`"
-                            @input="onMultiSearchInput(field.key, $event.target.value)"
-                          />
-                        </div>
-                        <div
-                          class="resource-list-filter-bar__multi resource-list-filter-bar__multi-candidates"
-                          role="group"
-                          :aria-label="field.label || field.key"
-                        >
-                          <button
-                            v-for="option in candidateMultiOptions(field)"
-                            :key="`${field.key}:candidate:${option.value}`"
-                            type="button"
-                            class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel"
-                            @click="onMultiToggle(field, option.value)"
-                          >
-                            {{ option.label }}
-                          </button>
-                          <span
-                            v-if="!(field.options || []).length"
-                            class="resource-list-filter-bar__multi-empty"
-                          >暂无可选项</span>
-                          <span
-                            v-else-if="!candidateMultiOptions(field).length"
-                            class="resource-list-filter-bar__multi-empty"
-                          >无匹配标签</span>
-                        </div>
+                        <span
+                          v-if="!(field.options || []).length"
+                          class="resource-list-filter-bar__multi-empty"
+                        >暂无可选项</span>
+                        <span
+                          v-else-if="!candidateMultiOptions(field).length"
+                          class="resource-list-filter-bar__multi-empty"
+                        >无匹配标签</span>
                       </div>
                     </div>
                   </div>
@@ -364,21 +359,18 @@ const panelFields = computed(() =>
 
 const hasPanelFields = computed(() => panelFields.value.length > 0)
 
-const PANEL_GROUP_DEFS = [
-  { key: 'status', title: '状态', match: (field) => field.type === 'chip' },
-  { key: 'resource', title: '关联资源', match: (field) => field.type === 'select' },
-  { key: 'tags', title: '标签', match: (field) => field.type === 'multi' }
-]
+// Each field renders as its own titled group; single-value fields first, tags last.
+const PANEL_TYPE_ORDER = ['chip', 'select', 'multi']
 
-const panelGroups = computed(() =>
-  PANEL_GROUP_DEFS
-    .map((def) => ({
-      key: def.key,
-      title: def.title,
-      fields: panelFields.value.filter((field) => def.match(field))
-    }))
-    .filter((group) => group.fields.length > 0)
+const orderedPanelFields = computed(() =>
+  PANEL_TYPE_ORDER.flatMap((type) => panelFields.value.filter((field) => field.type === type))
 )
+
+const instanceId = Math.random().toString(36).slice(2, 8)
+
+function groupTitleId(field) {
+  return `rlfb-${instanceId}-${String(field.key).replace(/[^\w-]/g, '_')}`
+}
 
 function segmentOptions(field) {
   const baseline = String(baselineOf(field))
@@ -538,6 +530,28 @@ function readSafeAreaBottom() {
   }
 }
 
+/** Left edge of the main content column (0 when there is no layout shell, e.g. tests). */
+function readContentLeft() {
+  const content = filterTriggerRef.value?.closest?.('#main-content, main')
+  if (!content) return 0
+  const left = content.getBoundingClientRect().left
+  return Number.isFinite(left) ? Math.max(0, left) : 0
+}
+
+/**
+ * Prefer aligning the panel's right edge with the trigger; when that would cross the
+ * content's left edge (trigger near the left of the toolbar) align to the trigger's left
+ * edge instead. Always clamp into [minLeft, maxRight - width].
+ */
+function resolvePanelLeft(triggerRect, width, minLeft, maxRight) {
+  const maxLeft = Math.max(minLeft, maxRight - width)
+  const rightAligned = triggerRect.right - width
+  if (rightAligned >= minLeft) {
+    return { left: clamp(rightAligned, minLeft, maxLeft), alignStart: false }
+  }
+  return { left: clamp(triggerRect.left, minLeft, maxLeft), alignStart: true }
+}
+
 function updatePanelPosition() {
   if (!panelOpen.value || !filterTriggerRef.value) return
 
@@ -566,18 +580,17 @@ function updatePanelPosition() {
       right: `${margin}px`,
       width: `${Math.round(width)}px`,
       maxHeight: `${Math.round(maxHeight)}px`,
-      zIndex: 'var(--z-dropdown, 1000)',
+      zIndex: 'var(--z-popover, 600)',
       transformOrigin: 'bottom center'
     }
     return
   }
 
-  const preferredWidth = Math.min(38 * 16, viewportWidth - margin * 2)
-  const width = Math.max(18 * 16, preferredWidth)
-
-  // Prefer aligning the panel's right edge with the trigger.
-  let left = triggerRect.right - width
-  left = clamp(left, margin, Math.max(margin, viewportWidth - width - margin))
+  // Keep the panel inside the content area (right of the desktop sidebar) and the viewport.
+  const minLeft = Math.max(margin, readContentLeft() + 8)
+  const maxRight = viewportWidth - margin
+  const width = Math.max(0, Math.min(38 * 16, maxRight - minLeft))
+  const { left, alignStart } = resolvePanelLeft(triggerRect, width, minLeft, maxRight)
 
   const panelEl = filterPanelRef.value
   const availableHeight = Math.max(12 * 16, bottomLimit - topLimit)
@@ -607,8 +620,8 @@ function updatePanelPosition() {
     right: 'auto',
     width: `${Math.round(width)}px`,
     maxHeight: `${Math.round(maxHeight)}px`,
-    zIndex: 'var(--z-dropdown, 1000)',
-    transformOrigin: 'top right'
+    zIndex: 'var(--z-popover, 600)',
+    transformOrigin: alignStart ? 'top left' : 'top right'
   }
 }
 
@@ -860,7 +873,7 @@ onUnmounted(() => {
 
 .resource-list-filter-bar__panel {
   /* Position is set inline (fixed + viewport-clamped) so parent overflow cannot clip it. */
-  z-index: var(--z-dropdown);
+  z-index: var(--z-popover);
   box-sizing: border-box;
   padding: 0;
   background: var(--color-bg-surface-raised);
@@ -880,11 +893,6 @@ onUnmounted(() => {
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent),
       var(--shadow-2xl);
-  }
-
-  .resource-list-filter-bar__panel-group-grid--status,
-  .resource-list-filter-bar__panel-group-grid--resource {
-    grid-template-columns: 1fr;
   }
 
   .resource-list-filter-bar__multi {
@@ -985,53 +993,36 @@ onUnmounted(() => {
 }
 
 .resource-list-filter-bar__panel-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: var(--space-4) var(--space-4);
   overflow-y: auto;
   overscroll-behavior: contain;
   min-height: 0;
-  padding: var(--space-1) 0 var(--space-1-5);
+  padding: var(--space-4);
   scrollbar-gutter: stable;
 }
 
 .resource-list-filter-bar__panel-group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2-5);
-  padding: var(--space-4);
+  gap: var(--space-1-5);
+  min-width: 0;
 }
 
-.resource-list-filter-bar__panel-group + .resource-list-filter-bar__panel-group {
-  border-top: var(--border-width-thin) solid color-mix(in srgb, var(--color-border-default) 85%, transparent);
+/* Multi-select (tags) needs the full row for its candidate list. */
+.resource-list-filter-bar__panel-group--multi {
+  grid-column: 1 / -1;
 }
 
 .resource-list-filter-bar__panel-group-title {
   margin: 0;
   font-size: var(--text-xs);
   font-weight: var(--font-bold);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
-}
-
-.resource-list-filter-bar__panel-group-grid {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.resource-list-filter-bar__panel-group-grid--status {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3) var(--space-4);
-}
-
-.resource-list-filter-bar__panel-group-grid--resource {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
-.resource-list-filter-bar__panel-group-grid--tags {
-  grid-template-columns: 1fr;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+  line-height: 1.2;
 }
 
 .resource-list-filter-bar__segments {
@@ -1122,13 +1113,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-1-5);
   min-width: 0;
-}
-
-.resource-list-filter-bar__panel-field .resource-list-filter-bar__label {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-secondary);
-  line-height: 1.2;
 }
 
 .resource-list-filter-bar__select {
@@ -1334,12 +1318,6 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-@media (max-width: 960px) {
-  .resource-list-filter-bar__panel-group-grid--resource {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 768px) {
   .resource-list-filter-bar__toolbar {
     display: grid;
@@ -1396,6 +1374,11 @@ onUnmounted(() => {
 
   .resource-list-filter-bar__conditions {
     width: 100%;
+  }
+
+  /* Single column of filter groups inside the bottom-sheet panel. */
+  .resource-list-filter-bar__panel-body {
+    grid-template-columns: 1fr;
   }
 }
 </style>
