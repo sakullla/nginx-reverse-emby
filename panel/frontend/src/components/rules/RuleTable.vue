@@ -357,7 +357,7 @@ watch(
 
 .rules-table th {
   text-align: left;
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-3);
   height: 2.5rem;
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
@@ -368,15 +368,16 @@ watch(
 }
 
 /* Fixed layout: widths are content-box. At 1360 (~1040px table) the backend
-   column fits a full "http://192.168.1.12:32400" and the tags column 2-3 short
-   tags; the auto frontend column keeps the remainder (>= ~150px). */
+   column fits a full "http://192.168.1.12:32400", the tags column 2-3 short
+   tags (rest fold into +N) and the auto frontend column keeps ~230px. Status
+   fits "HTTPS" + "同步失败" on one line so rows do not grow. */
 .rules-table__col-select { width: 1.75rem; }
 .rules-table__col-toggle { width: 2.5rem; }
-.rules-table__col-status { width: 8rem; }
+.rules-table__col-status { width: 7.75rem; }
 .rules-table__col-backend { width: 18%; }
 .rules-table__col-agent { width: 8rem; }
-.rules-table__col-tags { width: 16%; }
-.rules-table__col-traffic { width: 6rem; }
+.rules-table__col-tags { width: 14%; }
+.rules-table__col-traffic { width: 5rem; }
 .rules-table__col-actions { width: 4rem; }
 
 .rules-table__row {
@@ -425,7 +426,7 @@ watch(
 }
 
 .rules-table td {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3);
   vertical-align: middle;
   overflow: hidden;
 }
