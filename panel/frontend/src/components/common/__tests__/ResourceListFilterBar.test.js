@@ -308,6 +308,9 @@ describe('ResourceListFilterBar', () => {
     expect(groups.map((group) => group.dataset.group)).toEqual(['enabled', 'sync', 'certificate_id', 'tags'])
     for (const group of groups) {
       expect(group.querySelectorAll('[data-field-key]')).toHaveLength(1)
+      const titleId = group.getAttribute('aria-labelledby')
+      expect(titleId).toBeTruthy()
+      expect(group.querySelector('.resource-list-filter-bar__panel-group-title').id).toBe(titleId)
     }
   })
 

@@ -135,6 +135,8 @@
                   class="resource-list-filter-bar__panel-group"
                   :class="`resource-list-filter-bar__panel-group--${field.type}`"
                   :data-group="field.key"
+                  role="group"
+                  :aria-labelledby="groupTitleId(field)"
                 >
                   <h3
                     :id="groupTitleId(field)"
