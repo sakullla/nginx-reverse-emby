@@ -1,5 +1,5 @@
 <template>
-  <div class="rule-table">
+  <div ref="rootRef" class="rule-table">
     <table class="rules-table" :class="{ 'rules-table--selectable': selectable, 'rules-table--with-agent': showAgentColumn }">
       <thead>
         <tr>
@@ -84,8 +84,15 @@
             <AgentBadge :item="rule" :agent="agent" />
           </td>
           <td class="rules-table__dim">
-            <div class="rules-table__tags" :title="tagsTitle(rule)">
-              <span v-for="tag in visibleTags(rule)" :key="tag" class="tag">{{ tag }}</span>
+            <div :ref="tagsRefFor(rule)" class="rules-table__tags" :title="tagsTitle(rule)">
+              <span
+                v-for="(tag, index) in ruleTags(rule)"
+                :key="`${index}:${tag}`"
+                class="tag"
+                :class="{ 'tag--overflow': index >= visibleTagCount(rule) }"
+                :aria-hidden="index >= visibleTagCount(rule) ? 'true' : undefined"
+                data-tag
+              >{{ tag }}</span>
               <span v-if="hiddenTagCount(rule) > 0" class="tag tag--more" data-testid="rule-table-tags-more">+{{ hiddenTagCount(rule) }}</span>
               <RouterLink v-if="serviceLink(rule)" :to="serviceLink(rule).to" class="rules-table__service-link" :title="`服务 ${serviceLink(rule).id}`" @click.stop>服务接入</RouterLink>
               <span v-if="!(rule.tags || []).length && !serviceLink(rule)" class="rules-table__empty-cell">—</span>
@@ -123,8 +130,32 @@
   </div>
 </template>
 
+<script>
+/**
+ * Number of whole tags that fit in `available` px. When not all fit, room for
+ * a trailing "+N" badge (`moreWidth`) is reserved after the visible tags.
+ */
+export function fitTagCount(widths, available, gap, moreWidth) {
+  const total = widths.length
+  if (!total) return 0
+  const EPSILON = 0.5
+  let used = 0
+  widths.forEach((width, index) => { used += (index ? gap : 0) + width })
+  if (used <= available + EPSILON) return total
+  used = 0
+  let count = 0
+  for (let index = 0; index < total; index += 1) {
+    const next = used + (index ? gap : 0) + widths[index]
+    if (next + gap + moreWidth > available + EPSILON) break
+    used = next
+    count += 1
+  }
+  return count
+}
+</script>
+
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge } from '../../utils/enumLabels.js'
@@ -152,7 +183,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['toggle', 'edit', 'copy', 'diagnose', 'delete', 'traffic-click', 'select', 'select-all'])
 
-const MAX_VISIBLE_TAGS = 2
+// Reserve room for a "+N" badge that is not rendered yet (all tags fit).
+const MORE_BADGE_FALLBACK_WIDTH = 28
 
 const menuItems = [
   { id: 'copy', label: '复制' },
@@ -188,13 +220,60 @@ function ruleTags(rule) {
   return Array.isArray(rule?.tags) ? rule.tags : []
 }
 
-function visibleTags(rule) {
-  return ruleTags(rule).slice(0, MAX_VISIBLE_TAGS)
+// Tags never truncate mid-word: each row shows as many whole tags as its cell
+// width allows and folds the rest into "+N". Folded tags stay in the DOM
+// (out of flow, invisible) so their widths can be re-measured on resize.
+const rootRef = ref(null)
+const tagsEls = new Map()
+const tagFit = ref({})
+
+function tagsRefFor(rule) {
+  const key = ruleKey(rule)
+  return (el) => {
+    if (el) tagsEls.set(key, el)
+    else tagsEls.delete(key)
+  }
+}
+
+function visibleTagCount(rule) {
+  const fit = tagFit.value[ruleKey(rule)]
+  return fit == null ? ruleTags(rule).length : Math.min(fit, ruleTags(rule).length)
 }
 
 function hiddenTagCount(rule) {
-  return Math.max(0, ruleTags(rule).length - MAX_VISIBLE_TAGS)
+  return Math.max(0, ruleTags(rule).length - visibleTagCount(rule))
 }
+
+function measureTags() {
+  const next = {}
+  for (const [key, el] of tagsEls) {
+    // Hidden/unlaid-out tables report 0; keep the previous fit until a resize.
+    if (!el.getBoundingClientRect().width) {
+      if (key in tagFit.value) next[key] = tagFit.value[key]
+      continue
+    }
+    const widths = [...el.querySelectorAll('[data-tag]')].map((tag) => tag.getBoundingClientRect().width)
+    const gap = parseFloat(getComputedStyle(el).columnGap) || 0
+    let available = el.getBoundingClientRect().width
+    const link = el.querySelector('.rules-table__service-link')
+    if (link) available -= link.getBoundingClientRect().width + gap
+    const more = el.querySelector('.tag--more')
+    const moreWidth = Math.max(more ? more.getBoundingClientRect().width : 0, MORE_BADGE_FALLBACK_WIDTH)
+    next[key] = fitTagCount(widths, available, gap, moreWidth)
+  }
+  tagFit.value = next
+}
+
+let resizeObserver = null
+onMounted(() => {
+  nextTick(measureTags)
+  if (typeof ResizeObserver === 'function' && rootRef.value) {
+    resizeObserver = new ResizeObserver(() => measureTags())
+    resizeObserver.observe(rootRef.value)
+  }
+  document.fonts?.ready?.then(() => measureTags())
+})
+onBeforeUnmount(() => resizeObserver?.disconnect())
 
 function tagsTitle(rule) {
   return ruleTags(rule).join(', ') || null
@@ -247,6 +326,12 @@ function backendTooltip(rule) {
     return `${backend.label} · ${backend.detail}\n${status}`
   }).join('\n')
 }
+
+watch(
+  () => [props.rules, props.selectable, props.showTraffic, showAgentColumn.value],
+  () => nextTick(measureTags),
+  { deep: true }
+)
 </script>
 
 <style scoped>
@@ -282,15 +367,17 @@ function backendTooltip(rule) {
   white-space: nowrap;
 }
 
-/* Fixed layout: widths are content-box, keep the auto frontend column >= ~150px at 1040px. */
+/* Fixed layout: widths are content-box. At 1360 (~1040px table) the backend
+   column fits a full "http://192.168.1.12:32400" and the tags column 2-3 short
+   tags; the auto frontend column keeps the remainder (>= ~150px). */
 .rules-table__col-select { width: 1.75rem; }
-.rules-table__col-toggle { width: 3.25rem; }
+.rules-table__col-toggle { width: 2.5rem; }
 .rules-table__col-status { width: 8rem; }
-.rules-table__col-backend { width: 16%; }
+.rules-table__col-backend { width: 18%; }
 .rules-table__col-agent { width: 8rem; }
-.rules-table__col-tags { width: 12%; }
-.rules-table__col-traffic { width: 6.5rem; }
-.rules-table__col-actions { width: 4.5rem; }
+.rules-table__col-tags { width: 16%; }
+.rules-table__col-traffic { width: 6rem; }
+.rules-table__col-actions { width: 4rem; }
 
 .rules-table__row {
   border-bottom: 1px solid var(--color-border-subtle);
@@ -385,6 +472,7 @@ function backendTooltip(rule) {
 }
 
 .rules-table__tags {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.25rem;
@@ -393,17 +481,21 @@ function backendTooltip(rule) {
   overflow: hidden;
 }
 
+/* Whole tags only; whatever does not fit is folded into "+N" by measureTags(). */
 .rules-table__tags .tag {
-  min-width: 0;
-  max-width: 7rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 0;
   white-space: nowrap;
 }
 
+.rules-table__tags .tag--overflow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .rules-table__tags .tag--more {
-  flex-shrink: 0;
-  max-width: none;
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
 }

@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import RuleTable from './RuleTable.vue'
+import RuleTable, { fitTagCount } from './RuleTable.vue'
 
 const rules = [
   { id: 1, agent_id: 'a', frontend_url: 'https://one.example.com', enabled: true, tags: ['emby', 'web', 'media', 'cdn'], backends: [{ url: 'http://10.0.0.1:8096' }] },
@@ -11,18 +11,77 @@ const rules = [
 const stubs = { RouterLink: { props: ['to'], template: '<a><slot /></a>' } }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   document.body.innerHTML = ''
 })
 
+// jsdom has no layout: give tags a width proportional to their text, and the
+// tags cell a configurable width, so the fold logic runs against real elements.
+function mockLayout(tagsWidth) {
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    let width = 0
+    if (this.classList.contains('rules-table__tags')) width = tagsWidth
+    else if (this.classList.contains('tag--more')) width = 24
+    else if (this.classList.contains('rules-table__service-link')) width = 50
+    else if (this.hasAttribute('data-tag')) width = this.textContent.trim().length * 10 + 10
+    return { width, height: 20, top: 0, left: 0, right: width, bottom: 20, x: 0, y: 0 }
+  })
+  vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ columnGap: '0px' }))
+}
+
+async function mountMeasured({ rules: list, tagsWidth }) {
+  mockLayout(tagsWidth)
+  const wrapper = mount(RuleTable, { props: { rules: list }, global: { stubs } })
+  await nextTick()
+  await nextTick()
+  return wrapper
+}
+
+function shownTags(cell) {
+  return cell.findAll('[data-tag]:not(.tag--overflow)').map((tag) => tag.text())
+}
+
 describe('RuleTable', () => {
-  it('shows at most two tags plus a +N badge whose title lists every tag', () => {
-    const wrapper = mount(RuleTable, { props: { rules }, global: { stubs } })
+  it('folds tags that do not fit the cell width into a +N badge whose title lists every tag', async () => {
+    const wrapper = await mountMeasured({ rules, tagsWidth: 120 })
     const rows = wrapper.findAll('tbody .rules-table__row')
     const firstTags = rows[0].get('.rules-table__tags')
-    expect(firstTags.findAll('.tag:not(.tag--more)').map((tag) => tag.text())).toEqual(['emby', 'web'])
+    // emby(50) + web(40) + "+N" reserve fit in 120; media(60) does not.
+    expect(shownTags(firstTags)).toEqual(['emby', 'web'])
     expect(firstTags.get('[data-testid="rule-table-tags-more"]').text()).toBe('+2')
     expect(firstTags.attributes('title')).toBe('emby, web, media, cdn')
+    expect(shownTags(rows[1].get('.rules-table__tags'))).toEqual(['solo'])
     expect(rows[1].find('[data-testid="rule-table-tags-more"]').exists()).toBe(false)
+  })
+
+  it('shows every tag when the cell is wide enough and never cuts a tag that is too long', async () => {
+    const wide = await mountMeasured({ rules: [rules[0]], tagsWidth: 400 })
+    expect(shownTags(wide.get('.rules-table__tags'))).toEqual(['emby', 'web', 'media', 'cdn'])
+    expect(wide.find('[data-testid="rule-table-tags-more"]').exists()).toBe(false)
+
+    const longRule = { ...rules[0], id: 3, tags: ['averyveryverylongtag', 'x'] }
+    const narrow = await mountMeasured({ rules: [longRule], tagsWidth: 120 })
+    expect(shownTags(narrow.get('.rules-table__tags'))).toEqual([])
+    expect(narrow.get('[data-testid="rule-table-tags-more"]').text()).toBe('+2')
+    expect(narrow.get('.rules-table__tags').attributes('title')).toBe('averyveryverylongtag, x')
+  })
+
+  it('reserves room for the service link before fitting tags', async () => {
+    const linked = { ...rules[0], id: 4, tags: ['emby', 'web', 'nre-access-service:s1'] }
+    const wrapper = await mountMeasured({ rules: [linked], tagsWidth: 150 })
+    const tags = wrapper.get('.rules-table__tags')
+    expect(tags.find('.rules-table__service-link').exists()).toBe(true)
+    // 150 - link(50) = 100: emby(50) + "+N" reserve fits; adding web(40) would not.
+    expect(shownTags(tags)).toEqual(['emby'])
+    expect(tags.get('[data-testid="rule-table-tags-more"]').text()).toBe('+2')
+  })
+
+  it('fitTagCount keeps whole tags and reserves the +N badge', () => {
+    expect(fitTagCount([], 100, 4, 28)).toBe(0)
+    expect(fitTagCount([40, 40], 84, 4, 28)).toBe(2)
+    expect(fitTagCount([40, 40, 40], 110, 4, 28)).toBe(1)
+    expect(fitTagCount([40, 40, 40], 116, 4, 28)).toBe(2)
+    expect(fitTagCount([200], 120, 4, 28)).toBe(0)
   })
 
   it('renders a traffic column from trafficFor and emits traffic-click', async () => {

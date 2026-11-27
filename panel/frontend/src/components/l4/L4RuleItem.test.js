@@ -77,14 +77,6 @@ describe('L4RuleItem actions', () => {
 })
 
 describe('L4RuleTable', () => {
-  it('shows at most two tags plus a +N badge with the full list in title', () => {
-    const wrapper = mountAttached(L4RuleTable, { rules: [tcpRule] })
-    const tags = wrapper.get('.rules-table__tags')
-    expect(tags.findAll('.tag:not(.tag--more)').map((t) => t.text())).toEqual(['one', 'two'])
-    expect(tags.get('[data-testid="l4-tags-more"]').text()).toBe('+2')
-    expect(tags.attributes('title')).toBe('one, two, three, four')
-  })
-
   it('renders a traffic column from trafficFor', () => {
     const wrapper = mountAttached(L4RuleTable, {
       rules: [tcpRule],
