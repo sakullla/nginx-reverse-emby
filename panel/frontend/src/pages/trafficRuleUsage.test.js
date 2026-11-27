@@ -113,8 +113,14 @@ async function mountPage(component) {
 }
 
 async function openRuleDiagnostic(wrapper) {
-  // Diagnose is an inline card action now (cards keep up to five inline buttons).
-  await wrapper.get('button[title="诊断"]').trigger('click')
+  // Diagnose lives in the card's more menu (cards show only toggle + edit inline).
+  await wrapper.get('.rule-grid .base-action-menu__trigger').trigger('click')
+  await flushPromises()
+  const item = document.body.querySelector(
+    '.base-action-menu__panel[aria-hidden="false"] [data-testid="base-action-menu-item-diagnose"]'
+  )
+  expect(item).not.toBeNull()
+  item.click()
   await flushPromises()
   await nextTick()
 }
