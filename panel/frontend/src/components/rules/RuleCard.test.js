@@ -1,5 +1,6 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { nextTick } from 'vue'
 import RuleCard from './RuleCard.vue'
 import RuleTable from './RuleTable.vue'
 
@@ -94,5 +95,42 @@ describe('plugin provider presentation', () => {
     const title = wrapper.get('.rules-table__url--backend').attributes('title')
     expect(title).toContain('插件已就绪')
     expect(title).not.toContain(generation)
+  })
+})
+
+describe('RuleCard actions', () => {
+  const plainRule = { id: 5, agent_id: 'local', frontend_url: 'https://a.example.com', enabled: true, tags: [] }
+
+  // Earlier mounts teleport their menu panels to body too; start from a clean body.
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('shows only toggle and edit as visible buttons, with the rest in the more menu', async () => {
+    const wrapper = mount(RuleCard, { props: { rule: plainRule }, attachTo: document.body })
+    const header = wrapper.get('.base-list-card__header-right')
+    const visible = header.findAll('.base-icon-button:not(.base-action-menu__trigger)')
+    expect(visible.map((button) => button.attributes('aria-label'))).toEqual(['停用', '编辑'])
+
+    for (const [id, event] of [['copy', 'copy'], ['diagnose', 'diagnose'], ['delete', 'delete']]) {
+      await wrapper.get('.base-action-menu__trigger').trigger('click')
+      document.body.querySelector(`[data-testid="base-action-menu-item-${id}"]`).click()
+      await nextTick()
+      expect(wrapper.emitted(event)?.at(-1)).toEqual([plainRule])
+    }
+    expect(wrapper.emitted('edit')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('toggles selection instead of editing when selectable', async () => {
+    const wrapper = mount(RuleCard, { props: { rule: plainRule, selectable: true, selected: false } })
+    await wrapper.get('.base-list-card').trigger('click')
+    await wrapper.get('input.rule-card__select').trigger('click')
+    expect(wrapper.emitted('select')).toEqual([[plainRule], [plainRule]])
+    expect(wrapper.emitted('edit')).toBeUndefined()
   })
 })

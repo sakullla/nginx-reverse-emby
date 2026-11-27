@@ -1,29 +1,57 @@
 <template>
   <div class="rule-table">
-    <table class="rules-table">
+    <table class="rules-table" :class="{ 'rules-table--selectable': selectable, 'rules-table--with-agent': showAgentColumn }">
       <thead>
         <tr>
+          <th v-if="selectable" class="rules-table__col-select">
+            <input
+              type="checkbox"
+              class="rules-table__checkbox"
+              aria-label="全选本页"
+              :checked="allSelected"
+              :indeterminate.prop="indeterminate"
+              :disabled="!rules.length"
+              data-testid="rule-table-select-all"
+              @change="$emit('select-all')"
+            />
+          </th>
           <th class="rules-table__col-toggle"></th>
           <th class="rules-table__col-status">状态</th>
           <th class="rules-table__col-frontend">前端地址</th>
           <th class="rules-table__col-backend">后端地址</th>
           <th v-if="showAgentColumn" class="rules-table__col-agent">节点</th>
           <th class="rules-table__col-tags">标签</th>
+          <th v-if="showTraffic" class="rules-table__col-traffic">流量</th>
           <th class="rules-table__col-actions">操作</th>
         </tr>
       </thead>
       <tbody>
         <tr
           v-for="rule in rules"
-          :key="`${rule.agent_id || ''}:${rule.id}`"
+          :key="ruleKey(rule)"
           class="rules-table__row"
-          :class="{ 'rules-table__row--disabled': !rule.enabled }"
+          :class="{
+            'rules-table__row--disabled': !rule.enabled,
+            'rules-table__row--selected': selectable && isSelected(rule)
+          }"
+          @click="onRowClick(rule)"
         >
-          <td>
+          <td v-if="selectable" class="rules-table__cell-select" @click.stop>
+            <input
+              type="checkbox"
+              class="rules-table__checkbox"
+              :aria-label="`选择规则 #${rule.id}`"
+              :checked="isSelected(rule)"
+              @change="$emit('select', rule)"
+            />
+          </td>
+          <td class="rules-table__cell-toggle" @click.stop>
             <button
               type="button"
               class="toggle"
               :class="{ 'toggle--on': rule.enabled }"
+              role="switch"
+              :aria-checked="rule.enabled ? 'true' : 'false'"
               :aria-label="rule.enabled ? '停用规则' : '启用规则'"
               :title="rule.enabled ? '停用' : '启用'"
               @click="$emit('toggle', rule)"
@@ -31,7 +59,7 @@
               <span class="toggle__knob"></span>
             </button>
           </td>
-          <td>
+          <td class="rules-table__dim">
             <div class="rules-table__status">
               <BaseBadge :tone="isHttps(rule) ? 'success' : 'primary'" shape="square" mono>
                 {{ isHttps(rule) ? 'HTTPS' : 'HTTP' }}
@@ -41,46 +69,54 @@
               </BaseBadge>
             </div>
           </td>
-          <td>
+          <td class="rules-table__dim">
             <div class="rules-table__url-cell">
               <span class="rules-table__id">#{{ rule.id }}</span>
               <span class="rules-table__url" :title="rule.frontend_url">{{ rule.frontend_url }}</span>
             </div>
           </td>
-          <td>
+          <td class="rules-table__dim">
             <span class="rules-table__url rules-table__url--backend" :title="backendTooltip(rule)">
               {{ formatBackend(rule) }}
             </span>
           </td>
-          <td v-if="showAgentColumn">
+          <td v-if="showAgentColumn" class="rules-table__dim">
             <AgentBadge :item="rule" :agent="agent" />
           </td>
-          <td>
-            <div class="rules-table__tags">
-              <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
-              <RouterLink v-if="serviceLink(rule)" :to="serviceLink(rule).to" class="rules-table__service-link" :title="`服务 ${serviceLink(rule).id}`">服务接入</RouterLink>
+          <td class="rules-table__dim">
+            <div class="rules-table__tags" :title="tagsTitle(rule)">
+              <span v-for="tag in visibleTags(rule)" :key="tag" class="tag">{{ tag }}</span>
+              <span v-if="hiddenTagCount(rule) > 0" class="tag tag--more" data-testid="rule-table-tags-more">+{{ hiddenTagCount(rule) }}</span>
+              <RouterLink v-if="serviceLink(rule)" :to="serviceLink(rule).to" class="rules-table__service-link" :title="`服务 ${serviceLink(rule).id}`" @click.stop>服务接入</RouterLink>
               <span v-if="!(rule.tags || []).length && !serviceLink(rule)" class="rules-table__empty-cell">—</span>
             </div>
           </td>
-          <td>
+          <td v-if="showTraffic" class="rules-table__dim rules-table__cell-traffic">
+            <TrafficBar
+              v-if="trafficOf(rule)"
+              compact
+              :accounted="trafficOf(rule).accounted_bytes"
+              :rx="trafficOf(rule).rx_bytes"
+              :tx="trafficOf(rule).tx_bytes"
+              :node-total="nodeTotalOf(rule)"
+              @click="$emit('traffic-click', rule)"
+            />
+            <span v-else class="rules-table__empty-cell">—</span>
+          </td>
+          <td @click.stop>
             <div class="rules-table__actions">
-              <button type="button" class="btn-icon" title="编辑" @click="$emit('edit', rule)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <button type="button" class="btn-icon" title="编辑" aria-label="编辑" data-action="edit" @click="$emit('edit', rule)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                 </svg>
               </button>
-              <button type="button" class="btn-icon btn-icon--danger" title="删除" @click="$emit('delete', rule)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                </svg>
-              </button>
+              <BaseActionMenu :items="menuItems" @select="onMenuSelect(rule, $event)" />
             </div>
           </td>
         </tr>
         <tr v-if="!rules.length" class="empty-state-row">
-          <td :colspan="showAgentColumn ? 7 : 6" class="empty-state">暂无数据</td>
+          <td :colspan="columnCount" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -93,6 +129,9 @@ import { RouterLink } from 'vue-router'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
+import TrafficBar from '../traffic/TrafficBar.vue'
+import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 import AgentBadge from '../common/AgentBadge.vue'
 import { describeHTTPBackends } from '../../utils/httpBackend.js'
 import { ruleServiceLink } from '../../utils/accessService.js'
@@ -101,9 +140,75 @@ const props = defineProps({
   rules: { type: Array, default: () => [] },
   agent: { type: Object, default: null },
   providerCatalog: { type: Array, default: () => [] },
-  providerCatalogStatus: { type: String, default: 'ready' }
+  providerCatalogStatus: { type: String, default: 'ready' },
+  /** Bulk selection mode: adds a checkbox column; row click toggles selection. */
+  selectable: { type: Boolean, default: false },
+  selectedKeys: { type: Array, default: () => [] },
+  allSelected: { type: Boolean, default: false },
+  indeterminate: { type: Boolean, default: false },
+  showTraffic: { type: Boolean, default: true },
+  trafficFor: { type: Function, default: null },
+  nodeTotalFor: { type: Function, default: null }
 })
-defineEmits(['toggle', 'edit', 'delete'])
+const emit = defineEmits(['toggle', 'edit', 'copy', 'diagnose', 'delete', 'traffic-click', 'select', 'select-all'])
+
+const MAX_VISIBLE_TAGS = 2
+
+const menuItems = [
+  { id: 'copy', label: '复制' },
+  { id: 'diagnose', label: '诊断' },
+  { id: 'delete', label: '删除', tone: 'danger' }
+]
+
+function onMenuSelect(rule, item) {
+  if (item?.id === 'copy') emit('copy', rule)
+  else if (item?.id === 'diagnose') emit('diagnose', rule)
+  else if (item?.id === 'delete') emit('delete', rule)
+}
+
+function ruleKey(rule) {
+  return `${rule?.agent_id ?? ''}:${rule?.id}`
+}
+
+const selectedKeySet = computed(() => new Set(props.selectedKeys.map(String)))
+
+function isSelected(rule) {
+  return selectedKeySet.value.has(ruleKey(rule))
+}
+
+function onRowClick(rule) {
+  if (props.selectable) emit('select', rule)
+}
+
+const columnCount = computed(() => (
+  6 + (props.selectable ? 1 : 0) + (showAgentColumn.value ? 1 : 0) + (props.showTraffic ? 1 : 0)
+))
+
+function ruleTags(rule) {
+  return Array.isArray(rule?.tags) ? rule.tags : []
+}
+
+function visibleTags(rule) {
+  return ruleTags(rule).slice(0, MAX_VISIBLE_TAGS)
+}
+
+function hiddenTagCount(rule) {
+  return Math.max(0, ruleTags(rule).length - MAX_VISIBLE_TAGS)
+}
+
+function tagsTitle(rule) {
+  return ruleTags(rule).join(', ') || null
+}
+
+function trafficOf(rule) {
+  if (typeof props.trafficFor !== 'function') return null
+  const raw = props.trafficFor(rule)
+  return raw == null ? null : normalizeTrafficSummaryBucket(raw)
+}
+
+function nodeTotalOf(rule) {
+  return typeof props.nodeTotalFor === 'function' ? (Number(props.nodeTotalFor(rule)) || 0) : 0
+}
 
 function serviceLink(rule) {
   return ruleServiceLink(rule)
@@ -157,8 +262,13 @@ function backendTooltip(rule) {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 760px;
+  min-width: 980px;
 }
+
+/* Extra fixed columns would otherwise squeeze the auto-width frontend column to nothing. */
+.rules-table--with-agent { min-width: 1220px; }
+.rules-table--selectable { min-width: 1020px; }
+.rules-table--with-agent.rules-table--selectable { min-width: 1280px; }
 
 .rules-table th {
   text-align: left;
@@ -172,12 +282,15 @@ function backendTooltip(rule) {
   white-space: nowrap;
 }
 
-.rules-table__col-toggle { width: 4rem; }
-.rules-table__col-status { width: 10.5rem; }
-.rules-table__col-backend { width: 24%; }
-.rules-table__col-agent { width: 9rem; }
-.rules-table__col-tags { width: 18%; }
-.rules-table__col-actions { width: 6rem; }
+/* Fixed layout: widths are content-box, keep the auto frontend column >= ~150px at 1040px. */
+.rules-table__col-select { width: 1.75rem; }
+.rules-table__col-toggle { width: 3.25rem; }
+.rules-table__col-status { width: 8rem; }
+.rules-table__col-backend { width: 16%; }
+.rules-table__col-agent { width: 8rem; }
+.rules-table__col-tags { width: 12%; }
+.rules-table__col-traffic { width: 6.5rem; }
+.rules-table__col-actions { width: 4.5rem; }
 
 .rules-table__row {
   border-bottom: 1px solid var(--color-border-subtle);
@@ -192,8 +305,36 @@ function backendTooltip(rule) {
   background: var(--color-bg-subtle);
 }
 
-.rules-table__row--disabled td:not(:first-child) {
-  opacity: 0.55;
+/* Only text cells fade; the switch, checkbox and actions keep full contrast. */
+.rules-table__row--disabled .rules-table__dim {
+  opacity: 0.6;
+}
+
+.rules-table--selectable .rules-table__row {
+  cursor: pointer;
+}
+
+.rules-table__row--selected,
+.rules-table__row--selected:hover {
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
+}
+
+.rules-table__checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.rules-table th.rules-table__col-select,
+.rules-table__cell-select {
+  padding-right: 0;
+}
+
+.rules-table__cell-traffic :deep(.traffic-bar--compact) {
+  min-width: 0;
 }
 
 .rules-table td {
@@ -245,8 +386,31 @@ function backendTooltip(rule) {
 
 .rules-table__tags {
   display: flex;
+  align-items: center;
   gap: 0.25rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rules-table__tags .tag {
+  min-width: 0;
+  max-width: 7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rules-table__tags .tag--more {
+  flex-shrink: 0;
+  max-width: none;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.rules-table__tags .rules-table__service-link {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .rules-table__empty-cell {
@@ -263,6 +427,7 @@ function backendTooltip(rule) {
 
 .rules-table__actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 0.2rem;
 }
@@ -299,9 +464,16 @@ function backendTooltip(rule) {
   background: var(--color-bg-active);
   cursor: pointer;
   position: relative;
+  flex-shrink: 0;
   transition: background var(--duration-normal) var(--ease-default);
   padding: 0;
-  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  /* Off state needs a visible track edge in both themes. */
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
+.toggle:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--color-border-strong), var(--shadow-focus);
 }
 
 .toggle--on {
@@ -318,7 +490,7 @@ function backendTooltip(rule) {
   border-radius: 50%;
   background: #ffffff;
   transition: transform var(--duration-normal) var(--ease-spring);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.25);
 }
 
 .toggle--on .toggle__knob { transform: translateX(14px); }

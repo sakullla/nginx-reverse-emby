@@ -3,9 +3,21 @@
     :status="statusTone"
     :disabled="!rule.enabled"
     :title="rule.frontend_url || ''"
-    @click="$emit('edit', rule)"
+    :class="{ 'rule-card--selectable': selectable, 'rule-card--selected': selectable && selected }"
+    :aria-selected="selectable ? (selected ? 'true' : 'false') : null"
+    @click="onCardClick"
   >
     <template #header-left>
+      <input
+        v-if="selectable"
+        type="checkbox"
+        class="rule-card__select"
+        :checked="selected"
+        :aria-label="`选择规则 #${rule.id}`"
+        @click.stop="$emit('select', rule)"
+        @keydown.enter.stop
+        @keydown.space.stop
+      />
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ rule.id }}</BaseBadge>
       <BaseBadge :tone="isHttps ? 'success' : 'primary'" shape="square" mono>
         {{ isHttps ? 'HTTPS' : 'HTTP' }}
@@ -15,7 +27,7 @@
       <AgentBadge v-if="showAgentBadge" :item="rule" :agent="agent" />
     </template>
     <template #header-right>
-      <BaseIconButton tone="warning" :title="rule.enabled ? '停用' : '启用'" @click="$emit('toggle', rule)">
+      <BaseIconButton tone="warning" :title="rule.enabled ? '停用' : '启用'" data-action="toggle" @click="$emit('toggle', rule)">
         <svg v-if="rule.enabled" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <rect x="6" y="4" width="4" height="16" rx="1"/>
           <rect x="14" y="4" width="4" height="16" rx="1"/>
@@ -24,29 +36,13 @@
           <polygon points="5 3 19 12 5 21 5 3"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton title="编辑" @click="$emit('edit', rule)">
+      <BaseIconButton title="编辑" data-action="edit" @click="$emit('edit', rule)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton title="复制" @click="$emit('copy', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2"/>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-      </BaseIconButton>
-      <BaseIconButton title="诊断" @click="$emit('diagnose', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-        </svg>
-      </BaseIconButton>
-      <BaseIconButton tone="danger" title="删除" @click="$emit('delete', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-        </svg>
-      </BaseIconButton>
+      <BaseActionMenu :items="menuItems" @select="onMenuSelect" />
     </template>
 
     <div class="rule-card__mapping">
@@ -84,6 +80,7 @@ import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { syncStatusLabel, syncStatusTone } from '../../utils/resourceCardStatus.js'
 import TrafficBar from '../traffic/TrafficBar.vue'
@@ -98,9 +95,29 @@ const props = defineProps({
   agentNodeTotal: { type: Number, default: 0 },
   providerCatalog: { type: Array, default: () => [] },
   providerCatalogStatus: { type: String, default: 'ready' },
+  /** Bulk selection mode: card body toggles selection instead of opening the editor. */
+  selectable: { type: Boolean, default: false },
+  selected: { type: Boolean, default: false },
 })
 
-defineEmits(['edit', 'toggle', 'copy', 'diagnose', 'delete', 'traffic-click'])
+const emit = defineEmits(['edit', 'toggle', 'copy', 'diagnose', 'delete', 'traffic-click', 'select'])
+
+const menuItems = [
+  { id: 'copy', label: '复制' },
+  { id: 'diagnose', label: '诊断' },
+  { id: 'delete', label: '删除', tone: 'danger' },
+]
+
+function onMenuSelect(item) {
+  if (item?.id === 'copy') emit('copy', props.rule)
+  else if (item?.id === 'diagnose') emit('diagnose', props.rule)
+  else if (item?.id === 'delete') emit('delete', props.rule)
+}
+
+function onCardClick() {
+  if (props.selectable) emit('select', props.rule)
+  else emit('edit', props.rule)
+}
 
 const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
 const statusTone = computed(() => syncStatusTone(status.value))
@@ -138,6 +155,20 @@ const serviceLink = computed(() => ruleServiceLink(props.rule))
 </script>
 
 <style scoped>
+.rule-card__select {
+  width: 16px;
+  height: 16px;
+  margin: 0 0.15rem 0 0;
+  flex-shrink: 0;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.rule-card--selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+}
+
 .rule-card__mapping {
   display: flex;
   flex-direction: column;
