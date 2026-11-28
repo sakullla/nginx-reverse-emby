@@ -112,6 +112,23 @@ describe('RuleTable', () => {
     expect(wrapper.emitted('traffic-click')?.[0]).toEqual([rules[0]])
   })
 
+  it('toggles row selection instead of opening traffic trend when clicking TrafficBar in bulk mode', async () => {
+    const wrapper = mount(RuleTable, {
+      props: {
+        rules,
+        selectable: true,
+        selectedKeys: [],
+        trafficFor: (rule) => (rule.id === 1 ? { accounted_bytes: 2048, rx_bytes: 1024, tx_bytes: 1024 } : null),
+        nodeTotalFor: () => 4096
+      },
+      global: { stubs }
+    })
+
+    await wrapper.get('.traffic-bar--compact').trigger('click')
+    expect(wrapper.emitted('select')).toEqual([[rules[0]]])
+    expect(wrapper.emitted('traffic-click')).toBeUndefined()
+  })
+
   it('hides the traffic column when traffic stats are off', () => {
     const wrapper = mount(RuleTable, { props: { rules, showTraffic: false }, global: { stubs } })
     expect(wrapper.find('th.rules-table__col-traffic').exists()).toBe(false)

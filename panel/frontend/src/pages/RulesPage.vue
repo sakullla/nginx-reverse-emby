@@ -952,7 +952,9 @@ const diagnosticTaskId = ref('')
 const diagnosticAgentId = ref('')
 const initialDiagnosticTask = ref(null)
 const { data: diagnosticTaskData } = useDiagnosticTask(diagnosticAgentId, diagnosticTaskId)
-const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
+const diagnosticTask = computed(() => (
+  diagnosticTaskId.value ? (diagnosticTaskData.value?.task || initialDiagnosticTask.value) : initialDiagnosticTask.value
+))
 const diagnosticAgentLabel = computed(() => {
   const id = String(diagnosticAgentId.value || '').trim()
   if (id) {
@@ -1065,9 +1067,17 @@ function cancelDelete() {
   deleteError.value = ''
 }
 
+let diagnosticRequestSeq = 0
+
+function extractDiagnosticError(error, fallback = '启动 HTTP 规则诊断失败') {
+  return String(error?.response?.data?.message || error?.message || '').trim() || fallback
+}
+
 async function openDiagnostic(rule, explicitAgentId = '') {
   const target = String(explicitAgentId || '').trim() || requireMutationAgent(rule, '诊断')
   if (!target) return
+  const previousTask = diagnosticTask.value
+  const seq = ++diagnosticRequestSeq
   diagnosticRule.value = rule
   diagnosticAgentId.value = target
   diagnosticTaskId.value = ''
@@ -1075,11 +1085,18 @@ async function openDiagnostic(rule, explicitAgentId = '') {
   showDiagnostic.value = true
   try {
     const response = await diagnoseRule.mutateAsync({ id: rule.id, agentId: target })
-    initialDiagnosticTask.value = response.task || null
-    diagnosticTaskId.value = response.task_id
+    if (seq !== diagnosticRequestSeq || !showDiagnostic.value) return
+    initialDiagnosticTask.value = response?.task || null
+    diagnosticTaskId.value = response?.task_id || ''
   } catch (error) {
-    closeDiagnostic()
-    messageStore.error(error, '启动 HTTP 规则诊断失败')
+    if (seq !== diagnosticRequestSeq || !showDiagnostic.value) return
+    // useDiagnoseRule.onError already reports the toast; keep the modal open in a failed terminal state so retry remains available.
+    diagnosticTaskId.value = ''
+    initialDiagnosticTask.value = {
+      agent_id: target,
+      state: 'failed',
+      error: extractDiagnosticError(error, previousTask?.error || '启动 HTTP 规则诊断失败')
+    }
   }
 }
 
@@ -1096,6 +1113,7 @@ function closeForm() {
 }
 
 function closeDiagnostic() {
+  diagnosticRequestSeq += 1
   showDiagnostic.value = false
   diagnosticRule.value = null
   diagnosticAgentId.value = ''

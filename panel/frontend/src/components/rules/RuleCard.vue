@@ -90,7 +90,7 @@
       :rx="normalizedTraffic.rx_bytes"
       :tx="normalizedTraffic.tx_bytes"
       :node-total="agentNodeTotal"
-      @click="$emit('traffic-click', rule)"
+      @click="onTrafficClick"
     />
 
     <template v-if="hasTags || serviceLink" #footer>
@@ -146,6 +146,11 @@ function onMenuSelect(item) {
 function onCardClick() {
   if (props.selectable) emit('select', props.rule)
   else emit('edit', props.rule)
+}
+
+function onTrafficClick() {
+  if (props.selectable) emit('select', props.rule)
+  else emit('traffic-click', props.rule)
 }
 
 const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))

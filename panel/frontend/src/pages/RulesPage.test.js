@@ -628,6 +628,45 @@ describe('RulesPage bulk mode', () => {
     expect(diagnoseMutateAsync).toHaveBeenCalledTimes(2)
     expect(diagnoseMutateAsync).toHaveBeenLastCalledWith({ id: 1, agentId: '1' })
   })
+
+  it('keeps RuleDiagnosticModal open with failed task state on retry failure without duplicate toast and allows retrying again', async () => {
+    const { messageStore } = await import('../stores/messages')
+    const errorSpy = vi.spyOn(messageStore, 'error')
+
+    diagnoseMutateAsync
+      .mockResolvedValueOnce({ task_id: 'task-1', task: { state: 'completed' } })
+      .mockRejectedValueOnce(new Error('节点离线'))
+      .mockResolvedValueOnce({ task_id: 'task-3', task: { state: 'completed' } })
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    cards(wrapper)[0].vm.$emit('diagnose', rulesData[0])
+    await flushPromises()
+    const modal = wrapper.findComponent({ name: 'RuleDiagnosticModal' })
+    expect(modal.props('modelValue')).toBe(true)
+
+    modal.vm.$emit('retry')
+    await flushPromises()
+
+    expect(modal.props('modelValue')).toBe(true)
+    expect(modal.props('canRetry')).toBe(true)
+    expect(modal.props('ruleLabel')).toBe('https://a.example.com')
+    expect(modal.props('agentLabel')).toBe('master')
+    expect(modal.props('task')).toEqual({
+      agent_id: '1',
+      state: 'failed',
+      error: '节点离线'
+    })
+    expect(errorSpy).not.toHaveBeenCalled()
+
+    modal.vm.$emit('retry')
+    await flushPromises()
+    expect(diagnoseMutateAsync).toHaveBeenCalledTimes(3)
+    expect(diagnoseMutateAsync).toHaveBeenLastCalledWith({ id: 1, agentId: '1' })
+    expect(modal.props('task')).toEqual({ state: 'completed' })
+    errorSpy.mockRestore()
+  })
 })
 
 describe('RulesPage boundary states', () => {

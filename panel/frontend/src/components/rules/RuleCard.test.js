@@ -178,6 +178,24 @@ describe('RuleCard actions', () => {
     successSpy.mockRestore()
   })
 
+  it('toggles selection instead of opening traffic trend when clicking TrafficBar in bulk mode', async () => {
+    const traffic = { accounted_bytes: 2048, rx_bytes: 1024, tx_bytes: 1024 }
+    const normal = mount(RuleCard, {
+      props: { rule: plainRule, traffic, agentNodeTotal: 4096, selectable: false }
+    })
+    await normal.get('.traffic-bar').trigger('click')
+    expect(normal.emitted('traffic-click')).toEqual([[plainRule]])
+    expect(normal.emitted('select')).toBeUndefined()
+
+    const bulk = mount(RuleCard, {
+      props: { rule: plainRule, traffic, agentNodeTotal: 4096, selectable: true, selected: false }
+    })
+    await bulk.get('.traffic-bar').trigger('click')
+    expect(bulk.emitted('select')).toEqual([[plainRule]])
+    expect(bulk.emitted('traffic-click')).toBeUndefined()
+    expect(bulk.emitted('edit')).toBeUndefined()
+  })
+
   it('hides backend copy button when backend is empty or plugin provider', () => {
     const noBackend = mount(RuleCard, { props: { rule: plainRule } })
     expect(noBackend.find('[data-copy-target="frontend"]').exists()).toBe(true)

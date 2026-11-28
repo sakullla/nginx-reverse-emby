@@ -127,7 +127,7 @@
               :rx="trafficOf(rule).rx_bytes"
               :tx="trafficOf(rule).tx_bytes"
               :node-total="nodeTotalOf(rule)"
-              @click="$emit('traffic-click', rule)"
+              @click="onTrafficClick(rule)"
             />
             <span v-else class="rules-table__empty-cell">—</span>
           </td>
@@ -240,6 +240,11 @@ function isSelected(rule) {
 
 function onRowClick(rule) {
   if (props.selectable) emit('select', rule)
+}
+
+function onTrafficClick(rule) {
+  if (props.selectable) emit('select', rule)
+  else emit('traffic-click', rule)
 }
 
 const columnCount = computed(() => (
