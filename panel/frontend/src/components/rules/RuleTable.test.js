@@ -1,7 +1,8 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import RuleTable, { fitTagCount } from './RuleTable.vue'
+import { messageStore } from '../../stores/messages.js'
 
 const rules = [
   { id: 1, agent_id: 'a', frontend_url: 'https://one.example.com', enabled: true, tags: ['emby', 'web', 'media', 'cdn'], backends: [{ url: 'http://10.0.0.1:8096' }] },
@@ -137,7 +138,7 @@ describe('RuleTable', () => {
     expect(disabledRow.get('.toggle').attributes('aria-checked')).toBe('false')
   })
 
-  it('adds a selection column with page select-all in bulk mode', async () => {
+  it('adds a selection column with page select-all and guards row actions in bulk mode', async () => {
     const wrapper = mount(RuleTable, {
       props: { rules, selectable: true, selectedKeys: ['a:1'], indeterminate: true },
       global: { stubs }
@@ -153,10 +154,64 @@ describe('RuleTable', () => {
     await rows[1].trigger('click')
     await rows[1].get('.rules-table__cell-select input').trigger('change')
     expect(wrapper.emitted('select')).toEqual([[rules[1]], [rules[1]]])
-    // Clicking the switch in bulk mode still toggles, without changing selection.
-    await rows[1].get('.toggle').trigger('click')
-    expect(wrapper.emitted('toggle')?.[0]).toEqual([rules[1]])
+
+    // Bulk mode disables toggle and edit and hides action menus & copy buttons.
+    const toggleBtn = rows[1].get('.toggle')
+    const editBtn = rows[1].get('[data-action="edit"]')
+    expect(toggleBtn.attributes('disabled')).toBeDefined()
+    expect(editBtn.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.base-action-menu__trigger').exists()).toBe(false)
+    expect(wrapper.find('[data-copy-target="frontend"]').exists()).toBe(false)
+    expect(wrapper.find('[data-copy-target="backend"]').exists()).toBe(false)
+
+    await toggleBtn.trigger('click')
+    await editBtn.trigger('click')
+    expect(wrapper.emitted('toggle')).toBeUndefined()
+    expect(wrapper.emitted('edit')).toBeUndefined()
     expect(wrapper.emitted('select')).toHaveLength(2)
+  })
+
+  it('copies frontend URL and primary backend URL in normal mode without extra suffixes', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+    const successSpy = vi.spyOn(messageStore, 'success')
+    const multiRules = [
+      {
+        ...rules[0],
+        backends: [{ url: 'http://10.0.0.1:8096' }, { url: 'http://10.0.0.9:8096' }]
+      },
+      {
+        id: 3,
+        agent_id: 'a',
+        frontend_url: 'https://provider.example.com',
+        enabled: true,
+        tags: [],
+        backends: [{ kind: 'plugin_provider', plugin_provider: { instance_id: 'inst-1', provider_id: 'default' } }]
+      }
+    ]
+
+    const wrapper = mount(RuleTable, { props: { rules: multiRules }, global: { stubs } })
+    const rows = wrapper.findAll('tbody .rules-table__row')
+    expect(rows[0].get('.rules-table__url--backend').text()).toBe('http://10.0.0.1:8096 +1')
+
+    await rows[0].get('[data-copy-target="frontend"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('https://one.example.com')
+
+    await rows[0].get('[data-copy-target="backend"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('http://10.0.0.1:8096')
+
+    expect(rows[1].find('[data-copy-target="frontend"]').exists()).toBe(true)
+    expect(rows[1].find('[data-copy-target="backend"]').exists()).toBe(false)
+    expect(wrapper.emitted('select')).toBeUndefined()
+    expect(wrapper.emitted('edit')).toBeUndefined()
+    expect(successSpy).toHaveBeenCalledWith('已复制入口 URL')
+    expect(successSpy).toHaveBeenCalledWith('已复制后端地址')
+    successSpy.mockRestore()
   })
 
   it('shows an ellipsizing node column only when no agent is selected', () => {

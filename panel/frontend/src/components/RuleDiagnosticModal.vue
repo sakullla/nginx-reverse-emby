@@ -77,9 +77,9 @@
             <div class="diagnostic-table">
               <div class="diagnostic-table__header">
                 <span>链路</span>
-                <span style="text-align:center">状态</span>
-                <span style="text-align:center">延迟</span>
-                <span style="text-align:center">质量</span>
+                <span class="diagnostic-table__header-center">状态</span>
+                <span class="diagnostic-table__header-center">延迟</span>
+                <span class="diagnostic-table__header-center">质量</span>
               </div>
               <div
                 v-for="(hop, hopIndex) in pathReport.hops"
@@ -87,27 +87,30 @@
                 class="diagnostic-table__row"
                 :class="{ 'diagnostic-table__row--failed': hopIsFailed(hop) }"
               >
-                <div class="diagnostic-table__cell">
-                  <span :class="hopStatusIconClass(hop)">
+                <div class="diagnostic-table__cell diagnostic-table__cell--hop">
+                  <span class="diagnostic-table__status-icon" :class="hopStatusIconClass(hop)" aria-hidden="true">
                     {{ hopStatusIcon(hop) }}
                   </span>
-                  <span>{{ formatHopLabel(hop) }}</span>
+                  <span class="diagnostic-table__hop-label">{{ formatHopLabel(hop) }}</span>
                 </div>
-                <span class="diagnostic-table__cell" style="text-align:center">
+                <div class="diagnostic-table__cell diagnostic-table__cell--status">
+                  <span class="diagnostic-table__mobile-label">状态</span>
                   <span :class="`pill pill--${hopStatusTone(hop)}`">
                     {{ hopStatusLabel(hop) }}
                   </span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">
+                </div>
+                <div class="diagnostic-table__cell diagnostic-table__cell--latency">
+                  <span class="diagnostic-table__mobile-label">延迟</span>
                   <span :class="hopLatencyClass(hop)">
                     {{ hopHasLatency(hop) ? (hop.latency_ms + ' ms') : '—' }}
                   </span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">
+                </div>
+                <div class="diagnostic-table__cell diagnostic-table__cell--quality">
+                  <span class="diagnostic-table__mobile-label">质量</span>
                   <span :class="`pill pill--${qualityToneFor(hopQualityLabel(hop))}`">
                     {{ hopQualityLabel(hop) }}
                   </span>
-                </span>
+                </div>
               </div>
             </div>
             <div v-if="pathReport.error" class="relay-path-card__error">{{ pathReport.error }}</div>
@@ -241,15 +244,36 @@
         </div>
         </template>
       </template>
+
+      <div v-if="canRetry || !busy" class="diagnostic-modal__actions">
+        <BaseButton
+          v-if="!busy"
+          variant="secondary"
+          size="sm"
+          data-test="diagnostic-copy-summary"
+          @click="handleCopySummary"
+        >{{ summaryCopied ? '已复制摘要' : '复制摘要' }}</BaseButton>
+        <BaseButton
+          v-if="canRetry"
+          variant="primary"
+          size="sm"
+          :disabled="busy"
+          data-test="diagnostic-retry"
+          @click="$emit('retry')"
+        >重新诊断</BaseButton>
+      </div>
     </div>
   </BaseModal>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import BaseModal from './base/BaseModal.vue'
+import BaseButton from './base/BaseButton.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
 import { buildDiagnosticConclusion } from '../utils/diagnosticConclusion'
+import { copyText } from '../utils/clipboard.js'
+import { messageStore } from '../stores/messages.js'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
@@ -257,10 +281,11 @@ const props = defineProps({
   kind: { type: String, default: 'http' },
   ruleLabel: { type: String, default: '' },
   endpointLabel: { type: String, default: '' },
-  agentLabel: { type: String, default: '' }
+  agentLabel: { type: String, default: '' },
+  canRetry: { type: Boolean, default: false }
 })
 
-defineEmits(['update:modelValue'])
+defineEmits(['update:modelValue', 'retry'])
 
 const state = computed(() => props.task?.state || 'pending')
 const busy = computed(() => !['completed', 'failed'].includes(state.value))
@@ -304,6 +329,86 @@ const backendTableGridStyle = computed(() => ({
 const showSamples = ref(false)
 const showBackends = ref(false)
 const expandedAdaptive = ref(new Set())
+const summaryCopied = ref(false)
+let summaryResetTimer = null
+
+function clearSummaryResetTimer() {
+  if (summaryResetTimer) {
+    clearTimeout(summaryResetTimer)
+    summaryResetTimer = null
+  }
+}
+
+watch(
+  () => [props.modelValue, props.task],
+  () => {
+    summaryCopied.value = false
+    clearSummaryResetTimer()
+  }
+)
+
+onUnmounted(() => {
+  clearSummaryResetTimer()
+})
+
+function buildDiagnosticSummary() {
+  const lines = []
+  lines.push(`[${title.value}] ${props.ruleLabel || '-'}`)
+  if (props.endpointLabel) lines.push(`目标: ${props.endpointLabel}`)
+  if (agentLabel.value) lines.push(`节点: ${agentLabel.value}`)
+  lines.push(`状态: ${stateLabel.value}`)
+  if (conclusion.value?.headline) lines.push(`结论: ${conclusion.value.headline}`)
+  if (conclusion.value?.detail) lines.push(`详情: ${conclusion.value.detail}`)
+  if (props.task?.error && props.task.error !== conclusion.value?.detail) {
+    lines.push(`错误: ${props.task.error}`)
+  }
+  if (summary.value) {
+    if (hasRelayPaths.value && pathStats.value) {
+      lines.push(`路径统计: 总计 ${pathStats.value.total} / 成功 ${pathStats.value.success} / 失败 ${pathStats.value.failed}`)
+    } else {
+      lines.push(`探测统计: 总计 ${summary.value.sent ?? 0} / 成功 ${summary.value.succeeded ?? 0} / 失败 ${summary.value.failed ?? 0}`)
+    }
+    const avgLatency = Number(summary.value.avg_latency_ms)
+    if (Number.isFinite(avgLatency) && avgLatency > 0) {
+      lines.push(`平均延迟: ${avgLatency} ms`)
+    }
+  }
+  if (hasRelayPaths.value) {
+    lines.push('Relay 路径:')
+    relayPaths.value.forEach((pathReport, pathIndex) => {
+      const statusText = pathReport.success ? '成功' : '失败'
+      const selectedText = pathReport.selected ? ' [已选中]' : ''
+      const latencyText = Number.isFinite(Number(pathReport.latency_ms)) && Number(pathReport.latency_ms) > 0
+        ? ` (${pathReport.latency_ms} ms)`
+        : ''
+      lines.push(`- 路径 ${pathIndex + 1}${selectedText}: ${statusText}${latencyText}`)
+      for (const hop of pathReport.hops || []) {
+        const hopLatency = hopHasLatency(hop) ? `${hop.latency_ms} ms` : '—'
+        lines.push(`  · ${formatHopLabel(hop)} | ${hopStatusLabel(hop)} | ${hopLatency} | ${hopQualityLabel(hop)}`)
+      }
+      if (pathReport.error) {
+        lines.push(`  · 错误: ${pathReport.error}`)
+      }
+    })
+  }
+  return lines.join('\n')
+}
+
+async function handleCopySummary() {
+  if (busy.value) return
+  const result = await copyText(buildDiagnosticSummary())
+  if (result.ok) {
+    summaryCopied.value = true
+    clearSummaryResetTimer()
+    summaryResetTimer = setTimeout(() => {
+      summaryCopied.value = false
+      summaryResetTimer = null
+    }, 1600)
+    messageStore.success('已复制诊断摘要')
+    return
+  }
+  messageStore.error(result.error || '复制失败，请手动复制', '复制失败')
+}
 
 function toggleAdaptive(backendName) {
   const next = new Set(expandedAdaptive.value)
@@ -739,18 +844,29 @@ function qualityToneFor(value) {
 .diagnostic-modal__hero {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 1rem;
   padding: 1rem 1.1rem;
   border-radius: var(--radius-xl);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
 }
-.diagnostic-modal__hero-text { min-width: 0; }
+.diagnostic-modal__hero-text { flex: 1; min-width: 0; }
 .diagnostic-modal__eyebrow { font-size: 0.7rem; letter-spacing: 0.08em; color: var(--color-text-tertiary); font-weight: 600; }
-.diagnostic-modal__headline { margin: 0.2rem 0 0.25rem; font-size: 1rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.35; }
+.diagnostic-modal__headline {
+  margin: 0.2rem 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .diagnostic-modal__subtitle { margin: 0; font-family: var(--font-mono); font-size: 0.78rem; color: var(--color-text-secondary); word-break: break-all; line-height: 1.4; }
-.diagnostic-modal__meta { margin: 0.3rem 0 0; font-size: 0.72rem; color: var(--color-text-tertiary); }
+.diagnostic-modal__meta { margin: 0.3rem 0 0; font-size: 0.72rem; color: var(--color-text-tertiary); overflow-wrap: anywhere; }
 .diagnostic-modal__state {
+  flex-shrink: 0;
+  white-space: nowrap;
   align-self: flex-start;
   padding: 0.25rem 0.65rem;
   border-radius: var(--radius-full);
@@ -863,6 +979,7 @@ function qualityToneFor(value) {
 .relay-path-card__header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.6rem 0.75rem;
   border-bottom: 1px solid var(--color-border-subtle);
@@ -870,11 +987,13 @@ function qualityToneFor(value) {
 }
 .relay-path-card__name { font-weight: 700; color: var(--color-text-primary); }
 .relay-path-card__route { color: var(--color-text-secondary); font-family: var(--font-mono); }
-.relay-path-card__latency { margin-left: auto; font-size: 0.75rem; color: var(--color-primary); font-weight: 600; }
+.relay-path-card__latency { margin-left: auto; font-size: 0.75rem; color: var(--color-primary); font-weight: 600; white-space: nowrap; }
 .relay-path-card__error {
   padding: 0.5rem 0.75rem;
   font-size: 0.78rem;
   color: var(--color-danger);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .diagnostic-table {
@@ -885,7 +1004,7 @@ function qualityToneFor(value) {
 }
 .diagnostic-table__header {
   display: grid;
-  grid-template-columns: 1fr 80px 80px 80px;
+  grid-template-columns: minmax(0, 1fr) 72px 84px 72px;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
   font-size: 0.7rem;
@@ -893,9 +1012,12 @@ function qualityToneFor(value) {
   font-weight: 600;
   border-bottom: 1px solid var(--color-border-default);
 }
+.diagnostic-table__header-center {
+  text-align: center;
+}
 .diagnostic-table__row {
   display: grid;
-  grid-template-columns: 1fr 80px 80px 80px;
+  grid-template-columns: minmax(0, 1fr) 72px 84px 72px;
   gap: 0.5rem;
   padding: 0.55rem 0.75rem;
   align-items: center;
@@ -909,6 +1031,29 @@ function qualityToneFor(value) {
   gap: 0.4rem;
   font-size: 0.82rem;
   min-width: 0;
+}
+.diagnostic-table__cell--hop {
+  align-items: flex-start;
+}
+.diagnostic-table__status-icon {
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.diagnostic-table__hop-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.4;
+}
+.diagnostic-table__cell--status,
+.diagnostic-table__cell--latency,
+.diagnostic-table__cell--quality {
+  justify-content: center;
+  text-align: center;
+  white-space: nowrap;
+}
+.diagnostic-table__mobile-label {
+  display: none;
 }
 .status-icon--success { color: var(--color-success); }
 .status-icon--danger { color: var(--color-danger); }
@@ -934,18 +1079,18 @@ function qualityToneFor(value) {
 
 .slide-expand-enter-active,
 .slide-expand-leave-active {
-  transition: max-height 0.3s ease, opacity 0.25s ease;
-  overflow: hidden;
+  transition: opacity var(--duration-normal, 200ms) var(--ease-default, ease),
+              transform var(--duration-normal, 200ms) var(--ease-default, ease);
 }
 .slide-expand-enter-from,
 .slide-expand-leave-to {
-  max-height: 0;
   opacity: 0;
+  transform: translateY(-4px);
 }
 .slide-expand-enter-to,
 .slide-expand-leave-from {
-  max-height: 400px;
   opacity: 1;
+  transform: translateY(0);
 }
 
 .diagnostic-modal__backends {
@@ -1257,9 +1402,25 @@ function qualityToneFor(value) {
   color: var(--color-text-secondary);
   white-space: nowrap;
   font-family: var(--font-mono);
+  flex-shrink: 0;
 }
 .diagnostic-sample--failed .diagnostic-sample__right {
   font-weight: 500;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: right;
+  max-width: 55%;
+}
+
+.diagnostic-modal__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .truncate {
@@ -1268,9 +1429,110 @@ function qualityToneFor(value) {
   white-space: nowrap;
 }
 
+@media (max-width: 640px) {
+  .diagnostic-modal__hero {
+    gap: 0.65rem;
+    padding: 0.85rem 0.9rem;
+  }
+
+  .diagnostic-modal__stats {
+    gap: 0.5rem;
+  }
+
+  .diagnostic-stat {
+    padding: 0.65rem 0.5rem;
+  }
+
+  .diagnostic-table__header {
+    display: none;
+  }
+
+  .diagnostic-table__row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.45rem 0.5rem;
+    padding: 0.65rem 0.75rem;
+    align-items: start;
+  }
+
+  .diagnostic-table__cell--hop {
+    grid-column: 1 / -1;
+  }
+
+  .diagnostic-table__cell--status,
+  .diagnostic-table__cell--latency,
+  .diagnostic-table__cell--quality {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 0.2rem;
+    text-align: left;
+    white-space: normal;
+    padding-top: 0.35rem;
+    border-top: 1px dashed var(--color-border-subtle);
+  }
+
+  .diagnostic-table__mobile-label {
+    display: block;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--color-text-tertiary);
+    line-height: 1.2;
+  }
+
+  .diagnostic-modal__actions {
+    justify-content: stretch;
+  }
+
+  .diagnostic-modal__actions :deep(.btn) {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 520px) {
+  .diagnostic-backend-item__header {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .diagnostic-backend-item__metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.4rem;
+  }
+
+  .diagnostic-sample {
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .diagnostic-sample__right,
+  .diagnostic-sample--failed .diagnostic-sample__right {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-align: left;
+    max-width: none;
+    padding-left: calc(2.2ch + 0.55rem);
+  }
+}
+
 @keyframes diag-pulse {
   0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 40%, transparent); }
   70% { box-shadow: 0 0 14px 8px color-mix(in srgb, var(--color-primary) 0%, transparent); }
   100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-expand-enter-active,
+  .slide-expand-leave-active,
+  .diagnostic-modal__toggle,
+  .diagnostic-backend-item__toggle-icon {
+    transition: none;
+  }
+
+  .diagnostic-modal__pulse {
+    animation: none;
+  }
 }
 </style>

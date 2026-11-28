@@ -42,4 +42,38 @@ describe('BulkActionBar', () => {
     await wrapper.trigger('keydown', { key: 'Escape' })
     expect(wrapper.emitted('cancel')).toHaveLength(1)
   })
+
+  it('hides select-all by default and toggles labels/aria-pressed when enabled', async () => {
+    const hidden = mount(BulkActionBar, { props: { count: 0 } })
+    expect(hidden.find('[data-bulk-action="select-all"]').exists()).toBe(false)
+
+    const wrapper = mount(BulkActionBar, {
+      props: { count: 0, showSelectAll: true, allSelected: false, indeterminate: false }
+    })
+    const selectAll = button(wrapper, 'select-all')
+    expect(selectAll.text()).toBe('全选本页')
+    expect(selectAll.attributes('aria-pressed')).toBe('false')
+    expect(selectAll.attributes('disabled')).toBeUndefined()
+
+    await selectAll.trigger('click')
+    expect(wrapper.emitted('toggle-all')).toHaveLength(1)
+
+    await wrapper.setProps({ count: 1, indeterminate: true, allSelected: false })
+    expect(button(wrapper, 'select-all').text()).toBe('全选本页')
+    expect(button(wrapper, 'select-all').attributes('aria-pressed')).toBe('mixed')
+
+    await wrapper.setProps({ count: 3, indeterminate: false, allSelected: true })
+    expect(button(wrapper, 'select-all').text()).toBe('取消全选')
+    expect(button(wrapper, 'select-all').attributes('aria-pressed')).toBe('true')
+  })
+
+  it('disables select-all while busy', async () => {
+    const wrapper = mount(BulkActionBar, {
+      props: { count: 2, busy: true, showSelectAll: true, allSelected: true }
+    })
+    const selectAll = button(wrapper, 'select-all')
+    expect(selectAll.attributes('disabled')).toBeDefined()
+    await selectAll.trigger('click')
+    expect(wrapper.emitted('toggle-all')).toBeUndefined()
+  })
 })

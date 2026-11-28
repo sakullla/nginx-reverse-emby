@@ -2,7 +2,6 @@
   <BaseListCard
     :status="statusTone"
     :disabled="!rule.enabled"
-    :title="rule.frontend_url || ''"
     :class="{ 'rule-card--selectable': selectable, 'rule-card--selected': selectable && selected }"
     :aria-selected="selectable ? (selected ? 'true' : 'false') : null"
     @click="onCardClick"
@@ -27,7 +26,13 @@
       <AgentBadge v-if="showAgentBadge" :item="rule" :agent="agent" />
     </template>
     <template #header-right>
-      <BaseIconButton tone="warning" :title="rule.enabled ? '停用' : '启用'" data-action="toggle" @click="$emit('toggle', rule)">
+      <BaseIconButton
+        tone="warning"
+        :title="rule.enabled ? '停用' : '启用'"
+        :disabled="selectable"
+        data-action="toggle"
+        @click="$emit('toggle', rule)"
+      >
         <svg v-if="rule.enabled" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <rect x="6" y="4" width="4" height="16" rx="1"/>
           <rect x="14" y="4" width="4" height="16" rx="1"/>
@@ -36,20 +41,42 @@
           <polygon points="5 3 19 12 5 21 5 3"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton title="编辑" data-action="edit" @click="$emit('edit', rule)">
+      <BaseIconButton title="编辑" :disabled="selectable" data-action="edit" @click="$emit('edit', rule)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseActionMenu :items="menuItems" @select="onMenuSelect" />
+      <BaseActionMenu v-if="!selectable" :items="menuItems" @select="onMenuSelect" />
     </template>
+
+    <div v-if="frontendUrl" class="rule-card__title-row">
+      <div class="rule-card__title" :class="{ 'rule-card__title--disabled': !rule.enabled }" :title="frontendUrl">
+        <template v-for="(part, index) in frontendUrlParts" :key="index">{{ part }}<wbr v-if="index < frontendUrlParts.length - 1" /></template>
+      </div>
+      <CopyButton
+        v-if="!selectable"
+        :value="frontendUrl"
+        label="复制入口 URL"
+        success-message="已复制入口 URL"
+        size="xs"
+        data-copy-target="frontend"
+      />
+    </div>
 
     <div class="rule-card__mapping">
       <div class="rule-card__url-row">
         <span class="rule-card__url-label">后端</span>
         <code class="rule-card__backend" :title="backendsTooltip">{{ backendPrimary }}</code>
         <span v-if="backendExtraCount > 0" class="rule-card__backend-more">+{{ backendExtraCount }}</span>
+        <CopyButton
+          v-if="!selectable"
+          :value="backendPrimaryCopyValue"
+          label="复制后端地址"
+          success-message="已复制后端地址"
+          size="xs"
+          data-copy-target="backend"
+        />
       </div>
       <div v-if="providerStatus" class="rule-card__provider-status" :class="`rule-card__provider-status--${providerState}`">
         <span class="rule-card__provider-dot" aria-hidden="true"></span>
@@ -81,12 +108,14 @@ import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import BaseActionMenu from '../base/BaseActionMenu.vue'
+import CopyButton from '../common/CopyButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { syncStatusLabel, syncStatusTone } from '../../utils/resourceCardStatus.js'
 import TrafficBar from '../traffic/TrafficBar.vue'
 import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 import { describeHTTPBackends } from '../../utils/httpBackend.js'
 import { ruleServiceLink } from '../../utils/accessService.js'
+import { breakableUrl } from '../../utils/breakableUrl.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
@@ -123,7 +152,9 @@ const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
 const statusTone = computed(() => syncStatusTone(status.value))
 const statusLabel = computed(() => syncStatusLabel(status.value))
 
-const isHttps = computed(() => String(props.rule.frontend_url || '').startsWith('https'))
+const frontendUrl = computed(() => String(props.rule.frontend_url || '').trim())
+const frontendUrlParts = computed(() => breakableUrl(frontendUrl.value))
+const isHttps = computed(() => frontendUrl.value.startsWith('https'))
 
 const backendDescriptions = computed(() => describeHTTPBackends(props.rule, props.providerCatalog, props.providerCatalogStatus))
 const backends = computed(() => {
@@ -133,6 +164,10 @@ const backends = computed(() => {
 })
 
 const backendPrimary = computed(() => backends.value[0] || '-')
+const backendPrimaryCopyValue = computed(() => {
+  const first = backendDescriptions.value[0]
+  return first?.kind === 'url' ? first.label : ''
+})
 const backendExtraCount = computed(() => Math.max(0, backends.value.length - 1))
 const backendsTooltip = computed(() => backends.value.join('\n'))
 const providerStatus = computed(() => {
@@ -169,6 +204,35 @@ const serviceLink = computed(() => ruleServiceLink(props.rule))
   box-shadow: 0 0 0 1px var(--color-primary);
 }
 
+.rule-card__title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+
+.rule-card__title {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  letter-spacing: -0.015em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.rule-card__title--disabled {
+  color: var(--color-text-tertiary);
+}
+
 .rule-card__mapping {
   display: flex;
   flex-direction: column;
@@ -178,7 +242,7 @@ const serviceLink = computed(() => ruleServiceLink(props.rule))
 
 .rule-card__url-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.4rem;
   min-width: 0;
 }

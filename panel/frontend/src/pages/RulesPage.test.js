@@ -15,6 +15,7 @@ let rulesData
 let capturedListOptions
 let listState
 let deleteMutateAsync
+let diagnoseMutateAsync
 let listDataRef
 const mountedWrappers = []
 const queryClients = []
@@ -60,7 +61,7 @@ vi.mock('../hooks/useRules', () => ({
 }))
 
 vi.mock('../hooks/useDiagnostics', () => ({
-  useDiagnoseRule: () => ({ mutateAsync: vi.fn() }),
+  useDiagnoseRule: () => ({ mutateAsync: (...args) => diagnoseMutateAsync(...args) }),
   useDiagnosticTask: () => ({ data: ref(null) })
 }))
 
@@ -126,6 +127,7 @@ function teleportedPanelQuery(selector) {
 beforeEach(() => {
   listState = { isError: ref(false), error: ref(null), refetch: vi.fn() }
   deleteMutateAsync = vi.fn().mockResolvedValue({})
+  diagnoseMutateAsync = vi.fn().mockResolvedValue({ task_id: 'task-1', task: { state: 'completed' } })
 })
 
 afterEach(() => {
@@ -572,6 +574,59 @@ describe('RulesPage bulk mode', () => {
     change()
     await flushPromises()
     expect(wrapper.findComponent({ name: 'RuleTable' }).props('selectedKeys')).toEqual([])
+  })
+
+  it('adds bulk-active padding class, places BulkActionBar after ListPagination, and supports select-all in the bar', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.rules-page').classes()).not.toContain('rules-page--bulk-active')
+
+    await enterBulk(wrapper)
+    expect(wrapper.get('.rules-page').classes()).toContain('rules-page--bulk-active')
+
+    const children = Array.from(wrapper.get('.rules-page').element.children)
+    const paginationEl = wrapper.findComponent({ name: 'ListPagination' }).element
+    const bulkBarEl = wrapper.findComponent({ name: 'BulkActionBar' }).element
+    expect(children.indexOf(bulkBarEl)).toBeGreaterThan(children.indexOf(paginationEl))
+
+    const selectAllBtn = wrapper.get('[data-bulk-action="select-all"]')
+    expect(selectAllBtn.text()).toBe('全选本页')
+    await selectAllBtn.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 3 项')
+    expect(wrapper.get('[data-bulk-action="select-all"]').text()).toBe('取消全选')
+
+    await wrapper.get('[data-bulk-action="select-all"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 0 项')
+    expect(wrapper.get('[data-bulk-action="select-all"]').text()).toBe('全选本页')
+
+    await wrapper.get('[data-bulk-action="cancel"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.rules-page').classes()).not.toContain('rules-page--bulk-active')
+  })
+
+  it('supports retrying rule diagnostics from inside RuleDiagnosticModal', async () => {
+    diagnoseMutateAsync
+      .mockResolvedValueOnce({ task_id: 'task-1', task: { state: 'completed' } })
+      .mockResolvedValueOnce({ task_id: 'task-2', task: { state: 'completed' } })
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    cards(wrapper)[0].vm.$emit('diagnose', rulesData[0])
+    await flushPromises()
+    expect(diagnoseMutateAsync).toHaveBeenCalledTimes(1)
+    expect(diagnoseMutateAsync).toHaveBeenLastCalledWith({ id: 1, agentId: '1' })
+
+    const modal = wrapper.findComponent({ name: 'RuleDiagnosticModal' })
+    expect(modal.props('modelValue')).toBe(true)
+    expect(modal.props('canRetry')).toBe(true)
+
+    modal.vm.$emit('retry')
+    await flushPromises()
+    expect(diagnoseMutateAsync).toHaveBeenCalledTimes(2)
+    expect(diagnoseMutateAsync).toHaveBeenLastCalledWith({ id: 1, agentId: '1' })
   })
 })
 

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import RuleDiagnosticModal from './RuleDiagnosticModal.vue'
+import { messageStore } from '../stores/messages.js'
 
 function buildTask(kind, adaptive = {}, children = []) {
   return {
@@ -647,5 +648,137 @@ describe('RuleDiagnosticModal', () => {
     expect(conclusion.text()).toContain('诊断执行失败')
     expect(conclusion.text()).toContain('agent offline: task session closed')
     expect(conclusion.findAll('.diagnostic-conclusion__suggestions li').length).toBeGreaterThan(0)
+  })
+
+  it('renders layered relay hop cells with mobile labels for long IPv6 targets', () => {
+    const wrapper = mountModal({
+      task: {
+        ...buildTask('http'),
+        result: {
+          ...buildTask('http').result,
+          relay_paths: [
+            {
+              path: [1],
+              selected: true,
+              success: true,
+              latency_ms: 142,
+              hops: [
+                {
+                  from: 'client',
+                  success: true,
+                  to_listener_id: 1,
+                  to_listener_name: 'dmit-relay-us',
+                  to_agent_name: 'dmit-us',
+                  latency_ms: 48
+                },
+                {
+                  success: true,
+                  from_listener_id: 1,
+                  from_listener_name: 'dmit-relay-us',
+                  from_agent_name: 'dmit-us',
+                  to: '[2606:4700:3036::6815:124]:443',
+                  latency_ms: 142
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+
+    const rows = wrapper.findAll('.diagnostic-table__row')
+    expect(rows).toHaveLength(2)
+    expect(rows[1].get('.diagnostic-table__cell--hop .diagnostic-table__hop-label').text()).toBe(
+      'dmit-relay-us (dmit-us) → 后端([2606:4700:3036::6815:124]:443)'
+    )
+    expect(rows[1].get('.diagnostic-table__cell--status .diagnostic-table__mobile-label').text()).toBe('状态')
+    expect(rows[1].get('.diagnostic-table__cell--latency .diagnostic-table__mobile-label').text()).toBe('延迟')
+    expect(rows[1].get('.diagnostic-table__cell--quality .diagnostic-table__mobile-label').text()).toBe('质量')
+    expect(rows[1].get('.diagnostic-table__cell--latency').text()).toContain('142 ms')
+  })
+
+  it('shows retry button when canRetry is true, disables it while probing, and emits retry when idle', async () => {
+    const withoutRetry = mountModal()
+    expect(withoutRetry.find('[data-test="diagnostic-retry"]').exists()).toBe(false)
+
+    const wrapper = mountModal({
+      canRetry: true,
+      task: { state: 'running' }
+    })
+    const retryBtn = wrapper.get('[data-test="diagnostic-retry"]')
+    expect(retryBtn.text()).toBe('重新诊断')
+    expect(retryBtn.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="diagnostic-copy-summary"]').exists()).toBe(false)
+
+    await retryBtn.trigger('click')
+    expect(wrapper.emitted('retry')).toBeUndefined()
+
+    await wrapper.setProps({ task: buildTask('http') })
+    const enabledRetry = wrapper.get('[data-test="diagnostic-retry"]')
+    expect(enabledRetry.attributes('disabled')).toBeUndefined()
+    await enabledRetry.trigger('click')
+    expect(wrapper.emitted('retry')).toHaveLength(1)
+  })
+
+  it('copies a readable diagnostic summary including conclusion, latency, and relay path', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+    const successSpy = vi.spyOn(messageStore, 'success')
+
+    const task = buildTask('http')
+    task.result.relay_paths = [
+      {
+        path: [1],
+        selected: true,
+        success: true,
+        latency_ms: 48,
+        hops: [
+          {
+            from: 'client',
+            success: true,
+            to_listener_id: 1,
+            to_listener_name: 'Relay A',
+            to_agent_name: 'edge-1',
+            latency_ms: 18
+          },
+          {
+            success: true,
+            from_listener_id: 1,
+            from_listener_name: 'Relay A',
+            from_agent_name: 'edge-1',
+            to: '[2606:4700:3036::6815:124]:443',
+            latency_ms: 48
+          }
+        ]
+      }
+    ]
+
+    const wrapper = mountModal({
+      ruleLabel: 'https://emby.example.com',
+      endpointLabel: 'http://127.0.0.1:8096',
+      agentLabel: 'Edge Node',
+      task
+    })
+
+    const copyBtn = wrapper.get('[data-test="diagnostic-copy-summary"]')
+    expect(copyBtn.text()).toBe('复制摘要')
+    await copyBtn.trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const copiedText = writeText.mock.calls[0][0]
+    expect(copiedText).toContain('[HTTP 规则诊断] https://emby.example.com')
+    expect(copiedText).toContain('目标: http://127.0.0.1:8096')
+    expect(copiedText).toContain('节点: Edge Node')
+    expect(copiedText).toContain('结论: HTTP 反代链路正常：3 次探测全部成功')
+    expect(copiedText).toContain('平均延迟: 18 ms')
+    expect(copiedText).toContain('Relay 路径:')
+    expect(copiedText).toContain('Relay A (edge-1) → 后端([2606:4700:3036::6815:124]:443)')
+    expect(successSpy).toHaveBeenCalledWith('已复制诊断摘要')
+    expect(wrapper.get('[data-test="diagnostic-copy-summary"]').text()).toBe('已复制摘要')
+    successSpy.mockRestore()
   })
 })

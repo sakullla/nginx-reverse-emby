@@ -1,8 +1,9 @@
-import { mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import RuleCard from './RuleCard.vue'
 import RuleTable from './RuleTable.vue'
+import { messageStore } from '../../stores/messages.js'
 
 const generation = '6ca5bf3f4ebcf3d41f00b3fd22319854d482f063d34dfdfd3e51eb6c'
 const rule = {
@@ -126,11 +127,64 @@ describe('RuleCard actions', () => {
     wrapper.unmount()
   })
 
-  it('toggles selection instead of editing when selectable', async () => {
-    const wrapper = mount(RuleCard, { props: { rule: plainRule, selectable: true, selected: false } })
+  it('toggles selection instead of editing when selectable and guards row actions', async () => {
+    const richRule = {
+      ...plainRule,
+      backends: [{ url: 'http://10.0.0.1:8096' }]
+    }
+    const wrapper = mount(RuleCard, { props: { rule: richRule, selectable: true, selected: false } })
+    const toggleBtn = wrapper.get('[data-action="toggle"]')
+    const editBtn = wrapper.get('[data-action="edit"]')
+    expect(toggleBtn.attributes('disabled')).toBeDefined()
+    expect(editBtn.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.base-action-menu__trigger').exists()).toBe(false)
+    expect(wrapper.find('[data-copy-target="frontend"]').exists()).toBe(false)
+    expect(wrapper.find('[data-copy-target="backend"]').exists()).toBe(false)
+
+    await toggleBtn.trigger('click')
+    await editBtn.trigger('click')
+    expect(wrapper.emitted('toggle')).toBeUndefined()
+    expect(wrapper.emitted('edit')).toBeUndefined()
+
     await wrapper.get('.base-list-card').trigger('click')
     await wrapper.get('input.rule-card__select').trigger('click')
-    expect(wrapper.emitted('select')).toEqual([[plainRule], [plainRule]])
+    expect(wrapper.emitted('select')).toEqual([[richRule], [richRule]])
     expect(wrapper.emitted('edit')).toBeUndefined()
+  })
+
+  it('copies frontend URL and primary backend URL without triggering edit', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+    const successSpy = vi.spyOn(messageStore, 'success')
+    const multiBackendRule = {
+      ...plainRule,
+      backends: [{ url: 'http://10.0.0.1:8096' }, { url: 'http://10.0.0.2:8096' }]
+    }
+
+    const wrapper = mount(RuleCard, { props: { rule: multiBackendRule } })
+    await wrapper.get('[data-copy-target="frontend"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('https://a.example.com')
+
+    await wrapper.get('[data-copy-target="backend"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('http://10.0.0.1:8096')
+    expect(wrapper.emitted('edit')).toBeUndefined()
+    expect(successSpy).toHaveBeenCalledWith('已复制入口 URL')
+    expect(successSpy).toHaveBeenCalledWith('已复制后端地址')
+    successSpy.mockRestore()
+  })
+
+  it('hides backend copy button when backend is empty or plugin provider', () => {
+    const noBackend = mount(RuleCard, { props: { rule: plainRule } })
+    expect(noBackend.find('[data-copy-target="frontend"]').exists()).toBe(true)
+    expect(noBackend.find('[data-copy-target="backend"]').exists()).toBe(false)
+
+    const providerOnly = mount(RuleCard, { props: { rule, providerCatalog } })
+    expect(providerOnly.find('[data-copy-target="frontend"]').exists()).toBe(true)
+    expect(providerOnly.find('[data-copy-target="backend"]').exists()).toBe(false)
   })
 })

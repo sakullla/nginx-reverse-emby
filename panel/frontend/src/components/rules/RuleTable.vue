@@ -54,6 +54,7 @@
               :aria-checked="rule.enabled ? 'true' : 'false'"
               :aria-label="rule.enabled ? '停用规则' : '启用规则'"
               :title="rule.enabled ? '停用' : '启用'"
+              :disabled="selectable"
               @click="$emit('toggle', rule)"
             >
               <span class="toggle__knob"></span>
@@ -73,12 +74,32 @@
             <div class="rules-table__url-cell">
               <span class="rules-table__id">#{{ rule.id }}</span>
               <span class="rules-table__url" :title="rule.frontend_url">{{ rule.frontend_url }}</span>
+              <CopyButton
+                v-if="!selectable"
+                class="rules-table__copy-btn"
+                :value="rule.frontend_url"
+                label="复制入口 URL"
+                success-message="已复制入口 URL"
+                size="xs"
+                data-copy-target="frontend"
+              />
             </div>
           </td>
           <td class="rules-table__dim">
-            <span class="rules-table__url rules-table__url--backend" :title="backendTooltip(rule)">
-              {{ formatBackend(rule) }}
-            </span>
+            <div class="rules-table__backend-cell">
+              <span class="rules-table__url rules-table__url--backend" :title="backendTooltip(rule)">
+                {{ formatBackend(rule) }}
+              </span>
+              <CopyButton
+                v-if="!selectable"
+                class="rules-table__copy-btn"
+                :value="primaryBackendCopyValue(rule)"
+                label="复制后端地址"
+                success-message="已复制后端地址"
+                size="xs"
+                data-copy-target="backend"
+              />
+            </div>
           </td>
           <td v-if="showAgentColumn" class="rules-table__dim rules-table__cell-agent">
             <AgentBadge :item="rule" :agent="agent" />
@@ -112,13 +133,21 @@
           </td>
           <td @click.stop>
             <div class="rules-table__actions">
-              <button type="button" class="btn-icon" title="编辑" aria-label="编辑" data-action="edit" @click="$emit('edit', rule)">
+              <button
+                type="button"
+                class="btn-icon"
+                title="编辑"
+                aria-label="编辑"
+                :disabled="selectable"
+                data-action="edit"
+                @click="$emit('edit', rule)"
+              >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                 </svg>
               </button>
-              <BaseActionMenu :items="menuItems" @select="onMenuSelect(rule, $event)" />
+              <BaseActionMenu v-if="!selectable" :items="menuItems" @select="onMenuSelect(rule, $event)" />
             </div>
           </td>
         </tr>
@@ -161,6 +190,7 @@ import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseActionMenu from '../base/BaseActionMenu.vue'
+import CopyButton from '../common/CopyButton.vue'
 import TrafficBar from '../traffic/TrafficBar.vue'
 import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 import AgentBadge from '../common/AgentBadge.vue'
@@ -342,6 +372,11 @@ function formatBackend(rule) {
   return `${backends[0]} +${backends.length - 1}`
 }
 
+function primaryBackendCopyValue(rule) {
+  const first = describeHTTPBackends(rule, props.providerCatalog, props.providerCatalogStatus)[0]
+  return first?.kind === 'url' ? first.label : ''
+}
+
 function backendTooltip(rule) {
   return describeHTTPBackends(rule, props.providerCatalog, props.providerCatalogStatus).map((backend) => {
     if (backend.kind !== 'provider') return backend.label
@@ -490,9 +525,32 @@ watch(
 
 .rules-table__url-cell {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-1-5);
   min-width: 0;
+}
+
+.rules-table__backend-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.rules-table__copy-btn {
+  opacity: 0.6;
+}
+
+.rules-table__row:hover .rules-table__copy-btn,
+.rules-table__copy-btn:hover,
+.rules-table__copy-btn:focus-visible {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .rules-table__copy-btn {
+    opacity: 1;
+  }
 }
 
 .rules-table__id {
@@ -505,6 +563,7 @@ watch(
 
 .rules-table__url {
   display: block;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
@@ -589,12 +648,17 @@ watch(
   transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
 }
 
-.rules-table__actions .btn-icon:hover {
+.rules-table__actions .btn-icon:hover:not(:disabled) {
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
 }
 
-.rules-table__actions .btn-icon--danger:hover {
+.rules-table__actions .btn-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rules-table__actions .btn-icon--danger:hover:not(:disabled) {
   background: var(--color-danger-50);
   color: var(--color-danger);
 }
@@ -612,6 +676,11 @@ watch(
   padding: 0;
   /* Off state needs a visible track edge in both themes. */
   box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
+.toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .toggle:focus-visible {

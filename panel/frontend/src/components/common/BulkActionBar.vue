@@ -6,9 +6,21 @@
     aria-label="批量操作"
     @keydown.esc="!busy && $emit('cancel')"
   >
-    <div class="bulk-action-bar__summary" aria-live="polite">
-      <span class="bulk-action-bar__count">已选 {{ count }} 项</span>
-      <span v-if="busy && progressText" class="bulk-action-bar__progress">{{ progressText }}</span>
+    <div class="bulk-action-bar__summary">
+      <div class="bulk-action-bar__meta" aria-live="polite">
+        <span class="bulk-action-bar__count">已选 {{ count }} 项</span>
+        <span v-if="busy && progressText" class="bulk-action-bar__progress">{{ progressText }}</span>
+      </div>
+      <BaseButton
+        v-if="showSelectAll"
+        variant="ghost"
+        size="sm"
+        class="bulk-action-bar__select-all"
+        :disabled="busy"
+        :aria-pressed="selectAllAriaPressed"
+        data-bulk-action="select-all"
+        @click="$emit('toggle-all')"
+      >{{ allSelected ? '取消全选' : '全选本页' }}</BaseButton>
     </div>
     <div class="bulk-action-bar__actions">
       <BaseButton
@@ -55,14 +67,23 @@ const props = defineProps({
   busy: { type: Boolean, default: false },
   /** Optional progress while busy: { done, total } */
   progress: { type: Object, default: null },
+  allSelected: { type: Boolean, default: false },
+  indeterminate: { type: Boolean, default: false },
+  showSelectAll: { type: Boolean, default: false },
   showEnable: { type: Boolean, default: true },
   showDisable: { type: Boolean, default: true },
   showDelete: { type: Boolean, default: true }
 })
 
-defineEmits(['enable', 'disable', 'delete', 'cancel'])
+defineEmits(['enable', 'disable', 'delete', 'cancel', 'toggle-all'])
 
 const actionsDisabled = computed(() => props.busy || props.count === 0)
+
+const selectAllAriaPressed = computed(() => {
+  if (props.allSelected) return 'true'
+  if (props.indeterminate) return 'mixed'
+  return 'false'
+})
 
 const progressText = computed(() => {
   const total = props.progress?.total ?? 0
@@ -91,6 +112,13 @@ const progressText = computed(() => {
 
 .bulk-action-bar__summary {
   display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.bulk-action-bar__meta {
+  display: flex;
   align-items: baseline;
   gap: var(--space-2);
   min-width: 0;
@@ -110,6 +138,11 @@ const progressText = computed(() => {
   font-variant-numeric: tabular-nums;
 }
 
+.bulk-action-bar__select-all {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .bulk-action-bar__actions {
   display: flex;
   flex-wrap: wrap;
@@ -118,20 +151,33 @@ const progressText = computed(() => {
 }
 
 @media (max-width: 1023px) {
-  /* Stay above the BottomNav. */
+  /* Fixed directly above BottomNav (60px + safe-area) without compounding .content bottom padding. */
   .bulk-action-bar {
-    bottom: calc(64px + env(safe-area-inset-bottom, 0px) + var(--space-2));
+    position: fixed;
+    left: var(--space-3);
+    right: var(--space-3);
+    bottom: calc(60px + env(safe-area-inset-bottom, 0px) + var(--space-2));
+    z-index: calc(var(--z-sticky, 200) + 10);
+    margin: 0;
   }
 }
 
 @media (max-width: 640px) {
   .bulk-action-bar {
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-2) var(--space-2-5);
+    gap: var(--space-1-5) var(--space-2);
+    border-radius: var(--radius-lg);
+  }
+
+  .bulk-action-bar__summary {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .bulk-action-bar__actions {
     width: 100%;
     justify-content: flex-end;
+    gap: var(--space-1);
   }
 }
 </style>

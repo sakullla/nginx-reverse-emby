@@ -1,5 +1,5 @@
 <template>
-  <div class="rules-page">
+  <div class="rules-page" :class="{ 'rules-page--bulk-active': bulkBarVisible }">
     <div class="rules-page__header">
       <div class="rules-page__header-left">
         <h1 class="rules-page__title">HTTP 规则</h1>
@@ -185,23 +185,27 @@
       @delete="startDelete"
     />
 
-    <BulkActionBar
-      v-if="bulkMode && hasAgentFilter && filteredRules.length"
-      :count="bulk.selectedCount.value"
-      :busy="bulkBusy"
-      :progress="bulkProgress"
-      @enable="runBulkToggle(true)"
-      @disable="runBulkToggle(false)"
-      @delete="openBulkDelete"
-      @cancel="exitBulkMode"
-    />
-
     <ListPagination
       v-if="hasAgentFilter && listTotal > 0 && !exactRuleMatch"
       :page="page"
       :page-size="pageSize"
       :total="listTotal"
       @update:page="page = $event"
+    />
+
+    <BulkActionBar
+      v-if="bulkBarVisible"
+      :count="bulk.selectedCount.value"
+      :busy="bulkBusy"
+      :progress="bulkProgress"
+      :show-select-all="true"
+      :all-selected="bulk.isAllSelected.value"
+      :indeterminate="bulk.isIndeterminate.value"
+      @toggle-all="bulk.toggleAll()"
+      @enable="runBulkToggle(true)"
+      @disable="runBulkToggle(false)"
+      @delete="openBulkDelete"
+      @cancel="exitBulkMode"
     />
 
     <!-- Loading — skeleton mirrors the target layout so the swap feels seamless -->
@@ -261,8 +265,10 @@
       kind="http"
       :rule-label="diagnosticRule?.frontend_url || ''"
       :endpoint-label="formatHttpBackend(diagnosticRule || {})"
-      :agent-label="selectedAgentLabel"
+      :agent-label="diagnosticAgentLabel"
+      :can-retry="Boolean(diagnosticRule)"
       @update:model-value="closeDiagnostic"
+      @retry="retryDiagnostic"
     />
 
     <TrafficTrendModal
@@ -807,6 +813,7 @@ const bulkDeleteError = ref('')
 const pageRuleKeys = computed(() => filteredRules.value.map(ruleKey))
 const bulk = useBulkSelection(pageRuleKeys)
 const canBulk = computed(() => hasAgentFilter.value && filteredRules.value.length > 0)
+const bulkBarVisible = computed(() => bulkMode.value && hasAgentFilter.value && filteredRules.value.length > 0)
 
 function toggleBulkMode() {
   if (bulkMode.value) exitBulkMode()
@@ -946,6 +953,14 @@ const diagnosticAgentId = ref('')
 const initialDiagnosticTask = ref(null)
 const { data: diagnosticTaskData } = useDiagnosticTask(diagnosticAgentId, diagnosticTaskId)
 const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
+const diagnosticAgentLabel = computed(() => {
+  const id = String(diagnosticAgentId.value || '').trim()
+  if (id) {
+    const agent = allAgents.value.find((item) => String(item.id) === id)
+    if (agent?.name) return String(agent.name).trim()
+  }
+  return selectedAgentLabel.value
+})
 
 
 function requireMutationAgent(resource, actionLabel = '操作') {
@@ -1050,11 +1065,13 @@ function cancelDelete() {
   deleteError.value = ''
 }
 
-async function openDiagnostic(rule) {
-  const target = requireMutationAgent(rule, '诊断')
+async function openDiagnostic(rule, explicitAgentId = '') {
+  const target = String(explicitAgentId || '').trim() || requireMutationAgent(rule, '诊断')
   if (!target) return
   diagnosticRule.value = rule
   diagnosticAgentId.value = target
+  diagnosticTaskId.value = ''
+  initialDiagnosticTask.value = null
   showDiagnostic.value = true
   try {
     const response = await diagnoseRule.mutateAsync({ id: rule.id, agentId: target })
@@ -1064,6 +1081,11 @@ async function openDiagnostic(rule) {
     closeDiagnostic()
     messageStore.error(error, '启动 HTTP 规则诊断失败')
   }
+}
+
+function retryDiagnostic() {
+  if (!diagnosticRule.value) return
+  openDiagnostic(diagnosticRule.value, diagnosticAgentId.value)
 }
 
 function closeForm() {
@@ -1160,7 +1182,17 @@ async function confirmDelete() {
   font-weight: 600;
 }
 
+@media (max-width: 1023px) {
+  .rules-page--bulk-active {
+    padding-bottom: 5.5rem;
+  }
+}
+
 @media (max-width: 640px) {
+  .rules-page--bulk-active {
+    padding-bottom: 7.5rem;
+  }
+
   .rules-page__header {
     flex-direction: column;
     align-items: stretch;
