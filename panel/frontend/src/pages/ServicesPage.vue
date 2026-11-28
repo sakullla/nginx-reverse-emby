@@ -40,7 +40,12 @@
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
           <h2 id="service-delete-title" class="service-delete__title">删除服务</h2>
-          <BaseBadge v-if="deleting.name || deleting.entry_url" tone="danger" size="sm">
+          <BaseBadge
+            v-if="deleting.name || deleting.entry_url"
+            class="service-delete__target-badge"
+            tone="danger"
+            size="sm"
+          >
             {{ deleting.name || deleting.entry_url }}
           </BaseBadge>
         </div>
@@ -676,6 +681,19 @@ async function abandonSelected() {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+}
+
+.service-delete__title-row .service-delete__target-badge {
+  max-width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 1.25rem;
+  padding-block: 0.15rem;
+  white-space: normal;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .service-delete__icon {

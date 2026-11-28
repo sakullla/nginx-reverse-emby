@@ -597,6 +597,7 @@ describe('service page', () => {
     await deleteBtn.trigger('click')
     const dialog = wrapper.get('[data-testid="service-delete"]')
     expect(dialog.attributes('role')).toBe('alertdialog')
+    expect(dialog.get('.service-delete__target-badge').text()).toBe('就绪站点')
     const confirmDeleteBtn = dialog.findAll('button').find((button) => button.text() === '确认删除')
     expect(confirmDeleteBtn.classes()).toContain('btn--danger')
     expect(dialog.text()).toContain('节点尚未应用删除时，服务会留在列表并显示待生效。这不表示入口已经关闭。')
