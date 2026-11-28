@@ -52,6 +52,8 @@
               type="button"
               class="toggle"
               :class="{ 'toggle--on': rule.enabled }"
+              role="switch"
+              :aria-checked="rule.enabled ? 'true' : 'false'"
               :aria-label="rule.enabled ? '停用规则' : '启用规则'"
               :title="rule.enabled ? '停用' : '启用'"
               :disabled="selectable"
@@ -73,13 +75,35 @@
           <td class="rules-table__dim">
             <div class="rules-table__url-cell">
               <span class="rules-table__id">#{{ rule.id }}</span>
-              <span class="rules-table__url" :title="listenTitle(rule)">{{ listenTitle(rule) }}</span>
+              <div class="rules-table__addr-row">
+                <span class="rules-table__url" :title="listenTitle(rule)">{{ listenTitle(rule) }}</span>
+                <CopyButton
+                  v-if="!selectable"
+                  class="rules-table__copy-btn"
+                  :value="listenCopyValue(rule)"
+                  label="复制监听地址"
+                  success-message="已复制监听地址"
+                  size="xs"
+                  data-copy-target="listen"
+                />
+              </div>
             </div>
           </td>
           <td class="rules-table__dim">
-            <span class="rules-table__url rules-table__url--backend" :title="backendTooltip(rule)">
-              {{ formatBackend(rule) }}
-            </span>
+            <div class="rules-table__backend-cell">
+              <span class="rules-table__url rules-table__url--backend" :title="backendTooltip(rule)">
+                {{ formatBackend(rule) }}
+              </span>
+              <CopyButton
+                v-if="!selectable"
+                class="rules-table__copy-btn"
+                :value="primaryBackendCopyValue(rule)"
+                label="复制后端地址"
+                success-message="已复制后端地址"
+                size="xs"
+                data-copy-target="backend"
+              />
+            </div>
           </td>
           <td class="rules-table__dim">
             <BaseBadge shape="square" mono :tone="getLBLabel(rule.load_balancing?.strategy).tone">
@@ -103,7 +127,7 @@
               <span v-if="!ruleTags(rule).length" class="rules-table__empty-cell">—</span>
             </div>
           </td>
-          <td v-if="showTraffic" class="rules-table__dim" @click.stop>
+          <td v-if="showTraffic" class="rules-table__dim">
             <TrafficBar
               v-if="trafficOf(rule)"
               compact
@@ -111,7 +135,7 @@
               :rx="trafficOf(rule).rx_bytes"
               :tx="trafficOf(rule).tx_bytes"
               :node-total="nodeTotalOf(rule)"
-              @click="$emit('traffic-click', rule)"
+              @click="onTrafficClick(rule)"
             />
             <span v-else class="rules-table__empty-cell">—</span>
           </td>
@@ -123,6 +147,7 @@
                 title="编辑"
                 aria-label="编辑"
                 :disabled="selectable"
+                data-action="edit"
                 @click="$emit('edit', rule)"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -174,6 +199,7 @@ import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
+import CopyButton from '../common/CopyButton.vue'
 import TrafficBar from '../traffic/TrafficBar.vue'
 
 // Reserve room for a "+N" badge that is not rendered yet (all tags fit).
@@ -216,6 +242,11 @@ function isRowSelected(rule) {
 
 function onRowClick(rule) {
   if (props.selectable) emit('select', rule)
+}
+
+function onTrafficClick(rule) {
+  if (props.selectable) emit('select', rule)
+  else emit('traffic-click', rule)
 }
 
 function getStatus(rule) {
@@ -346,6 +377,11 @@ function listenTitle(rule) {
   return `${host}:${port}`
 }
 
+function listenCopyValue(rule) {
+  const title = listenTitle(rule)
+  return title === '-' ? '' : title
+}
+
 function l4Backends(rule) {
   return Array.isArray(rule?.backends) ? rule.backends : []
 }
@@ -357,6 +393,15 @@ function formatBackend(rule) {
   const addr = `${first.host}:${first.port}`
   if (backends.length === 1) return addr
   return `${addr} +${backends.length - 1}`
+}
+
+function primaryBackendCopyValue(rule) {
+  const first = l4Backends(rule)[0]
+  if (!first) return ''
+  const host = String(first.host ?? '').trim()
+  const port = first.port
+  if (!host && (port === undefined || port === null || port === '')) return ''
+  return `${host}:${port}`
 }
 
 function backendTooltip(rule) {
@@ -411,8 +456,8 @@ function backendTooltip(rule) {
 .rules-table__col-select { width: 1rem; }
 .rules-table__col-toggle { width: 2.25rem; }
 .rules-table__col-status { width: 5rem; }
-.rules-table__col-listen { width: 7.5rem; }
-.rules-table__col-backend { width: 11rem; }
+.rules-table__col-listen { width: 8.25rem; }
+.rules-table__col-backend { width: 11.25rem; }
 .rules-table__col-lb { width: 3.5rem; }
 .rules-table__col-agent { width: 6.25rem; }
 .rules-table__col-traffic { width: 5rem; }
@@ -476,6 +521,30 @@ function backendTooltip(rule) {
   min-width: 0;
 }
 
+.rules-table__addr-row,
+.rules-table__backend-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.rules-table__copy-btn {
+  opacity: 0.6;
+}
+
+.rules-table__row:hover .rules-table__copy-btn,
+.rules-table__copy-btn:hover,
+.rules-table__copy-btn:focus-visible {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .rules-table__copy-btn {
+    opacity: 1;
+  }
+}
+
 .rules-table__id {
   color: var(--color-text-muted);
   font-family: var(--font-mono);
@@ -486,6 +555,8 @@ function backendTooltip(rule) {
 
 .rules-table__url {
   display: block;
+  flex: 0 1 auto;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   font-weight: 500;
@@ -558,12 +629,12 @@ function backendTooltip(rule) {
   transition: all var(--duration-fast) var(--ease-default);
 }
 
-.rules-table__actions .btn-icon:hover {
+.rules-table__actions .btn-icon:hover:not(:disabled) {
   background: var(--color-bg-hover);
   color: var(--color-primary);
 }
 
-.rules-table__actions .btn-icon--danger:hover {
+.rules-table__actions .btn-icon--danger:hover:not(:disabled) {
   background: var(--color-danger-50);
   color: var(--color-danger);
 }

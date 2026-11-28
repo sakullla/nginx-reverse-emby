@@ -1,7 +1,8 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import L4RuleTable, { fitTagCount } from './L4RuleTable.vue'
+import { messageStore } from '../../stores/messages.js'
 
 const baseRule = {
   id: 7,
@@ -101,5 +102,83 @@ describe('L4RuleTable tags', () => {
     expect(fitTagCount([40, 40], 84, 4, 28)).toBe(2)
     expect(fitTagCount([40, 40, 40], 110, 4, 28)).toBe(1)
     expect(fitTagCount([200], 120, 4, 28)).toBe(0)
+  })
+})
+
+describe('L4RuleTable copy and bulk guards', () => {
+  it('copies listen address and primary backend address in normal mode without extra suffixes', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+    const successSpy = vi.spyOn(messageStore, 'success').mockImplementation(() => {})
+    const list = [
+      {
+        ...baseRule,
+        backends: [{ host: '10.0.0.1', port: 80 }, { host: '10.0.0.2', port: 81 }]
+      },
+      {
+        id: 9,
+        agent_id: 'a1',
+        protocol: 'tcp',
+        listen_host: '',
+        listen_port: '',
+        enabled: true,
+        backends: [],
+        tags: []
+      }
+    ]
+
+    const wrapper = mount(L4RuleTable, { props: { rules: list }, attachTo: document.body })
+    wrappers.push(wrapper)
+    const rows = wrapper.findAll('tbody .rules-table__row')
+    expect(rows[0].get('.rules-table__url--backend').text()).toBe('10.0.0.1:80 +1')
+
+    await rows[0].get('[data-copy-target="listen"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('0.0.0.0:9000')
+
+    await rows[0].get('[data-copy-target="backend"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('10.0.0.1:80')
+
+    expect(rows[1].find('[data-copy-target="listen"]').exists()).toBe(false)
+    expect(rows[1].find('[data-copy-target="backend"]').exists()).toBe(false)
+    expect(wrapper.emitted('select')).toBeUndefined()
+    expect(wrapper.emitted('edit')).toBeUndefined()
+    expect(successSpy).toHaveBeenCalledWith('已复制监听地址')
+    expect(successSpy).toHaveBeenCalledWith('已复制后端地址')
+  })
+
+  it('guards row actions and hides copy buttons and action menu in bulk mode', async () => {
+    const wrapper = mount(L4RuleTable, {
+      props: {
+        rules: [baseRule],
+        selectable: true,
+        selectedKeys: [],
+        trafficFor: () => ({ accounted_bytes: 2048, rx_bytes: 1024, tx_bytes: 1024 }),
+        nodeTotalFor: () => 4096
+      },
+      attachTo: document.body
+    })
+    wrappers.push(wrapper)
+
+    const toggleBtn = wrapper.get('.toggle')
+    const editBtn = wrapper.get('[data-action="edit"]')
+    expect(toggleBtn.attributes('disabled')).toBeDefined()
+    expect(editBtn.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.base-action-menu__trigger').exists()).toBe(false)
+    expect(wrapper.find('[data-copy-target="listen"]').exists()).toBe(false)
+    expect(wrapper.find('[data-copy-target="backend"]').exists()).toBe(false)
+
+    await toggleBtn.trigger('click')
+    await editBtn.trigger('click')
+    expect(wrapper.emitted('toggle')).toBeUndefined()
+    expect(wrapper.emitted('edit')).toBeUndefined()
+
+    await wrapper.get('.traffic-bar--compact').trigger('click')
+    expect(wrapper.emitted('select')).toEqual([[baseRule]])
+    expect(wrapper.emitted('traffic-click')).toBeUndefined()
   })
 })

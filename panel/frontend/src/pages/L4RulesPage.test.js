@@ -12,6 +12,7 @@ let selectedAgentId
 let agentsData
 let rulesData
 let listState
+let diagnoseMutateAsync
 const mountedWrappers = []
 const queryClients = []
 
@@ -40,7 +41,7 @@ vi.mock('../hooks/useL4Rules', () => ({
 }))
 
 vi.mock('../hooks/useDiagnostics', () => ({
-  useDiagnoseL4Rule: () => ({ mutateAsync: vi.fn() }),
+  useDiagnoseL4Rule: () => ({ mutateAsync: (...args) => diagnoseMutateAsync(...args) }),
   useDiagnosticTask: () => ({ data: ref(null) })
 }))
 
@@ -143,6 +144,7 @@ beforeEach(() => {
     { id: 13, agent_id: '1', protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 8013, enabled: false, backends: [{ host: 'c', port: 3 }] }
   ]
   listState = makeListState(rulesData)
+  diagnoseMutateAsync = vi.fn().mockResolvedValue({ task_id: 'task-1', task: { state: 'completed' } })
   updateL4Rule.mockReset().mockResolvedValue({})
   deleteL4Rule.mockReset().mockResolvedValue({})
 })
@@ -251,6 +253,112 @@ describe('L4RulesPage bulk mode', () => {
     await flushPromises()
 
     expect(wrapper.get('.bulk-action-bar').text()).toContain('已选 0 项')
+  })
+
+  it('adds bulk-active padding class, places BulkActionBar after ListPagination, and supports select-all in the bar', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.rules-page').classes()).not.toContain('rules-page--bulk-active')
+
+    await wrapper.get('[data-testid="l4-bulk-toggle"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.rules-page').classes()).toContain('rules-page--bulk-active')
+
+    const children = Array.from(wrapper.get('.rules-page').element.children)
+    const paginationEl = wrapper.findComponent({ name: 'ListPagination' }).element
+    const bulkBarEl = wrapper.findComponent({ name: 'BulkActionBar' }).element
+    expect(children.indexOf(bulkBarEl)).toBeGreaterThan(children.indexOf(paginationEl))
+
+    const selectAllBtn = wrapper.get('[data-bulk-action="select-all"]')
+    expect(selectAllBtn.text()).toBe('全选本页')
+    await selectAllBtn.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 3 项')
+    expect(wrapper.get('[data-bulk-action="select-all"]').text()).toBe('取消全选')
+
+    await wrapper.get('[data-bulk-action="select-all"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 0 项')
+    expect(wrapper.get('[data-bulk-action="select-all"]').text()).toBe('全选本页')
+
+    await wrapper.get('[data-bulk-action="cancel"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.rules-page').classes()).not.toContain('rules-page--bulk-active')
+  })
+
+  it('drops selected keys that disappear after a background refetch', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('[data-testid="l4-bulk-toggle"]').trigger('click')
+    await wrapper.get('[data-bulk-action="select-all"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 3 项')
+
+    const remaining = rulesData.filter((rule) => rule.id !== 12)
+    listState.data.value = { items: remaining, total: remaining.length, page: 1, page_size: 20 }
+    await flushPromises()
+    expect(wrapper.get('.bulk-action-bar__count').text()).toBe('已选 2 项')
+  })
+
+  it('supports retrying L4 diagnostics from inside RuleDiagnosticModal', async () => {
+    diagnoseMutateAsync
+      .mockResolvedValueOnce({ task_id: 'task-1', task: { state: 'completed' } })
+      .mockResolvedValueOnce({ task_id: 'task-2', task: { state: 'completed' } })
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    wrapper.findAllComponents({ name: 'L4RuleItem' })[0].vm.$emit('diagnose', rulesData[0])
+    await flushPromises()
+    expect(diagnoseMutateAsync).toHaveBeenCalledTimes(1)
+    expect(diagnoseMutateAsync).toHaveBeenLastCalledWith({ id: 11, agentId: '1' })
+
+    const modal = wrapper.findComponent({ name: 'RuleDiagnosticModal' })
+    expect(modal.props('modelValue')).toBe(true)
+    expect(modal.props('canRetry')).toBe(true)
+    expect(modal.props('agentLabel')).toBe('master')
+    expect(modal.props('ruleLabel')).toBe('0.0.0.0:8011')
+
+    modal.vm.$emit('retry')
+    await flushPromises()
+    expect(diagnoseMutateAsync).toHaveBeenCalledTimes(2)
+    expect(diagnoseMutateAsync).toHaveBeenLastCalledWith({ id: 11, agentId: '1' })
+  })
+
+  it('keeps RuleDiagnosticModal open with failed task state on retry failure without duplicate toast and allows retrying again', async () => {
+    const errorSpy = vi.spyOn(messageStore, 'error').mockImplementation(() => {})
+    diagnoseMutateAsync
+      .mockResolvedValueOnce({ task_id: 'task-1', task: { state: 'completed' } })
+      .mockRejectedValueOnce(new Error('节点离线'))
+      .mockResolvedValueOnce({ task_id: 'task-3', task: { state: 'completed' } })
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    wrapper.findAllComponents({ name: 'L4RuleItem' })[0].vm.$emit('diagnose', rulesData[0])
+    await flushPromises()
+    const modal = wrapper.findComponent({ name: 'RuleDiagnosticModal' })
+    expect(modal.props('modelValue')).toBe(true)
+
+    modal.vm.$emit('retry')
+    await flushPromises()
+
+    expect(modal.props('modelValue')).toBe(true)
+    expect(modal.props('canRetry')).toBe(true)
+    expect(modal.props('ruleLabel')).toBe('0.0.0.0:8011')
+    expect(modal.props('agentLabel')).toBe('master')
+    expect(modal.props('task')).toEqual({
+      agent_id: '1',
+      state: 'failed',
+      error: '节点离线'
+    })
+    expect(errorSpy).not.toHaveBeenCalled()
+
+    modal.vm.$emit('retry')
+    await flushPromises()
+    expect(diagnoseMutateAsync).toHaveBeenCalledTimes(3)
+    expect(diagnoseMutateAsync).toHaveBeenLastCalledWith({ id: 11, agentId: '1' })
+    expect(modal.props('task')).toEqual({ state: 'completed' })
   })
 })
 

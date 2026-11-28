@@ -1,5 +1,5 @@
 <template>
-  <div class="rules-page">
+  <div class="rules-page" :class="{ 'rules-page--bulk-active': bulkBarVisible }">
     <div class="rules-page__header">
       <div class="rules-page__header-left">
         <h1 class="rules-page__title">L4 规则</h1>
@@ -178,10 +178,14 @@
     />
 
     <BulkActionBar
-      v-if="selectionMode && hasAgentFilter && filteredRules.length"
+      v-if="bulkBarVisible"
       :count="selection.selectedCount.value"
       :busy="bulkBusy"
       :progress="bulkProgress"
+      :show-select-all="true"
+      :all-selected="selection.isAllSelected.value"
+      :indeterminate="selection.isIndeterminate.value"
+      @toggle-all="selection.toggleAll()"
       @enable="runBulkToggle(true)"
       @disable="runBulkToggle(false)"
       @delete="startBulkDelete"
@@ -245,10 +249,12 @@
       :model-value="showDiagnostic"
       :task="diagnosticTask"
       kind="l4_tcp"
-      :rule-label="diagnosticRule?.name || `${diagnosticRule?.listen_host || ''}:${diagnosticRule?.listen_port || ''}`"
+      :rule-label="diagnosticRule ? (diagnosticRule.name || `${diagnosticRule.listen_host || ''}:${diagnosticRule.listen_port ?? ''}`) : ''"
       :endpoint-label="diagnosticRule ? l4BackendAddresses(diagnosticRule).join(', ') : ''"
-      :agent-label="selectedAgentLabel"
+      :agent-label="diagnosticAgentLabel"
+      :can-retry="Boolean(diagnosticRule)"
       @update:model-value="closeDiagnostic"
+      @retry="retryDiagnostic"
     />
 
     <TrafficTrendModal
@@ -753,6 +759,7 @@ const bulkDeleteOpen = ref(false)
 const bulkDeleteError = ref('')
 
 const canBulk = computed(() => hasAgentFilter.value && filteredRules.value.length > 0)
+const bulkBarVisible = computed(() => selectionMode.value && hasAgentFilter.value && filteredRules.value.length > 0)
 
 function toggleSelectionMode() {
   if (selectionMode.value) exitSelectionMode()
@@ -762,6 +769,8 @@ function toggleSelectionMode() {
 function exitSelectionMode() {
   if (bulkBusy.value) return
   selectionMode.value = false
+  bulkDeleteOpen.value = false
+  bulkDeleteError.value = ''
   selection.clear()
 }
 
@@ -773,19 +782,38 @@ function toggleRuleSelection(rule) {
 // Leaving the result set invalidates the selection.
 watch(
   [agentFilter, searchQuery, enabledStatusValue, syncValue, tagsValue, egressProfileIdValue, relayListenerIdValue, page],
-  () => { selection.clear() }
+  () => {
+    selection.clear()
+    bulkDeleteError.value = ''
+  }
 )
 
+// Background refetches can drop rules (e.g. deleted elsewhere); keep the count honest.
+watch(pageRuleKeys, (keys) => {
+  if (bulkBusy.value || !selection.hasSelection.value) return
+  const visible = new Set(keys)
+  const kept = selection.selectedList.value.filter((key) => visible.has(key))
+  if (kept.length !== selection.selectedCount.value) selection.setSelection(kept)
+})
+
 watch(canBulk, (value) => {
-  if (!value && !bulkBusy.value) {
-    selectionMode.value = false
-    selection.clear()
+  if (!value && selectionMode.value && !bulkBusy.value) {
+    exitSelectionMode()
   }
 })
 
+function isAnyDialogOpen() {
+  return Boolean(
+    bulkDeleteOpen.value || deletingRule.value || showAddForm.value || editingRule.value
+    || showCopyModal.value || showDiagnostic.value || trendModal.value.visible
+    || candidateModalVisible.value || showCreateAgentPicker.value
+  )
+}
+
 function onSelectionKeydown(event) {
-  if (event.key !== 'Escape' || !selectionMode.value) return
-  if (bulkDeleteOpen.value || bulkBusy.value) return
+  if (event.key !== 'Escape' || !selectionMode.value || event.defaultPrevented) return
+  if (bulkBusy.value || isAnyDialogOpen()) return
+  if (document.querySelector('.base-action-menu__panel:not([aria-hidden="true"])')) return
   exitSelectionMode()
 }
 onMounted(() => window.addEventListener('keydown', onSelectionKeydown))
@@ -880,7 +908,17 @@ const diagnosticTaskId = ref('')
 const diagnosticAgentId = ref('')
 const initialDiagnosticTask = ref(null)
 const { data: diagnosticTaskData } = useDiagnosticTask(diagnosticAgentId, diagnosticTaskId)
-const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
+const diagnosticTask = computed(() => (
+  diagnosticTaskId.value ? (diagnosticTaskData.value?.task || initialDiagnosticTask.value) : initialDiagnosticTask.value
+))
+const diagnosticAgentLabel = computed(() => {
+  const id = String(diagnosticAgentId.value || '').trim()
+  if (id) {
+    const agent = allAgents.value.find((item) => String(item.id) === id)
+    if (agent?.name) return String(agent.name).trim()
+  }
+  return selectedAgentLabel.value
+})
 
 const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: '', scopeLabel: '' })
 const trafficDirection = ref('both')
@@ -961,23 +999,46 @@ async function confirmDelete() {
   }
 }
 
-async function openDiagnostic(rule) {
-  const target = requireMutationAgent(rule, '诊断')
+let diagnosticRequestSeq = 0
+
+function extractDiagnosticError(error, fallback = '启动 L4 规则诊断失败') {
+  return String(error?.response?.data?.message || error?.message || '').trim() || fallback
+}
+
+async function openDiagnostic(rule, explicitAgentId = '') {
+  const target = String(explicitAgentId || '').trim() || requireMutationAgent(rule, '诊断')
   if (!target) return
+  const previousTask = diagnosticTask.value
+  const seq = ++diagnosticRequestSeq
   diagnosticRule.value = rule
   diagnosticAgentId.value = target
+  diagnosticTaskId.value = ''
+  initialDiagnosticTask.value = null
   showDiagnostic.value = true
   try {
     const response = await diagnoseL4Rule.mutateAsync({ id: rule.id, agentId: target })
-    initialDiagnosticTask.value = response.task || null
-    diagnosticTaskId.value = response.task_id
+    if (seq !== diagnosticRequestSeq || !showDiagnostic.value) return
+    initialDiagnosticTask.value = response?.task || null
+    diagnosticTaskId.value = response?.task_id || ''
   } catch (error) {
-    closeDiagnostic()
-    messageStore.error(error, '启动 L4 规则诊断失败')
+    if (seq !== diagnosticRequestSeq || !showDiagnostic.value) return
+    // useDiagnoseL4Rule.onError already reports the toast; keep the modal open in a failed terminal state so retry remains available.
+    diagnosticTaskId.value = ''
+    initialDiagnosticTask.value = {
+      agent_id: target,
+      state: 'failed',
+      error: extractDiagnosticError(error, previousTask?.error || '启动 L4 规则诊断失败')
+    }
   }
 }
 
+function retryDiagnostic() {
+  if (!diagnosticRule.value) return
+  openDiagnostic(diagnosticRule.value, diagnosticAgentId.value)
+}
+
 function closeDiagnostic() {
+  diagnosticRequestSeq += 1
   showDiagnostic.value = false
   diagnosticRule.value = null
   diagnosticAgentId.value = ''
@@ -1033,7 +1094,17 @@ function closeDiagnostic() {
   font-variant-numeric: tabular-nums;
 }
 
+@media (max-width: 1023px) {
+  .rules-page--bulk-active {
+    padding-bottom: 5.5rem;
+  }
+}
+
 @media (max-width: 640px) {
+  .rules-page--bulk-active {
+    padding-bottom: 7.5rem;
+  }
+
   .rules-page__header {
     flex-direction: column;
     align-items: stretch;
