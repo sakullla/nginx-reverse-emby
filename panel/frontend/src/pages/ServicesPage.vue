@@ -3,15 +3,87 @@
     <header class="page-header">
       <div class="page-header__left">
         <h1 class="page-title">服务</h1>
-        <p>添加、查看、修改和删除接入。未完成状态只展示控制面返回的结果。</p>
+        <p class="page-subtitle">添加、查看、修改和删除接入。未完成状态只展示控制面返回的结果。</p>
       </div>
       <div class="page-header__right">
         <button type="button" class="btn btn-primary" @click="startCreate">添加服务</button>
       </div>
     </header>
 
-    <p v-if="loadError" class="services-page__error" role="alert">{{ loadError }}</p>
-    <p v-if="actionError && !wizard" class="services-page__error" role="alert">{{ actionError }}</p>
+    <div v-if="loadError && (services.length || wizard || selected)" class="services-page__alert" role="alert">
+      <svg class="services-page__alert-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 8v4" />
+        <path d="M12 16h.01" />
+      </svg>
+      <span class="services-page__alert-text">{{ loadError }}</span>
+      <button type="button" class="btn btn-secondary btn-sm" :disabled="retryingLoad" @click="retryLoad">重试</button>
+    </div>
+
+    <div v-if="actionError && !wizard" class="services-page__alert" role="alert">
+      <svg class="services-page__alert-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 8v4" />
+        <path d="M12 16h.01" />
+      </svg>
+      <span class="services-page__alert-text">{{ actionError }}</span>
+    </div>
+
+    <p v-if="copyNotice" class="services-page__notice" role="status">{{ copyNotice }}</p>
+
+    <div v-if="deleting" class="service-delete" role="alertdialog" aria-labelledby="service-delete-title" data-testid="service-delete">
+      <header class="service-delete__header">
+        <div class="service-delete__title-row">
+          <svg class="service-delete__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <h2 id="service-delete-title" class="service-delete__title">删除服务</h2>
+          <BaseBadge v-if="deleting.name || deleting.entry_url" tone="danger" size="sm">
+            {{ deleting.name || deleting.entry_url }}
+          </BaseBadge>
+        </div>
+      </header>
+
+      <div class="service-delete__body">
+        <div class="service-delete__columns">
+          <div class="service-delete__panel">
+            <p class="service-delete__panel-title">将停止的入口</p>
+            <ul class="service-delete__list">
+              <li v-for="(entry, index) in deleteImpact.stopped" :key="`${entry.rule_id}-${index}`" class="service-delete__item">
+                <code class="services-page__mono">{{ entry.url || '未命名入口' }}</code>
+                <span class="service-delete__sep"> · </span>
+                <span>{{ agentLabel(entry.agent_id) }}</span>
+              </li>
+              <li v-if="!deleteImpact.stopped.length" class="service-delete__item service-delete__item--muted">
+                当前没有可停止的入口规则
+              </li>
+            </ul>
+          </div>
+
+          <div class="service-delete__panel">
+            <p class="service-delete__panel-title">会保留的共享资源</p>
+            <ul class="service-delete__list">
+              <li v-for="(item, index) in deleteImpact.retained" :key="`${item.kind}-${index}`" class="service-delete__item">
+                <BaseBadge tone="neutral" subtone="secondary" size="sm">{{ retainedKind(item.kind) }}</BaseBadge>
+                <span v-if="item.id" class="services-page__mono"> {{ item.id }}</span>
+                <span>：{{ item.reason }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="service-delete__warning">
+          节点尚未应用删除时，服务会留在列表并显示待生效。这不表示入口已经关闭。
+        </p>
+
+        <div class="service-delete__actions">
+          <button type="button" class="btn btn-secondary" @click="deleting = null">返回</button>
+          <button type="button" class="btn btn--danger" :disabled="submitting" @click="confirmDelete">确认删除</button>
+        </div>
+      </div>
+    </div>
 
     <ServiceWizard
       v-if="wizard"
@@ -25,73 +97,162 @@
     />
 
     <section v-if="selected && !wizard" class="service-detail" data-testid="service-detail">
-      <button type="button" class="btn btn-secondary" @click="closeDetail">返回列表</button>
-      <h2>{{ selected.name || '未命名服务' }}</h2>
-      <p data-testid="detail-summary">{{ selected.summary || '控制面没有返回摘要' }}</p>
-      <dl>
-        <div><dt>访问地址</dt><dd>{{ selected.entry_url || '—' }}</dd></div>
-        <div><dt>入口节点</dt><dd>{{ agentLabel(selected.entry_agent_id) }}</dd></div>
-        <div><dt>服务侧节点</dt><dd>{{ agentLabel(selected.service_agent_id) }}</dd></div>
-        <div><dt>路径</dt><dd>{{ pathText(selected.path) }}</dd></div>
-        <div><dt>切换阶段</dt><dd>{{ selected.switch_phase || '无' }}</dd></div>
-        <div><dt>未完成环节</dt><dd>{{ detailSteps.length ? detailSteps.join('；') : '无' }}</dd></div>
-        <div><dt>证书</dt><dd>{{ detailCertificate.label }}<template v-if="detailCertificate.detail">：{{ detailCertificate.detail }}</template></dd></div>
-        <div><dt>流量</dt><dd>{{ detailTraffic.text }}<template v-if="detailTraffic.detail"> · {{ detailTraffic.detail }}</template></dd></div>
-        <div v-if="selected.apply"><dt>生效</dt><dd>{{ applyText }}</dd></div>
+      <div class="service-detail__topbar">
+        <button type="button" class="btn btn-secondary btn-sm" @click="closeDetail">返回列表</button>
+        <div class="service-detail__top-actions">
+          <button v-if="showRetry" type="button" class="btn btn-primary btn-sm" :disabled="submitting" @click="retrySelected">重试</button>
+          <button v-if="selected.switch_phase === '退役旧入口'" type="button" class="btn btn-secondary btn-sm" :disabled="submitting" @click="retireSelected">退役旧入口</button>
+          <button v-if="selected.switch_phase === '准备新入口' || selected.switch_phase === '等待新入口生效'" type="button" class="btn btn-secondary btn-sm" :disabled="submitting" @click="abandonSelected">放弃这次切换</button>
+          <button type="button" class="btn btn-secondary btn-sm" @click="startEdit(selected)">修改</button>
+          <button type="button" class="btn btn--danger-soft btn-sm" @click="startDelete(selected)">删除</button>
+        </div>
+      </div>
+
+      <header class="service-detail__hero">
+        <div class="service-detail__hero-head">
+          <h2 class="service-detail__title">{{ selected.name || '未命名服务' }}</h2>
+          <div class="service-detail__badges">
+            <BaseBadge :tone="detailSummaryTone" size="md" dot data-testid="detail-summary">
+              {{ selected.summary || '控制面没有返回摘要' }}
+            </BaseBadge>
+            <BaseBadge v-if="selected.switch_phase" tone="warning" size="md">
+              {{ selected.switch_phase }}
+            </BaseBadge>
+          </div>
+        </div>
+        <div class="service-detail__endpoint">
+          <span class="service-detail__endpoint-label">访问地址</span>
+          <code class="service-detail__endpoint-url">{{ selected.entry_url || '—' }}</code>
+        </div>
+      </header>
+
+      <dl class="service-detail__grid">
+        <div class="service-detail__item">
+          <dt>入口节点</dt>
+          <dd>{{ agentLabel(selected.entry_agent_id) }}</dd>
+        </div>
+        <div class="service-detail__item">
+          <dt>服务侧节点</dt>
+          <dd>{{ agentLabel(selected.service_agent_id) }}</dd>
+        </div>
+        <div class="service-detail__item">
+          <dt>路径</dt>
+          <dd>{{ pathText(selected.path) }}</dd>
+        </div>
+        <div class="service-detail__item">
+          <dt>切换阶段</dt>
+          <dd>
+            <BaseBadge v-if="selected.switch_phase" tone="warning" size="sm">{{ selected.switch_phase }}</BaseBadge>
+            <span v-else>无</span>
+          </dd>
+        </div>
+        <div class="service-detail__item">
+          <dt>未完成环节</dt>
+          <dd :class="{ 'service-detail__pending-text': detailSteps.length }">
+            {{ detailSteps.length ? detailSteps.join('；') : '无' }}
+          </dd>
+        </div>
+        <div class="service-detail__item">
+          <dt>证书</dt>
+          <dd class="service-detail__inline-meta">
+            <BaseBadge :tone="detailCertificateTone" size="sm">{{ detailCertificate.label }}</BaseBadge><span v-if="detailCertificate.detail" class="service-detail__muted">：{{ detailCertificate.detail }}</span>
+          </dd>
+        </div>
+        <div class="service-detail__item">
+          <dt>流量</dt>
+          <dd>
+            <span class="services-page__mono">{{ detailTraffic.text }}</span><span v-if="detailTraffic.detail" class="service-detail__muted"> · {{ detailTraffic.detail }}</span>
+          </dd>
+        </div>
+        <div v-if="selected.apply" class="service-detail__item">
+          <dt>生效</dt>
+          <dd class="service-detail__inline-meta">
+            <BaseBadge v-if="selected.apply.pending" tone="warning" size="sm">待生效</BaseBadge>
+            <span v-if="applyDetailText">{{ applyDetailText }}</span>
+          </dd>
+        </div>
       </dl>
 
-      <section>
-        <h3>节点探测</h3>
-        <p v-if="!detailProbes.length">控制面没有探测结果。节点在线或规则存在都不代表接入完成。</p>
-        <ul>
-          <li v-for="(probe, index) in detailProbes" :key="`${probe.agentId}-${index}`" data-testid="probe-row">
-            {{ probe.agentId || '未知节点' }}
-            <template v-if="probe.purpose"> · {{ probe.purpose }}</template>
-            · {{ probe.text }}
-            <template v-if="probe.verification"> · {{ probe.verification }}</template>
-            <template v-if="probe.target"> · {{ probe.target }}</template>
-            <template v-if="probe.checkedAt"> · {{ probe.checkedAt }}</template>
-            <template v-if="probe.error"> · {{ probe.error }}</template>
+      <section class="service-detail__section">
+        <h3 class="service-detail__section-title">节点探测</h3>
+        <p v-if="!detailProbes.length" class="service-detail__hint">
+          控制面没有探测结果。节点在线或规则存在都不代表接入完成。
+        </p>
+        <ul v-else class="service-detail__probe-list">
+          <li
+            v-for="(probe, index) in detailProbes"
+            :key="`${probe.agentId}-${index}`"
+            class="service-detail__probe-row"
+            data-testid="probe-row"
+          >
+            <div class="service-detail__probe-main">
+              <span class="service-detail__probe-agent">{{ probe.agentId || '未知节点' }}</span>
+              <BaseBadge v-if="probe.purpose" tone="neutral" subtone="secondary" size="sm" mono>{{ probe.purpose }}</BaseBadge>
+              <BaseBadge :tone="probeTone(probe)" size="sm" mono>{{ probe.text }}</BaseBadge>
+              <BaseBadge v-if="probe.verification" :tone="probe.verification === 'expired' ? 'warning' : 'neutral'" size="sm" mono>
+                {{ probe.verification }}
+              </BaseBadge>
+            </div>
+            <div v-if="probe.target || probe.checkedAt || probe.error" class="service-detail__probe-meta">
+              <code v-if="probe.target" class="services-page__mono">{{ probe.target }}</code>
+              <span v-if="probe.checkedAt" class="service-detail__muted">
+                <template v-if="probe.target"> · </template>{{ probe.checkedAt }}
+              </span>
+              <span v-if="probe.error" class="service-detail__probe-error">
+                <template v-if="probe.target || probe.checkedAt"> · </template>{{ probe.error }}
+              </span>
+            </div>
           </li>
         </ul>
       </section>
 
-      <section data-testid="client-confirmation">
-        <h3>客户端访问</h3>
-        <p v-if="selected.client_confirmation?.confirmed">
+      <section class="service-detail__section" data-testid="client-confirmation">
+        <div class="service-detail__section-head">
+          <h3 class="service-detail__section-title">客户端访问</h3>
+          <BaseBadge :tone="selected.client_confirmation?.confirmed ? 'success' : 'neutral'" size="sm" dot>
+            {{ selected.client_confirmation?.confirmed ? '已由用户确认' : '未知' }}
+          </BaseBadge>
+        </div>
+        <p v-if="selected.client_confirmation?.confirmed" class="service-detail__confirm-status">
           用户确认页面可打开
-          <template v-if="selected.client_confirmation.confirmed_at"> · {{ selected.client_confirmation.confirmed_at }}</template>
+          <span v-if="selected.client_confirmation.confirmed_at" class="service-detail__muted">
+            · {{ selected.client_confirmation.confirmed_at }}
+          </span>
         </p>
-        <p v-else>客户端访问：未知</p>
-        <p>用户确认与节点探测分开，不表示媒体播放通过。</p>
+        <p v-else class="service-detail__confirm-status">客户端访问：未知</p>
+        <p class="service-detail__hint">用户确认与节点探测分开，不表示媒体播放通过。</p>
         <div class="services-page__actions">
-          <a v-if="selectedHref" class="btn btn-secondary" :href="selectedHref" target="_blank" rel="noopener">打开</a>
-          <button type="button" class="btn btn-secondary" @click="copyEntry(selected)">复制</button>
-          <button v-if="!selected.client_confirmation?.confirmed" type="button" class="btn btn-secondary" :disabled="submitting" @click="confirmOpen">我确认页面可打开</button>
+          <a v-if="selectedHref" class="btn btn-secondary btn-sm" :href="selectedHref" target="_blank" rel="noopener">打开</a>
+          <button type="button" class="btn btn-secondary btn-sm" @click="copyEntry(selected)">复制</button>
+          <button v-if="!selected.client_confirmation?.confirmed" type="button" class="btn btn-primary btn-sm" :disabled="submitting" @click="confirmOpen">我确认页面可打开</button>
         </div>
       </section>
 
-      <section v-if="selected.rules?.length">
-        <h3>关联规则</h3>
-        <ul>
-          <li v-for="rule in selected.rules" :key="`${rule.agent_id}:${rule.id}`">
-            {{ rule.frontend_url || selected.entry_url }}
-            <template v-if="ruleBackendLabels(rule).length"> · {{ ruleBackendLabels(rule).join('，') }}</template>
-            <a :href="advancedRuleHref(rule)">高级规则</a>
+      <section v-if="selected.rules?.length" class="service-detail__section">
+        <h3 class="service-detail__section-title">关联规则</h3>
+        <ul class="service-detail__rule-list">
+          <li v-for="rule in selected.rules" :key="`${rule.agent_id}:${rule.id}`" class="service-detail__rule-row">
+            <div class="service-detail__rule-info">
+              <code class="services-page__mono">{{ rule.frontend_url || selected.entry_url }}</code>
+              <span v-if="ruleBackendLabels(rule).length" class="service-detail__muted">
+                · {{ ruleBackendLabels(rule).join('，') }}
+              </span>
+            </div>
+            <a class="btn btn-ghost btn-sm" :href="advancedRuleHref(rule)">高级规则</a>
           </li>
         </ul>
       </section>
-
-      <div class="services-page__actions">
-        <button v-if="showRetry" type="button" class="btn btn-secondary" :disabled="submitting" @click="retrySelected">重试</button>
-        <button v-if="selected.switch_phase === '退役旧入口'" type="button" class="btn btn-secondary" :disabled="submitting" @click="retireSelected">退役旧入口</button>
-        <button v-if="selected.switch_phase === '准备新入口' || selected.switch_phase === '等待新入口生效'" type="button" class="btn btn-secondary" :disabled="submitting" @click="abandonSelected">放弃这次切换</button>
-        <button type="button" class="btn btn-secondary" @click="startEdit(selected)">修改</button>
-        <button type="button" class="btn btn-secondary" @click="startDelete(selected)">删除</button>
-      </div>
     </section>
 
     <SkeletonList v-else-if="!wizard && loading" variant="cards" :count="3" />
+
+    <ErrorState
+      v-else-if="!wizard && loadError && !services.length"
+      title="加载服务列表失败"
+      :message="loadError"
+      :retrying="retryingLoad"
+      @retry="retryLoad"
+    />
 
     <EmptyState v-else-if="!wizard && !services.length" title="还没有服务" description="添加后，进度会留在这个列表里。">
       <template #action>
@@ -110,30 +271,6 @@
         @edit="startEdit"
         @delete="startDelete"
       />
-    </div>
-
-    <p v-if="copyNotice" role="status">{{ copyNotice }}</p>
-
-    <div v-if="deleting" class="service-delete" role="alertdialog" aria-labelledby="service-delete-title" data-testid="service-delete">
-      <h2 id="service-delete-title">删除服务</h2>
-      <p>将停止的入口</p>
-      <ul>
-        <li v-for="(entry, index) in deleteImpact.stopped" :key="`${entry.rule_id}-${index}`">
-          {{ entry.url || '未命名入口' }} · {{ agentLabel(entry.agent_id) }}
-        </li>
-        <li v-if="!deleteImpact.stopped.length">当前没有可停止的入口规则</li>
-      </ul>
-      <p>会保留的共享资源</p>
-      <ul>
-        <li v-for="(item, index) in deleteImpact.retained" :key="`${item.kind}-${index}`">
-          {{ retainedKind(item.kind) }}<template v-if="item.id"> {{ item.id }}</template>：{{ item.reason }}
-        </li>
-      </ul>
-      <p>节点尚未应用删除时，服务会留在列表并显示待生效。这不表示入口已经关闭。</p>
-      <div class="services-page__actions">
-        <button type="button" class="btn btn-secondary" @click="deleting = null">返回</button>
-        <button type="button" class="btn btn-primary" :disabled="submitting" @click="confirmDelete">确认删除</button>
-      </div>
     </div>
   </div>
 </template>
@@ -156,8 +293,12 @@ import {
 } from '../api'
 import ServiceCard from '../components/services/ServiceCard.vue'
 import ServiceWizard from '../components/services/ServiceWizard.vue'
+import BaseBadge from '../components/base/BaseBadge.vue'
 import EmptyState from '../components/base/EmptyState.vue'
+import ErrorState from '../components/base/ErrorState.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
+import { copyText } from '../utils/clipboard.js'
+import { messageStore } from '../stores/messages.js'
 import {
   accessErrorMessage,
   accessErrorService,
@@ -190,6 +331,7 @@ const servicesQuery = useQuery({
 
 const services = computed(() => (Array.isArray(servicesQuery.data.value) ? servicesQuery.data.value : []))
 const loading = computed(() => servicesQuery.isLoading.value)
+const retryingLoad = computed(() => Boolean(servicesQuery.isFetching?.value))
 const loadError = computed(() => (servicesQuery.error.value ? accessErrorMessage(servicesQuery.error.value) : ''))
 
 const wizard = ref(null)
@@ -203,8 +345,23 @@ let wizardSerial = 0
 
 const selectedId = computed(() => String(route.query.id || ''))
 const selected = computed(() => services.value.find((service) => service.id === selectedId.value) || null)
+const detailSummaryTone = computed(() => {
+  const summary = String(selected.value?.summary || '').trim()
+  if (summary === '已就绪') return 'success'
+  if (summary === '失败') return 'danger'
+  if (summary && (summary.includes('待') || summary.includes('中'))) return 'warning'
+  return 'neutral'
+})
 const detailSteps = computed(() => incompleteSteps(selected.value))
 const detailCertificate = computed(() => certificateText(selected.value?.certificate))
+const detailCertificateTone = computed(() => {
+  const state = String(selected.value?.certificate?.state || 'none')
+  if (state === 'ready') return 'success'
+  if (state === 'error') return 'danger'
+  if (state === 'issuing') return 'primary'
+  if (state === 'none') return 'neutral'
+  return 'warning'
+})
 const detailTraffic = computed(() => serviceTrafficText(selected.value?.traffic))
 const detailProbes = computed(() => (Array.isArray(selected.value?.probes) ? selected.value.probes : []).map((probe) => probeText(probe)))
 const selectedHref = computed(() => safeHttpHref(selected.value?.entry_url))
@@ -214,16 +371,29 @@ const showRetry = computed(() => {
   return selected.value.summary === '失败' || selected.value.summary === '待确认'
 })
 const deleteImpact = computed(() => deletionImpact(deleting.value || {}))
-const applyText = computed(() => {
+const applyDetailText = computed(() => {
   const apply = selected.value?.apply || {}
   const parts = []
-  parts.push(apply.pending ? '待生效' : '控制面没有把生效标为待处理')
+  if (!apply.pending) parts.push('控制面没有把生效标为待处理')
   if (apply.old_entry_may_receive) parts.push('旧入口仍可能接收新请求')
   if (apply.new_entry_applied) parts.push('新入口已应用')
   if (apply.listener_applied) parts.push('监听器已生效')
   if (apply.certificate_ready) parts.push('证书已就绪')
   return parts.join('；')
 })
+
+function probeTone(probe) {
+  if (probe.verification === 'expired') return 'warning'
+  if (probe.error) return 'danger'
+  if (probe.status === 'connected') return 'success'
+  if (probe.status === 'http_status') return 'primary'
+  if (probe.status === 'untested') return 'neutral'
+  return 'warning'
+}
+
+function retryLoad() {
+  return servicesQuery.refetch?.()
+}
 
 function agentLabel(id) {
   const agent = agents.value.find((item) => String(item.id) === String(id))
@@ -305,13 +475,20 @@ function startDelete(service) {
 }
 
 async function copyEntry(service) {
-  const text = String(service?.entry_url || '')
-  try {
-    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text)
-    copyNotice.value = text ? '已复制访问地址' : '没有可复制的访问地址'
-  } catch {
-    copyNotice.value = '复制失败'
+  const text = String(service?.entry_url || '').trim()
+  if (!text) {
+    copyNotice.value = '没有可复制的访问地址'
+    messageStore.warning('没有可复制的访问地址')
+    return
   }
+  const result = await copyText(text)
+  if (result.ok) {
+    copyNotice.value = '已复制访问地址'
+    messageStore.success('已复制访问地址')
+    return
+  }
+  copyNotice.value = '复制失败'
+  messageStore.error(result.error || '复制失败，请手动复制', '复制失败')
 }
 
 async function runMutation(work) {
@@ -425,57 +602,448 @@ async function abandonSelected() {
 </script>
 
 <style scoped>
-.services-page__error {
-  color: var(--color-danger, #b42318);
+.services-page {
+  min-width: 0;
+}
+
+.services-page__mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.services-page__alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2-5);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 28%, transparent);
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.services-page__alert-icon {
+  flex-shrink: 0;
+}
+
+.services-page__alert-text {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.services-page__notice {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2-5) var(--space-3-5, 0.875rem);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, var(--color-border-default));
+  background: var(--color-primary-50);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
 }
 
 .service-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
-.service-detail,
+/* ----- Delete confirmation panel ----- */
 .service-delete {
+  margin-bottom: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 32%, var(--color-border-default));
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.service-delete__header {
+  padding: var(--space-3-5, 0.875rem) var(--space-5);
+  background: var(--color-danger-50);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+
+.service-delete__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.service-delete__icon {
+  color: var(--color-danger);
+  flex-shrink: 0;
+}
+
+.service-delete__title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--color-danger);
+}
+
+.service-delete__body {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-  padding: 1rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg, 12px);
-  background: var(--color-bg-panel, var(--color-bg-surface));
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
 }
 
-.service-detail dl,
-.service-detail ul,
-.service-delete ul {
-  margin: 0;
-}
-
-.service-detail dl {
+.service-delete__columns {
   display: grid;
-  gap: 0.4rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
 }
 
-.service-detail dl div {
-  display: grid;
-  grid-template-columns: 6.5rem minmax(0, 1fr);
-  gap: 0.5rem;
+.service-delete__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3-5, 0.875rem);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  min-width: 0;
 }
 
-.service-detail dd {
+.service-delete__panel-title {
   margin: 0;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+}
+
+.service-delete__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+
+.service-delete__item {
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.service-detail dt {
+.service-delete__item--muted {
+  color: var(--color-text-tertiary);
+}
+
+.service-delete__sep {
   color: var(--color-text-muted);
+}
+
+.service-delete__warning {
+  margin: 0;
+  padding: var(--space-3) var(--space-3-5, 0.875rem);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 28%, transparent);
+  background: var(--color-warning-50);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+.service-delete__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+/* ----- Service detail panel ----- */
+.service-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
+  min-width: 0;
+}
+
+.service-detail__topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.service-detail__top-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.service-detail__hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.service-detail__hero-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.service-detail__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.service-detail__badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.service-detail__endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-3-5, 0.875rem);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  min-width: 0;
+}
+
+.service-detail__endpoint-label {
+  font-size: var(--text-2xs);
+  font-weight: var(--font-medium);
+  color: var(--color-text-muted);
+}
+
+.service-detail__endpoint-url {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.service-detail__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.service-detail__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  min-width: 0;
+}
+
+.service-detail__item dt {
+  font-size: var(--text-2xs);
+  font-weight: var(--font-medium);
+  color: var(--color-text-muted);
+}
+
+.service-detail__item dd {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.service-detail__pending-text {
+  color: var(--color-warning);
+}
+
+.service-detail__inline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.service-detail__muted {
+  color: var(--color-text-tertiary);
+}
+
+.service-detail__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  min-width: 0;
+}
+
+.service-detail__section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.service-detail__section-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.service-detail__hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
+}
+
+.service-detail__confirm-status {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.service-detail__probe-list,
+.service-detail__rule-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.service-detail__probe-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2-5) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+  min-width: 0;
+}
+
+.service-detail__probe-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.service-detail__probe-agent {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.service-detail__probe-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.service-detail__probe-error {
+  color: var(--color-danger);
+}
+
+.service-detail__rule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+  min-width: 0;
+}
+
+.service-detail__rule-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
 }
 
 .services-page__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
+  gap: var(--space-2);
+}
+
+@media (max-width: 768px) {
+  .service-delete__columns,
+  .service-detail__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .service-detail,
+  .service-delete__body {
+    padding: var(--space-4);
+  }
+
+  .service-delete__header {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .service-detail__section {
+    padding: var(--space-3);
+  }
+
+  .service-delete__actions {
+    justify-content: stretch;
+  }
+
+  .service-delete__actions > .btn {
+    flex: 1 1 auto;
+  }
 }
 </style>

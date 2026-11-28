@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import ServicesPage from './ServicesPage.vue'
+import { messageStore } from '../stores/messages.js'
 
 const agentsData = ref([
   { id: 'edge', name: '入口节点' },
@@ -86,6 +87,7 @@ async function fillDraft(wrapper, overrides = {}) {
 }
 
 beforeEach(() => {
+  messageStore.clearAll()
   stored.splice(0, stored.length)
   route.query = {}
   api.fetchAccessServices.mockReset()
@@ -523,5 +525,93 @@ describe('service page', () => {
     expect(api.deleteAccessService).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('已保存、待生效')
     expect(wrapper.find('[data-testid="service-card"]').exists()).toBe(true)
+  })
+
+  it('renders ErrorState with retry instead of an empty state when initial load fails', async () => {
+    api.fetchAccessServices.mockRejectedValueOnce(Object.assign(new Error('load failed'), {
+      response: { data: { message: '控制面服务列表暂不可用' } },
+    }))
+    const wrapper = mountPage()
+    await flushPromises()
+    const alert = wrapper.get('[role="alert"]')
+    expect(alert.text()).toContain('控制面服务列表暂不可用')
+    expect(wrapper.text()).not.toContain('还没有服务')
+
+    stored.push(view({ id: 'svc-recovered', name: '恢复后的站点', summary: '已就绪' }))
+    await alert.findAll('button').find((button) => button.text() === '重试').trigger('click')
+    await flushPromises()
+    expect(api.fetchAccessServices).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-testid="service-card"]').text()).toContain('恢复后的站点')
+  })
+
+  it('copies the entry URL via shared clipboard helper and notifies both messageStore and role=status', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const originalClipboard = navigator.clipboard
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    try {
+      stored.push(view({ entry_url: 'https://media.example.com' }))
+      const wrapper = mountPage()
+      await flushPromises()
+
+      await wrapper.get('[data-testid="service-card"]').findAll('button').find((button) => button.text() === '复制').trigger('click')
+      await flushPromises()
+      expect(writeText).toHaveBeenCalledWith('https://media.example.com')
+      expect(wrapper.get('[role="status"]').text()).toBe('已复制访问地址')
+      expect(messageStore.state.messages.some((item) => item.type === 'success' && item.text === '已复制访问地址')).toBe(true)
+
+      messageStore.clearAll()
+      writeText.mockRejectedValueOnce(new Error('denied'))
+      await wrapper.get('[data-testid="service-card"]').findAll('button').find((button) => button.text() === '复制').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[role="status"]').text()).toBe('复制失败')
+      expect(messageStore.state.messages.some((item) => item.type === 'error')).toBe(true)
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      })
+    }
+  })
+
+  it('uses Nova semantic badges, layered action buttons, and accessible native selects', async () => {
+    stored.push(view({
+      id: 'svc-ready',
+      name: '就绪站点',
+      summary: '已就绪',
+      certificate: { state: 'ready', not_after: '2030-01-02T00:00:00Z', https_ready: true },
+      apply: { pending: false },
+    }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const card = wrapper.get('[data-testid="service-card"]')
+    expect(card.get('[data-testid="service-summary"]').classes()).toContain('base-badge--success')
+    expect(card.get('code.service-card__url').text()).toBe('https://media.example.com')
+    const deleteBtn = card.findAll('button').find((button) => button.text() === '删除')
+    expect(deleteBtn.classes()).toContain('btn--danger-soft')
+
+    await deleteBtn.trigger('click')
+    const dialog = wrapper.get('[data-testid="service-delete"]')
+    expect(dialog.attributes('role')).toBe('alertdialog')
+    const confirmDeleteBtn = dialog.findAll('button').find((button) => button.text() === '确认删除')
+    expect(confirmDeleteBtn.classes()).toContain('btn--danger')
+    expect(dialog.text()).toContain('节点尚未应用删除时，服务会留在列表并显示待生效。这不表示入口已经关闭。')
+
+    await wrapper.get('.page-header__right button').trigger('click')
+    const serviceSelect = wrapper.get('#service-agent')
+    const entrySelect = wrapper.get('#entry-agent')
+    expect(serviceSelect.element.tagName).toBe('SELECT')
+    expect(entrySelect.element.tagName).toBe('SELECT')
+    expect(serviceSelect.classes()).toContain('input-base')
+    expect(entrySelect.classes()).toContain('input-base')
+
+    await wrapper.get('form').trigger('submit')
+    expect(serviceSelect.attributes('aria-invalid')).toBe('true')
+    expect(serviceSelect.attributes('aria-describedby')).toBe('service-agent-error')
+    expect(wrapper.get('#service-agent-error').text()).toContain('服务侧节点不存在')
   })
 })
