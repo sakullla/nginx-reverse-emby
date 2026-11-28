@@ -538,6 +538,11 @@
     gap: 0.75rem;
   }
 
+  .page-header__left {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
   .page-header__right {
     width: 100%;
     justify-content: stretch;
