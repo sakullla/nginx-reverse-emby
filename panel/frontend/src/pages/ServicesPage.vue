@@ -3,14 +3,56 @@
     <header class="page-header">
       <div class="page-header__left">
         <h1 class="page-title">服务</h1>
-        <p class="page-subtitle">添加、查看、修改和删除接入。未完成状态只展示控制面返回的结果。</p>
+        <p class="page-subtitle" data-testid="services-summary">
+          <template v-if="services.length">
+            共 {{ summaryCounts.total }} 项 · 已就绪 {{ summaryCounts.ready }} · 处理中 {{ summaryCounts.pending }} · 失败 {{ summaryCounts.failed }}
+          </template>
+          <template v-else>
+            添加、查看、修改和删除接入。未完成状态只展示控制面返回的结果。
+          </template>
+        </p>
       </div>
       <div class="page-header__right">
-        <button type="button" class="btn btn-primary" @click="startCreate">添加服务</button>
+        <button
+          type="button"
+          class="btn btn-secondary"
+          :disabled="retryingLoad"
+          data-testid="services-refresh"
+          @click="retryLoad"
+        >
+          <svg
+            :class="{ 'services-page__spin': retryingLoad }"
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <polyline points="21 3 21 9 15 9" />
+          </svg>
+          <span>{{ retryingLoad ? '刷新中...' : '刷新' }}</span>
+        </button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          data-testid="services-add"
+          @click="startCreate"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          <span>添加服务</span>
+        </button>
       </div>
     </header>
 
-    <div v-if="loadError && (services.length || wizard || selected)" class="services-page__alert" role="alert">
+    <div v-if="loadError && (services.length || selectedId)" class="services-page__alert" role="alert">
       <svg class="services-page__alert-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="9" />
         <path d="M12 8v4" />
@@ -20,7 +62,7 @@
       <button type="button" class="btn btn-secondary btn-sm" :disabled="retryingLoad" @click="retryLoad">重试</button>
     </div>
 
-    <div v-if="actionError && !wizard" class="services-page__alert" role="alert">
+    <div v-if="actionError && !formModal && !deleting" class="services-page__alert" role="alert">
       <svg class="services-page__alert-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="9" />
         <path d="M12 8v4" />
@@ -29,259 +71,175 @@
       <span class="services-page__alert-text">{{ actionError }}</span>
     </div>
 
-    <p v-if="copyNotice" class="services-page__notice" role="status">{{ copyNotice }}</p>
-
-    <div v-if="deleting" class="service-delete" role="alertdialog" aria-labelledby="service-delete-title" data-testid="service-delete">
-      <header class="service-delete__header">
-        <div class="service-delete__title-row">
-          <svg class="service-delete__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-            <line x1="12" y1="9" x2="12" y2="13" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
-          </svg>
-          <h2 id="service-delete-title" class="service-delete__title">删除服务</h2>
-          <BaseBadge
-            v-if="deleting.name || deleting.entry_url"
-            class="service-delete__target-badge"
-            tone="danger"
-            size="sm"
-          >
-            {{ deleting.name || deleting.entry_url }}
-          </BaseBadge>
-        </div>
-      </header>
-
-      <div class="service-delete__body">
-        <div class="service-delete__columns">
-          <div class="service-delete__panel">
-            <p class="service-delete__panel-title">将停止的入口</p>
-            <ul class="service-delete__list">
-              <li v-for="(entry, index) in deleteImpact.stopped" :key="`${entry.rule_id}-${index}`" class="service-delete__item">
-                <code class="services-page__mono">{{ entry.url || '未命名入口' }}</code>
-                <span class="service-delete__sep"> · </span>
-                <span>{{ agentLabel(entry.agent_id) }}</span>
-              </li>
-              <li v-if="!deleteImpact.stopped.length" class="service-delete__item service-delete__item--muted">
-                当前没有可停止的入口规则
-              </li>
-            </ul>
-          </div>
-
-          <div class="service-delete__panel">
-            <p class="service-delete__panel-title">会保留的共享资源</p>
-            <ul class="service-delete__list">
-              <li v-for="(item, index) in deleteImpact.retained" :key="`${item.kind}-${index}`" class="service-delete__item">
-                <BaseBadge tone="neutral" subtone="secondary" size="sm">{{ retainedKind(item.kind) }}</BaseBadge>
-                <span v-if="item.id" class="services-page__mono"> {{ item.id }}</span>
-                <span>：{{ item.reason }}</span>
-              </li>
-            </ul>
-          </div>
-        </div>
-
-        <p class="service-delete__warning">
-          节点尚未应用删除时，服务会留在列表并显示待生效。这不表示入口已经关闭。
-        </p>
-
-        <div class="service-delete__actions">
-          <button type="button" class="btn btn-secondary" @click="deleting = null">返回</button>
-          <button type="button" class="btn btn--danger" :disabled="submitting" @click="confirmDelete">确认删除</button>
-        </div>
-      </div>
-    </div>
-
-    <ServiceWizard
-      v-if="wizard"
-      :key="wizard.session || wizard.service?.id || 'new'"
-      :service="wizard.service"
-      :agents="agents"
-      :submitting="submitting"
-      :form-error="actionError"
-      @cancel="closeWizard"
-      @submit="submitWizard"
-    />
-
-    <section v-if="selected && !wizard" class="service-detail" data-testid="service-detail">
-      <div class="service-detail__topbar">
-        <button type="button" class="btn btn-secondary btn-sm" @click="closeDetail">返回列表</button>
-        <div class="service-detail__top-actions">
-          <button v-if="showRetry" type="button" class="btn btn-primary btn-sm" :disabled="submitting" @click="retrySelected">重试</button>
-          <button v-if="selected.switch_phase === '退役旧入口'" type="button" class="btn btn-secondary btn-sm" :disabled="submitting" @click="retireSelected">退役旧入口</button>
-          <button v-if="selected.switch_phase === '准备新入口' || selected.switch_phase === '等待新入口生效'" type="button" class="btn btn-secondary btn-sm" :disabled="submitting" @click="abandonSelected">放弃这次切换</button>
-          <button type="button" class="btn btn-secondary btn-sm" @click="startEdit(selected)">修改</button>
-          <button type="button" class="btn btn--danger-soft btn-sm" @click="startDelete(selected)">删除</button>
-        </div>
-      </div>
-
-      <header class="service-detail__hero">
-        <div class="service-detail__hero-head">
-          <h2 class="service-detail__title">{{ selected.name || '未命名服务' }}</h2>
-          <div class="service-detail__badges">
-            <BaseBadge :tone="detailSummaryTone" size="md" dot data-testid="detail-summary">
-              {{ selected.summary || '控制面没有返回摘要' }}
-            </BaseBadge>
-            <BaseBadge v-if="selected.switch_phase" tone="warning" size="md">
-              {{ selected.switch_phase }}
-            </BaseBadge>
-          </div>
-        </div>
-        <div class="service-detail__endpoint">
-          <span class="service-detail__endpoint-label">访问地址</span>
-          <code class="service-detail__endpoint-url">{{ selected.entry_url || '—' }}</code>
-        </div>
-      </header>
-
-      <dl class="service-detail__grid">
-        <div class="service-detail__item">
-          <dt>入口节点</dt>
-          <dd>{{ agentLabel(selected.entry_agent_id) }}</dd>
-        </div>
-        <div class="service-detail__item">
-          <dt>服务侧节点</dt>
-          <dd>{{ agentLabel(selected.service_agent_id) }}</dd>
-        </div>
-        <div class="service-detail__item">
-          <dt>路径</dt>
-          <dd>{{ pathText(selected.path) }}</dd>
-        </div>
-        <div class="service-detail__item">
-          <dt>切换阶段</dt>
-          <dd>
-            <BaseBadge v-if="selected.switch_phase" tone="warning" size="sm">{{ selected.switch_phase }}</BaseBadge>
-            <span v-else>无</span>
-          </dd>
-        </div>
-        <div class="service-detail__item">
-          <dt>未完成环节</dt>
-          <dd :class="{ 'service-detail__pending-text': detailSteps.length }">
-            {{ detailSteps.length ? detailSteps.join('；') : '无' }}
-          </dd>
-        </div>
-        <div class="service-detail__item">
-          <dt>证书</dt>
-          <dd class="service-detail__inline-meta">
-            <BaseBadge :tone="detailCertificateTone" size="sm">{{ detailCertificate.label }}</BaseBadge><span v-if="detailCertificate.detail" class="service-detail__muted">：{{ detailCertificate.detail }}</span>
-          </dd>
-        </div>
-        <div class="service-detail__item">
-          <dt>流量</dt>
-          <dd>
-            <span class="services-page__mono">{{ detailTraffic.text }}</span><span v-if="detailTraffic.detail" class="service-detail__muted"> · {{ detailTraffic.detail }}</span>
-          </dd>
-        </div>
-        <div v-if="selected.apply" class="service-detail__item">
-          <dt>生效</dt>
-          <dd class="service-detail__inline-meta">
-            <BaseBadge v-if="selected.apply.pending" tone="warning" size="sm">待生效</BaseBadge>
-            <span v-if="applyDetailText">{{ applyDetailText }}</span>
-          </dd>
-        </div>
-      </dl>
-
-      <section class="service-detail__section">
-        <h3 class="service-detail__section-title">节点探测</h3>
-        <p v-if="!detailProbes.length" class="service-detail__hint">
-          控制面没有探测结果。节点在线或规则存在都不代表接入完成。
-        </p>
-        <ul v-else class="service-detail__probe-list">
-          <li
-            v-for="(probe, index) in detailProbes"
-            :key="`${probe.agentId}-${index}`"
-            class="service-detail__probe-row"
-            data-testid="probe-row"
-          >
-            <div class="service-detail__probe-main">
-              <span class="service-detail__probe-agent">{{ probe.agentId || '未知节点' }}</span>
-              <BaseBadge v-if="probe.purpose" tone="neutral" subtone="secondary" size="sm" mono>{{ probe.purpose }}</BaseBadge>
-              <BaseBadge :tone="probeTone(probe)" size="sm" mono>{{ probe.text }}</BaseBadge>
-              <BaseBadge v-if="probe.verification" :tone="probe.verification === 'expired' ? 'warning' : 'neutral'" size="sm" mono>
-                {{ probe.verification }}
-              </BaseBadge>
-            </div>
-            <div v-if="probe.target || probe.checkedAt || probe.error" class="service-detail__probe-meta">
-              <code v-if="probe.target" class="services-page__mono">{{ probe.target }}</code>
-              <span v-if="probe.checkedAt" class="service-detail__muted">
-                <template v-if="probe.target"> · </template>{{ probe.checkedAt }}
-              </span>
-              <span v-if="probe.error" class="service-detail__probe-error">
-                <template v-if="probe.target || probe.checkedAt"> · </template>{{ probe.error }}
-              </span>
-            </div>
-          </li>
-        </ul>
-      </section>
-
-      <section class="service-detail__section" data-testid="client-confirmation">
-        <div class="service-detail__section-head">
-          <h3 class="service-detail__section-title">客户端访问</h3>
-          <BaseBadge :tone="selected.client_confirmation?.confirmed ? 'success' : 'neutral'" size="sm" dot>
-            {{ selected.client_confirmation?.confirmed ? '已由用户确认' : '未知' }}
-          </BaseBadge>
-        </div>
-        <p v-if="selected.client_confirmation?.confirmed" class="service-detail__confirm-status">
-          用户确认页面可打开
-          <span v-if="selected.client_confirmation.confirmed_at" class="service-detail__muted">
-            · {{ selected.client_confirmation.confirmed_at }}
-          </span>
-        </p>
-        <p v-else class="service-detail__confirm-status">客户端访问：未知</p>
-        <p class="service-detail__hint">用户确认与节点探测分开，不表示媒体播放通过。</p>
-        <div class="services-page__actions">
-          <a v-if="selectedHref" class="btn btn-secondary btn-sm" :href="selectedHref" target="_blank" rel="noopener">打开</a>
-          <button type="button" class="btn btn-secondary btn-sm" @click="copyEntry(selected)">复制</button>
-          <button v-if="!selected.client_confirmation?.confirmed" type="button" class="btn btn-primary btn-sm" :disabled="submitting" @click="confirmOpen">我确认页面可打开</button>
-        </div>
-      </section>
-
-      <section v-if="selected.rules?.length" class="service-detail__section">
-        <h3 class="service-detail__section-title">关联规则</h3>
-        <ul class="service-detail__rule-list">
-          <li v-for="rule in selected.rules" :key="`${rule.agent_id}:${rule.id}`" class="service-detail__rule-row">
-            <div class="service-detail__rule-info">
-              <code class="services-page__mono">{{ rule.frontend_url || selected.entry_url }}</code>
-              <span v-if="ruleBackendLabels(rule).length" class="service-detail__muted">
-                · {{ ruleBackendLabels(rule).join('，') }}
-              </span>
-            </div>
-            <a class="btn btn-ghost btn-sm" :href="advancedRuleHref(rule)">高级规则</a>
-          </li>
-        </ul>
-      </section>
-    </section>
-
-    <SkeletonList v-else-if="!wizard && loading" variant="cards" :count="3" />
-
-    <ErrorState
-      v-else-if="!wizard && loadError && !services.length"
-      title="加载服务列表失败"
-      :message="loadError"
-      :retrying="retryingLoad"
-      @retry="retryLoad"
-    />
-
-    <EmptyState v-else-if="!wizard && !services.length" title="还没有服务" description="添加后，进度会留在这个列表里。">
-      <template #action>
-        <button type="button" class="btn btn-primary" @click="startCreate">添加服务</button>
-      </template>
-    </EmptyState>
-
-    <div v-else-if="!selected" class="service-grid">
-      <ServiceCard
-        v-for="service in services"
-        :key="service.id"
-        :service="service"
-        :entry-agent-label="agentLabel(service.entry_agent_id)"
-        @copy="copyEntry"
-        @detail="openDetail"
+    <template v-if="selectedId">
+      <ServiceDetailPanel
+        v-if="selected"
+        :service="selected"
+        :agents="agents"
+        :submitting="submitting"
+        :refreshing="refreshingDetail"
+        @back="closeDetail"
+        @refresh="refreshSelected"
+        @retry="retrySelected"
+        @retire="retireSelected"
+        @abandon="abandonSelected"
         @edit="startEdit"
         @delete="startDelete"
+        @confirm-client="confirmOpen"
       />
-    </div>
+
+      <SkeletonList v-else-if="loading || missingLookupLoading" variant="cards" :count="1" />
+
+      <ErrorState
+        v-else-if="missingLookupError && !missingNotFound"
+        title="加载服务详情失败"
+        :message="missingLookupError"
+        :retrying="missingLookupLoading"
+        @retry="retryMissingLookup"
+      >
+        <template #action>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm"
+            :disabled="missingLookupLoading"
+            @click="retryMissingLookup"
+          >
+            重试
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            data-testid="service-not-found-back"
+            @click="closeDetail"
+          >
+            返回服务列表
+          </button>
+        </template>
+      </ErrorState>
+
+      <EmptyState
+        v-else
+        data-testid="service-not-found"
+        title="未找到对应服务"
+        :description="missingDescription"
+      >
+        <template #icon>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+        </template>
+        <template #action>
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-testid="service-not-found-back"
+            @click="closeDetail"
+          >
+            返回服务列表
+          </button>
+        </template>
+      </EmptyState>
+    </template>
+
+    <template v-else>
+      <ResourceListFilterBar
+        v-if="services.length"
+        :agent-id="agentFilter"
+        :agent-baseline="ALL_AGENTS_FILTER"
+        :agents="agents"
+        :q="searchQuery"
+        search-placeholder="搜索名称 / 入口地址 / 后端 URL..."
+        :filter-fields="statusFilterFields"
+        :filter-values="filterValues"
+        @update:agent-id="agentFilter = $event"
+        @update:q="searchQuery = $event"
+        @update:filter="onFilterUpdate"
+      />
+
+      <SkeletonList v-if="loading" variant="cards" :count="3" />
+
+      <ErrorState
+        v-else-if="loadError && !services.length"
+        title="加载服务列表失败"
+        :message="loadError"
+        :retrying="retryingLoad"
+        @retry="retryLoad"
+      />
+
+      <EmptyState
+        v-else-if="!services.length"
+        title="还没有服务"
+        description="添加后，进度会留在这个列表里。"
+      >
+        <template #action>
+          <button type="button" class="btn btn-primary" @click="startCreate">添加服务</button>
+        </template>
+      </EmptyState>
+
+      <EmptyState
+        v-else-if="!filteredServices.length"
+        data-testid="services-filter-empty"
+        title="没有匹配的服务"
+        description="当前筛选条件下没有结果，可以调整条件或清除筛选。"
+      >
+        <template #icon>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+        </template>
+        <template #action>
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-testid="services-clear-filters"
+            @click="clearFilters"
+          >
+            清除筛选
+          </button>
+        </template>
+      </EmptyState>
+
+      <div v-else class="service-grid">
+        <ServiceCard
+          v-for="service in filteredServices"
+          :key="service.id"
+          :service="service"
+          :entry-agent-label="agentLabel(service.entry_agent_id)"
+          :service-agent-label="agentLabel(service.service_agent_id)"
+          @copy="copyEntry"
+          @detail="openDetail"
+          @edit="startEdit"
+          @delete="startDelete"
+        />
+      </div>
+    </template>
+
+    <ServiceFormModal
+      :model-value="Boolean(formModal)"
+      :session-key="formModal?.session || ''"
+      :service="formModal?.service || null"
+      :agents="agents"
+      :submitting="submitting"
+      :form-error="formModal ? actionError : ''"
+      @cancel="closeFormModal"
+      @submit="submitForm"
+    />
+
+    <ServiceDeleteModal
+      :service="deleting"
+      :agents="agents"
+      :submitting="submitting"
+      :error="deleting ? actionError : ''"
+      @cancel="closeDeleteModal"
+      @confirm="confirmDelete"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useAgents } from '../hooks/useAgents'
@@ -291,36 +249,31 @@ import {
   correctAccessService,
   createAccessService,
   deleteAccessService,
+  fetchAccessService,
   fetchAccessServices,
   retireAccessService,
   retryAccessService,
   updateAccessService,
 } from '../api'
 import ServiceCard from '../components/services/ServiceCard.vue'
-import ServiceWizard from '../components/services/ServiceWizard.vue'
-import BaseBadge from '../components/base/BaseBadge.vue'
+import ServiceFormModal from '../components/services/ServiceFormModal.vue'
+import ServiceDeleteModal from '../components/services/ServiceDeleteModal.vue'
+import ServiceDetailPanel from '../components/services/ServiceDetailPanel.vue'
+import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
 import EmptyState from '../components/base/EmptyState.vue'
 import ErrorState from '../components/base/ErrorState.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
 import { copyText } from '../utils/clipboard.js'
 import { messageStore } from '../stores/messages.js'
+import { ALL_AGENTS_FILTER } from '../utils/agentFilter.js'
 import {
   accessErrorMessage,
   accessErrorService,
-  advancedRuleHref,
-  certificateText,
-  deletionImpact,
   errorRequestsRelayInput,
-  forwardingChanged,
-  incompleteSteps,
-  simplifiedForwardingChanged,
-  newIdempotencyKey,
-  pathText,
-  probeText,
+  filterAccessServices,
+  resolveServiceSubmitAction,
   reuseIdempotencyKey,
-  ruleBackendLabels,
-  safeHttpHref,
-  serviceTrafficText,
+  summarizeServices,
 } from '../utils/accessService.js'
 
 const route = useRoute()
@@ -339,61 +292,69 @@ const loading = computed(() => servicesQuery.isLoading.value)
 const retryingLoad = computed(() => Boolean(servicesQuery.isFetching?.value))
 const loadError = computed(() => (servicesQuery.error.value ? accessErrorMessage(servicesQuery.error.value) : ''))
 
-const wizard = ref(null)
+const agentFilter = ref(ALL_AGENTS_FILTER)
+const searchQuery = ref('')
+const statusFilter = ref('')
+
+const statusFilterFields = [
+  {
+    key: 'status',
+    label: '状态',
+    type: 'chip',
+    defaultValue: '',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'ready', label: '已就绪' },
+      { value: 'pending', label: '处理中' },
+      { value: 'failed', label: '失败' },
+    ],
+  },
+]
+
+const filterValues = computed(() => ({ status: statusFilter.value }))
+const summaryCounts = computed(() => summarizeServices(services.value))
+const filteredServices = computed(() => filterAccessServices(services.value, {
+  agentId: agentFilter.value,
+  q: searchQuery.value,
+  status: statusFilter.value,
+}))
+
+const formModal = ref(null)
 const persistedId = ref('')
 const deleting = ref(null)
 const submitting = ref(false)
+const refreshingDetail = ref(false)
 const actionError = ref('')
-const copyNotice = ref('')
 const idempotency = ref({})
-let wizardSerial = 0
+let formSessionSerial = 0
 
-const selectedId = computed(() => String(route.query.id || ''))
+const selectedId = computed(() => String(route.query.id || '').trim())
 const selected = computed(() => services.value.find((service) => service.id === selectedId.value) || null)
-const detailSummaryTone = computed(() => {
-  const summary = String(selected.value?.summary || '').trim()
-  if (summary === '已就绪') return 'success'
-  if (summary === '失败') return 'danger'
-  if (summary && (summary.includes('待') || summary.includes('中'))) return 'warning'
-  return 'neutral'
-})
-const detailSteps = computed(() => incompleteSteps(selected.value))
-const detailCertificate = computed(() => certificateText(selected.value?.certificate))
-const detailCertificateTone = computed(() => {
-  const state = String(selected.value?.certificate?.state || 'none')
-  if (state === 'ready') return 'success'
-  if (state === 'error') return 'danger'
-  if (state === 'issuing') return 'primary'
-  if (state === 'none') return 'neutral'
-  return 'warning'
-})
-const detailTraffic = computed(() => serviceTrafficText(selected.value?.traffic))
-const detailProbes = computed(() => (Array.isArray(selected.value?.probes) ? selected.value.probes : []).map((probe) => probeText(probe)))
-const selectedHref = computed(() => safeHttpHref(selected.value?.entry_url))
-const relayHostMissing = computed(() => errorRequestsRelayInput(selected.value?.last_error))
-const showRetry = computed(() => {
-  if (!selected.value || relayHostMissing.value) return false
-  return selected.value.summary === '失败' || selected.value.summary === '待确认'
-})
-const deleteImpact = computed(() => deletionImpact(deleting.value || {}))
-const applyDetailText = computed(() => {
-  const apply = selected.value?.apply || {}
-  const parts = []
-  if (!apply.pending) parts.push('控制面没有把生效标为待处理')
-  if (apply.old_entry_may_receive) parts.push('旧入口仍可能接收新请求')
-  if (apply.new_entry_applied) parts.push('新入口已应用')
-  if (apply.listener_applied) parts.push('监听器已生效')
-  if (apply.certificate_ready) parts.push('证书已就绪')
-  return parts.join('；')
-})
 
-function probeTone(probe) {
-  if (probe.verification === 'expired') return 'warning'
-  if (probe.error) return 'danger'
-  if (probe.status === 'connected') return 'success'
-  if (probe.status === 'http_status') return 'primary'
-  if (probe.status === 'untested') return 'neutral'
-  return 'warning'
+const lookedUpId = ref('')
+const missingLookupLoading = ref(false)
+const missingLookupError = ref('')
+const missingNotFound = ref(false)
+const missingDescription = computed(() => (
+  selectedId.value
+    ? `服务 ${selectedId.value} 不存在或已被删除，可以返回服务列表查看当前接入。`
+    : '对应服务不存在或已被删除。'
+))
+
+function isNotFoundError(error) {
+  return error?.response?.status === 404 || error?.status === 404
+}
+
+function onFilterUpdate({ key, value }) {
+  if (key === 'status') {
+    statusFilter.value = String(value || '')
+  }
+}
+
+function clearFilters() {
+  agentFilter.value = ALL_AGENTS_FILTER
+  searchQuery.value = ''
+  statusFilter.value = ''
 }
 
 function retryLoad() {
@@ -403,13 +364,6 @@ function retryLoad() {
 function agentLabel(id) {
   const agent = agents.value.find((item) => String(item.id) === String(id))
   return agent?.name || id || '—'
-}
-
-function retainedKind(kind) {
-  if (kind === 'certificate') return '证书'
-  if (kind === 'relay_listener') return '监听器'
-  if (kind === 'agent') return '节点'
-  return kind || '资源'
 }
 
 function rememberService(service) {
@@ -422,6 +376,63 @@ function rememberService(service) {
     return list
   })
 }
+
+function forgetService(id) {
+  if (!id) return
+  queryClient.setQueryData(['access-services'], (current) => (
+    Array.isArray(current) ? current.filter((item) => item.id !== id) : []
+  ))
+}
+
+async function lookupSelectedById(id) {
+  if (!id) return
+  lookedUpId.value = id
+  missingLookupLoading.value = true
+  missingLookupError.value = ''
+  missingNotFound.value = false
+  try {
+    const fetched = await fetchAccessService(id)
+    if (selectedId.value !== id) return
+    if (fetched?.id) {
+      rememberService(fetched)
+      return
+    }
+    missingNotFound.value = true
+  } catch (error) {
+    if (selectedId.value !== id) return
+    if (isNotFoundError(error)) {
+      missingNotFound.value = true
+      return
+    }
+    missingLookupError.value = accessErrorMessage(error)
+  } finally {
+    if (selectedId.value === id) {
+      missingLookupLoading.value = false
+    }
+  }
+}
+
+function retryMissingLookup() {
+  if (!selectedId.value) return
+  lookupSelectedById(selectedId.value)
+}
+
+watch(selectedId, () => {
+  lookedUpId.value = ''
+  missingLookupLoading.value = false
+  missingLookupError.value = ''
+  missingNotFound.value = false
+})
+
+watch(
+  [selectedId, selected, loading],
+  ([id, current, isLoading]) => {
+    if (!id || current || isLoading) return
+    if (lookedUpId.value === id) return
+    lookupSelectedById(id)
+  },
+  { immediate: true },
+)
 
 function keyFor(operation, body) {
   const next = reuseIdempotencyKey(idempotency.value, operation, body)
@@ -439,38 +450,42 @@ function startCreate() {
   actionError.value = ''
   persistedId.value = ''
   deleting.value = null
-  wizardSerial += 1
-  wizard.value = { service: null, session: `create-${wizardSerial}` }
-  if (route.query.id) router.replace({ query: {} })
+  formSessionSerial += 1
+  formModal.value = { service: null, session: `create-${formSessionSerial}` }
 }
 
 function startEdit(service) {
   actionError.value = ''
   persistedId.value = service.id
   deleting.value = null
-  wizardSerial += 1
-  wizard.value = { service, session: `edit-${service.id}-${wizardSerial}` }
+  formSessionSerial += 1
+  formModal.value = { service, session: `edit-${service.id}-${formSessionSerial}` }
 }
 
 function holdRelayFollowUp(saved) {
   if (!errorRequestsRelayInput(saved?.last_error)) return false
   actionError.value = String(saved.last_error)
   persistedId.value = saved.id
-  wizard.value = { session: wizard.value?.session, service: saved }
+  formModal.value = {
+    session: formModal.value?.session || `edit-${saved.id}-${++formSessionSerial}`,
+    service: saved,
+  }
   return true
 }
 
-function closeWizard() {
-  wizard.value = null
+function closeFormModal() {
+  formModal.value = null
+  persistedId.value = ''
   actionError.value = ''
 }
 
 function openDetail(service) {
-  wizard.value = null
+  actionError.value = ''
   router.replace({ query: { id: service.id } })
 }
 
 function closeDetail() {
+  actionError.value = ''
   router.replace({ query: {} })
 }
 
@@ -479,20 +494,22 @@ function startDelete(service) {
   deleting.value = service
 }
 
+function closeDeleteModal() {
+  deleting.value = null
+  actionError.value = ''
+}
+
 async function copyEntry(service) {
   const text = String(service?.entry_url || '').trim()
   if (!text) {
-    copyNotice.value = '没有可复制的访问地址'
     messageStore.warning('没有可复制的访问地址')
     return
   }
   const result = await copyText(text)
   if (result.ok) {
-    copyNotice.value = '已复制访问地址'
     messageStore.success('已复制访问地址')
     return
   }
-  copyNotice.value = '复制失败'
   messageStore.error(result.error || '复制失败，请手动复制', '复制失败')
 }
 
@@ -501,17 +518,21 @@ async function runMutation(work) {
   actionError.value = ''
   try {
     const service = await work()
-    rememberService(service)
+    if (service?.id) rememberService(service)
     return service
   } catch (error) {
     const saved = accessErrorService(error)
     if (saved?.id) {
       rememberService(saved)
       persistedId.value = saved.id
+      if (formModal.value) {
+        formModal.value = { ...formModal.value, service: saved }
+      }
     }
     actionError.value = accessErrorMessage(error)
-    if (errorRequestsRelayInput(actionError.value)) {
-      wizard.value = wizard.value || { service: saved }
+    if (errorRequestsRelayInput(actionError.value) && !formModal.value && saved) {
+      formSessionSerial += 1
+      formModal.value = { service: saved, session: `edit-${saved.id}-${formSessionSerial}` }
     }
     return null
   } finally {
@@ -519,41 +540,64 @@ async function runMutation(work) {
   }
 }
 
-async function submitWizard({ payload, intent }) {
-  const current = wizard.value?.service
-  if (current?.advanced === true && (intent === 'correct' || simplifiedForwardingChanged(current, payload))) {
-    actionError.value = current.advanced_reason
+async function submitForm({ payload }) {
+  const current = formModal.value?.service || null
+  const serviceId = current?.id || persistedId.value
+  const currentForRoute = current || (serviceId ? { id: serviceId, last_error: actionError.value } : null)
+  const action = resolveServiceSubmitAction(currentForRoute, payload)
+  if (action === 'blocked_advanced') {
+    actionError.value = current?.advanced_reason
       ? `简化转发编辑已禁用。${current.advanced_reason}`
       : '简化转发编辑已禁用。请到高级规则页修改。'
     return
   }
-  const serviceId = current?.id || persistedId.value
-  if (!serviceId) {
+  if (action === 'create') {
     const operation = 'create'
     const key = keyFor(operation, payload)
     const created = await runMutation(() => createAccessService(payload, key))
     if (!created) return
     dropKey(operation)
     if (holdRelayFollowUp(created)) return
-    wizard.value = null
+    formModal.value = null
     router.replace({ query: { id: created.id } })
     return
   }
-  const nameOnly = current && !forwardingChanged(current, payload)
-  const supplyingRelay = Boolean(errorRequestsRelayInput(current?.last_error)
-    && (payload.relay_public_host || payload.relay_listen_port))
-  const useCorrect = current?.advanced !== true && ((intent === 'correct' && !nameOnly) || supplyingRelay)
+  const useCorrect = action === 'correct'
   const operation = `${useCorrect ? 'correct' : 'update'}:${serviceId}`
   const key = keyFor(operation, payload)
-  const request = useCorrect
-    ? correctAccessService(serviceId, payload, key)
-    : updateAccessService(serviceId, payload, key)
-  const saved = await runMutation(() => request)
+  const saved = await runMutation(() => (
+    useCorrect
+      ? correctAccessService(serviceId, payload, key)
+      : updateAccessService(serviceId, payload, key)
+  ))
   if (!saved) return
   dropKey(operation)
   if (holdRelayFollowUp(saved)) return
-  wizard.value = null
+  formModal.value = null
   router.replace({ query: { id: saved.id } })
+}
+
+async function refreshSelected() {
+  const targetId = selected.value?.id
+  if (!targetId || refreshingDetail.value) return
+  refreshingDetail.value = true
+  actionError.value = ''
+  try {
+    const fresh = await fetchAccessService(targetId)
+    if (fresh?.id) {
+      rememberService(fresh)
+    }
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      lookedUpId.value = targetId
+      missingNotFound.value = true
+      forgetService(targetId)
+      return
+    }
+    actionError.value = accessErrorMessage(error)
+  } finally {
+    refreshingDetail.value = false
+  }
 }
 
 async function confirmDelete() {
@@ -565,6 +609,12 @@ async function confirmDelete() {
   if (!saved) return
   dropKey(operation)
   deleting.value = null
+  if (!saved.id) {
+    forgetService(service.id)
+    if (selectedId.value === service.id) {
+      router.replace({ query: {} })
+    }
+  }
 }
 
 async function confirmOpen() {
@@ -583,8 +633,7 @@ async function retrySelected() {
     return
   }
   const operation = `retry:${selected.value.id}`
-  const key = idempotency.value[operation]?.key || newIdempotencyKey()
-  idempotency.value = { ...idempotency.value, [operation]: { key, body: '{}' } }
+  const key = keyFor(operation, {})
   const saved = await runMutation(() => retryAccessService(selected.value.id, key))
   if (saved) dropKey(operation)
 }
@@ -611,11 +660,14 @@ async function abandonSelected() {
   min-width: 0;
 }
 
-.services-page__mono {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  overflow-wrap: anywhere;
-  word-break: break-word;
+.services-page__spin {
+  animation: services-page-spin 0.9s linear infinite;
+}
+
+@keyframes services-page-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .services-page__alert {
@@ -642,426 +694,15 @@ async function abandonSelected() {
   overflow-wrap: anywhere;
 }
 
-.services-page__notice {
-  margin: 0 0 var(--space-4);
-  padding: var(--space-2-5) var(--space-3-5, 0.875rem);
-  border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, var(--color-border-default));
-  background: var(--color-primary-50);
-  color: var(--color-text-primary);
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
-}
-
 .service-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
   gap: var(--space-4);
 }
 
-/* ----- Delete confirmation panel ----- */
-.service-delete {
-  margin-bottom: var(--space-5);
-  border: 1px solid color-mix(in srgb, var(--color-danger) 32%, var(--color-border-default));
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-surface);
-  box-shadow: var(--shadow-md);
-  overflow: hidden;
-  min-width: 0;
-}
-
-.service-delete__header {
-  padding: var(--space-3-5, 0.875rem) var(--space-5);
-  background: var(--color-danger-50);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 18%, transparent);
-}
-
-.service-delete__title-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.service-delete__title-row .service-delete__target-badge {
-  max-width: 100%;
-  min-width: 0;
-  height: auto;
-  min-height: 1.25rem;
-  padding-block: 0.15rem;
-  white-space: normal;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.service-delete__icon {
-  color: var(--color-danger);
-  flex-shrink: 0;
-}
-
-.service-delete__title {
-  margin: 0;
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--color-danger);
-}
-
-.service-delete__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-4) var(--space-5);
-}
-
-.service-delete__columns {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
-.service-delete__panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3-5, 0.875rem);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-subtle);
-  min-width: 0;
-}
-
-.service-delete__panel-title {
-  margin: 0;
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-secondary);
-}
-
-.service-delete__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-}
-
-.service-delete__item {
-  font-size: var(--text-xs);
-  color: var(--color-text-primary);
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.service-delete__item--muted {
-  color: var(--color-text-tertiary);
-}
-
-.service-delete__sep {
-  color: var(--color-text-muted);
-}
-
-.service-delete__warning {
-  margin: 0;
-  padding: var(--space-3) var(--space-3-5, 0.875rem);
-  border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--color-warning) 28%, transparent);
-  background: var(--color-warning-50);
-  color: var(--color-text-primary);
-  font-size: var(--text-xs);
-  line-height: 1.55;
-}
-
-.service-delete__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--color-border-subtle);
-}
-
-/* ----- Service detail panel ----- */
-.service-detail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  margin-bottom: var(--space-5);
-  padding: var(--space-5);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-surface);
-  box-shadow: var(--shadow-xs);
-  min-width: 0;
-}
-
-.service-detail__topbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-.service-detail__top-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1-5);
-}
-
-.service-detail__hero {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-}
-
-.service-detail__hero-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.service-detail__title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.service-detail__badges {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1-5);
-}
-
-.service-detail__endpoint {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3) var(--space-3-5, 0.875rem);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-subtle);
-  min-width: 0;
-}
-
-.service-detail__endpoint-label {
-  font-size: var(--text-2xs);
-  font-weight: var(--font-medium);
-  color: var(--color-text-muted);
-}
-
-.service-detail__endpoint-url {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--color-text-primary);
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.service-detail__grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-  margin: 0;
-}
-
-.service-detail__item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-subtle);
-  min-width: 0;
-}
-
-.service-detail__item dt {
-  font-size: var(--text-2xs);
-  font-weight: var(--font-medium);
-  color: var(--color-text-muted);
-}
-
-.service-detail__item dd {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-primary);
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.service-detail__pending-text {
-  color: var(--color-warning);
-}
-
-.service-detail__inline-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1-5);
-}
-
-.service-detail__muted {
-  color: var(--color-text-tertiary);
-}
-
-.service-detail__section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2-5);
-  padding: var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-subtle);
-  min-width: 0;
-}
-
-.service-detail__section-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.service-detail__section-title {
-  margin: 0;
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
-}
-
-.service-detail__hint {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-text-tertiary);
-  line-height: 1.5;
-}
-
-.service-detail__confirm-status {
-  margin: 0;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--color-text-primary);
-}
-
-.service-detail__probe-list,
-.service-detail__rule-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.service-detail__probe-row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2-5) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  min-width: 0;
-}
-
-.service-detail__probe-main {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1-5);
-}
-
-.service-detail__probe-agent {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
-}
-
-.service-detail__probe-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1);
-  font-size: var(--text-xs);
-  overflow-wrap: anywhere;
-}
-
-.service-detail__probe-error {
-  color: var(--color-danger);
-}
-
-.service-detail__rule-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2-5) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  min-width: 0;
-}
-
-.service-detail__rule-info {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1);
-  min-width: 0;
-  font-size: var(--text-xs);
-  overflow-wrap: anywhere;
-}
-
-.services-page__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-@media (max-width: 768px) {
-  .service-delete__columns,
-  .service-detail__grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 640px) {
-  .service-detail,
-  .service-delete__body {
-    padding: var(--space-4);
-  }
-
-  .service-delete__header {
-    padding: var(--space-3) var(--space-4);
-  }
-
-  .service-detail__section {
-    padding: var(--space-3);
-  }
-
-  .service-delete__actions {
-    justify-content: stretch;
-  }
-
-  .service-delete__actions > .btn {
-    flex: 1 1 auto;
+@media (prefers-reduced-motion: reduce) {
+  .services-page__spin {
+    animation: none;
   }
 }
 </style>
