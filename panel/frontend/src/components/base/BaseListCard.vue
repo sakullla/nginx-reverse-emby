@@ -189,17 +189,26 @@ function onKey(e) {
  * would leave the ~20px badge row floating above the button centers.
  */
 @media (max-width: 640px) {
+  .base-list-card {
+    padding: var(--space-3-5, 0.875rem);
+  }
+
   .base-list-card__header {
     flex-wrap: nowrap;
     align-items: center;
+    gap: var(--space-1-5);
   }
 
   .base-list-card__header-left {
     flex: 1 1 auto;
+    gap: var(--space-1);
+    row-gap: var(--space-1);
   }
 
   .base-list-card__header-right {
     margin-left: auto;
+    gap: 0;
+    margin-right: calc(-1 * var(--space-1-5));
   }
 }
 </style>

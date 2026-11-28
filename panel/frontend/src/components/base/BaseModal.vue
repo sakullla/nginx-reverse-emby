@@ -194,26 +194,30 @@ onUnmounted(() => {
 
 @media (max-width: 640px) {
   .modal-backdrop {
-    padding: var(--space-4);
+    padding: var(--space-3);
+    padding-top: max(var(--space-4), env(safe-area-inset-top, 0px));
     padding-bottom: max(var(--space-4), env(safe-area-inset-bottom, 0px));
     align-items: flex-end;
   }
 
   .modal {
+    width: 100%;
     /* dvh tracks the visible viewport on mobile (collapsible URL/tool bars); vh is the fallback. */
     max-height: calc(100vh - var(--space-8));
     max-height: calc(100dvh - var(--space-8));
-    border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
+    border-radius: var(--radius-2xl);
   }
 
   .modal-enter-active .modal,
   .modal-leave-active .modal {
-    transition: transform var(--duration-slow) var(--ease-bounce);
+    transition: transform var(--duration-slow) var(--ease-bounce),
+                opacity var(--duration-normal) var(--ease-default);
   }
 
   .modal-enter-from .modal,
   .modal-leave-to .modal {
-    transform: translateY(100%);
+    transform: translateY(24px);
+    opacity: 0;
   }
 }
 
@@ -233,6 +237,15 @@ onUnmounted(() => {
 
   .modal--fit-mobile {
     height: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-enter-active,
+  .modal-leave-active,
+  .modal-enter-active .modal,
+  .modal-leave-active .modal {
+    transition: none;
   }
 }
 </style>

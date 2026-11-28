@@ -1,9 +1,10 @@
 <template>
-  <div v-if="total > 0" class="list-pagination">
+  <div v-if="total > 0" class="list-pagination" :class="{ 'list-pagination--single': totalPages <= 1 }">
     <span class="list-pagination__meta" role="status" aria-live="polite">
-      共 {{ total }} 条 · 第 {{ page }} / {{ totalPages }} 页
+      <template v-if="totalPages > 1">共 {{ total }} 条 · 第 {{ page }} / {{ totalPages }} 页</template>
+      <template v-else>共 {{ total }} 条</template>
     </span>
-    <div class="list-pagination__controls">
+    <div v-if="totalPages > 1" class="list-pagination__controls">
       <button
         type="button"
         class="list-pagination__btn"

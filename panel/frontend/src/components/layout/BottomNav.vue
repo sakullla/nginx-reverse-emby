@@ -206,10 +206,11 @@ onUnmounted(() => {
   right: 0;
   height: calc(60px + env(safe-area-inset-bottom, 0px));
   padding: 0 var(--space-2) env(safe-area-inset-bottom, 0);
-  background: var(--color-bg-chrome);
-  border-top: 1px solid var(--color-border-subtle);
-  backdrop-filter: blur(var(--chrome-blur)) saturate(160%);
-  -webkit-backdrop-filter: blur(var(--chrome-blur)) saturate(160%);
+  background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent);
+  border-top: 1px solid var(--color-border-default);
+  box-shadow: 0 -4px 16px rgb(var(--shadow-color) / var(--shadow-alpha-md));
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
   z-index: var(--z-sticky);
   box-sizing: border-box;
 }

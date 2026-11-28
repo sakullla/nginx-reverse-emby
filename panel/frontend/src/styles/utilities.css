@@ -911,16 +911,10 @@
 }
 
 @media (max-width: 640px) {
-  .modal-backdrop {
-    /* Leave room for mobile bottom nav (~64px) + home indicator. */
-    padding-bottom: max(calc(4.5rem + env(safe-area-inset-bottom, 0px)), env(safe-area-inset-bottom, 0px));
-    align-items: flex-end;
-  }
-
   .modal {
     width: min(100%, 100vw);
     max-height: calc(100dvh - 5.5rem - env(safe-area-inset-bottom, 0px));
-    border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
+    border-radius: var(--radius-2xl);
   }
 
   .modal__footer {

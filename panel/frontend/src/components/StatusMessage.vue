@@ -63,7 +63,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { messageStore } from '../stores/messages'
 
 const messages = computed(() => messageStore.state.messages)
@@ -328,12 +328,11 @@ const resumeTimer = (id, event) => {
   box-shadow: var(--shadow-2xl), var(--shadow-lg);
 }
 
-/* 移动端适配 */
+/* 移动端适配：固定在顶部安全区下方，避免与底栏、批量操作栏和底部弹窗页脚重叠 */
 @media (max-width: 640px) {
   .status-message-container {
-    top: auto;
-    /* Keep toasts above the fixed bottom nav and the home-indicator inset. */
-    bottom: calc(4rem + var(--space-3) + env(safe-area-inset-bottom, 0px));
+    top: calc(var(--space-3) + env(safe-area-inset-top, 0px));
+    bottom: auto;
     left: var(--space-3);
     right: var(--space-3);
     max-width: none;
@@ -347,7 +346,7 @@ const resumeTimer = (id, event) => {
 
   .toast-enter-from {
     opacity: 0;
-    transform: translateY(100%) scale(0.95);
+    transform: translateY(-16px) scale(0.96);
   }
 
   .toast-enter-to {
@@ -362,7 +361,7 @@ const resumeTimer = (id, event) => {
 
   .toast-leave-to {
     opacity: 0;
-    transform: translateY(100%) scale(0.95);
+    transform: translateY(-16px) scale(0.96);
   }
 }
 
