@@ -10,6 +10,9 @@ const outDir = process.env.NRE_CAPTURE_OUT
 const baseURL = (process.env.NRE_CAPTURE_URL ?? 'http://localhost:5173').replace(/\/$/, '')
 const themes = (process.env.NRE_CAPTURE_THEMES ?? 'sakura-day,sakura-night').split(',').map((item) => item.trim()).filter(Boolean)
 const widths = (process.env.NRE_CAPTURE_WIDTHS ?? '1360,900,390').split(',').map((item) => Number(item.trim())).filter((item) => item > 0)
+const onlySteps = new Set(
+  (process.env.NRE_CAPTURE_STEPS ?? '').split(',').map((item) => item.trim()).filter(Boolean)
+)
 
 fs.mkdirSync(outDir, { recursive: true })
 
@@ -305,6 +308,7 @@ for (const width of widths) {
     const desktop = width >= 1024
 
     async function step(name, run) {
+      if (onlySteps.size && !onlySteps.has(name)) return
       try {
         await run()
       } catch (error) {
@@ -388,28 +392,55 @@ for (const width of widths) {
 
     await step('services', async () => {
       await open('/services', '服务')
-      await capture('services-empty')
-      await page.locator('.page-header__right button').click()
-      await page.locator('[data-testid="service-wizard"]').waitFor({ timeout: 4000 })
-      await page.locator('#service-name').fill('Emby 家庭影院')
-      await page.locator('#service-backend-url').fill('http://127.0.0.1:8096')
-      await page.locator('#service-agent').selectOption('local')
-      await page.locator('#entry-agent').selectOption('local')
-      await page.locator('#service-entry-url').fill('https://emby.example.com')
-      await capture('services-wizard')
-      await page.getByRole('button', { name: '继续确认' }).click()
-      await page.locator('[data-testid="service-confirm"]').waitFor({ timeout: 4000 })
-      await capture('services-confirm')
-      await page.getByRole('button', { name: '提交' }).click()
-      await page.locator('[data-testid="service-detail"]').waitFor({ timeout: 8000 })
-      await capture('services-detail')
-      await page.locator('[data-testid="service-detail"]').getByRole('button', { name: '删除' }).click()
-      await page.locator('[data-testid="service-delete"]').waitFor({ timeout: 4000 })
-      await capture('services-delete')
-      await page.locator('[data-testid="service-delete"]').getByRole('button', { name: '返回' }).click()
-      await page.locator('[data-testid="service-detail"]').getByRole('button', { name: '返回列表' }).click()
       await page.locator('[data-testid="service-card"]').first().waitFor({ timeout: 8000 })
       await capture('services')
+
+      const searchInput = page.getByPlaceholder('搜索名称 / 入口地址 / 后端 URL...')
+      await searchInput.fill('no-such-service-match')
+      await page.locator('[data-testid="services-filter-empty"]').waitFor({ timeout: 4000 })
+      await capture('services-filter-empty')
+      await page.locator('[data-testid="services-clear-filters"]').click()
+      await page.locator('[data-testid="service-card"]').first().waitFor({ timeout: 4000 })
+
+      await page.locator('[data-testid="services-add"]').click()
+      await page.locator('[data-testid="service-form"]').waitFor({ timeout: 4000 })
+      await page.locator('#service-name').fill('Navidrome 音乐')
+      await page.locator('#service-backend-url').fill('http://127.0.0.1:4533')
+      await page.locator('#service-agent').click()
+      const agentDropdown = page.locator('.agent-search-select__dropdown:visible')
+      await agentDropdown.waitFor({ timeout: 4000 })
+      await capture('services-form-modal')
+      await agentDropdown.getByRole('option', { name: /本机 Agent/ }).first().click()
+      await agentDropdown.waitFor({ state: 'hidden', timeout: 4000 })
+      await page.locator('[data-testid="sync-entry-agent"]').click()
+      await page.getByRole('dialog').getByRole('button', { name: '取消' }).click()
+      await page.locator('[data-testid="service-form"]').waitFor({ state: 'hidden', timeout: 4000 })
+
+      await page.locator('[data-testid="service-card"]').filter({ hasText: 'Jellyfin 客厅端' }).click()
+      await page.locator('[data-testid="service-detail"]').waitFor({ timeout: 8000 })
+      await capture('services-detail')
+
+      await page.locator('[data-testid="service-detail"]').getByRole('button', { name: '删除' }).click()
+      await page.locator('[data-testid="service-delete"]').waitFor({ timeout: 4000 })
+      await capture('services-delete-modal')
+      await page.getByRole('alertdialog').getByRole('button', { name: '返回' }).click()
+      await page.locator('[data-testid="service-delete"]').waitFor({ state: 'hidden', timeout: 4000 })
+      await page.locator('[data-testid="detail-back"]').click()
+      await page.locator('[data-testid="service-card"]').first().waitFor({ timeout: 4000 })
+
+      await page.route('**/panel-api/services', (route) => json(route, { ok: true, services: [] }))
+      await page.evaluate(() => {
+        localStorage.setItem('panel_dev_mock_flags', JSON.stringify({ emptyAccessServices: true }))
+      })
+      try {
+        await open('/services', '还没有服务')
+        await capture('services-empty')
+      } finally {
+        await page.evaluate(() => {
+          localStorage.removeItem('panel_dev_mock_flags')
+        })
+        await page.unroute('**/panel-api/services')
+      }
     })
 
     await step('rules', async () => {
