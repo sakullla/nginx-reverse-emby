@@ -288,9 +288,16 @@ describe('access service presentation', () => {
     expect(resolveServiceSubmitAction(null, draft())).toBe('create')
     expect(resolveServiceSubmitAction(undefined, draft())).toBe('create')
 
-    // Normal ready service: name edit and forwarding edit both use update
+    // Normal ready service: name edit and forwarding edit both use update,
+    // but supplying/changing single-hop relay fields uses correct even when ready with empty last_error
     expect(resolveServiceSubmitAction(base, draft({ name: '改名' }))).toBe('update')
     expect(resolveServiceSubmitAction(base, draft({ backend_url: 'http://10.2.0.9:8096' }))).toBe('update')
+    expect(resolveServiceSubmitAction(base, draft({ relay_listen_port: 19443 }))).toBe('correct')
+    expect(resolveServiceSubmitAction(base, draft({ relay_public_host: '203.0.113.10' }))).toBe('correct')
+    expect(resolveServiceSubmitAction(
+      { ...base, relay_listen_port: 19443 },
+      draft({ relay_listen_port: 19444 }),
+    )).toBe('correct')
 
     // Failed / pending / errored service: name-only stays update; forwarding edit uses correct
     const failed = { ...base, summary: '失败', last_error: '证书签发失败' }
@@ -299,6 +306,23 @@ describe('access service presentation', () => {
 
     const pendingConfirm = { ...base, summary: '待确认', last_error: '' }
     expect(resolveServiceSubmitAction(pendingConfirm, draft({ entry_agent_id: 'origin' }))).toBe('correct')
+
+    // Saved relay_listen_port with last_error still asking for relay_public_host:
+    // name-only edit must stay update; supplying relay_public_host uses correct
+    const savedPortNeedHost = {
+      ...base,
+      summary: '待确认',
+      relay_listen_port: 19443,
+      last_error: 'relay_public_host must be a concrete host',
+    }
+    expect(resolveServiceSubmitAction(
+      savedPortNeedHost,
+      draft({ name: '仅改名保留已存端口', relay_listen_port: 19443 }),
+    )).toBe('update')
+    expect(resolveServiceSubmitAction(
+      savedPortNeedHost,
+      draft({ relay_listen_port: 19443, relay_public_host: '203.0.113.10' }),
+    )).toBe('correct')
 
     // Supplying single-hop relay fields when last_error asks for relay input uses correct
     const needRelay = { ...base, summary: '待确认', last_error: 'relay_public_host must be a concrete host' }

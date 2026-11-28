@@ -403,15 +403,17 @@ export function resolveServiceSubmitAction(current, payload) {
   if (current.advanced === true) {
     return simplifiedForwardingChanged(current, payload) ? 'blocked_advanced' : 'update'
   }
-  const hasRelayInput = Boolean(
-    (payload?.relay_listen_port != null && String(payload.relay_listen_port).trim() !== '')
-    || String(payload?.relay_public_host || '').trim() !== ''
-  )
-  if (errorRequestsRelayInput(current.last_error) && hasRelayInput) {
-    return 'correct'
-  }
-  if (!forwardingChanged(current, payload)) {
+  const before = forwardingSnapshot(current)
+  const after = forwardingSnapshot(payload)
+  if (JSON.stringify(before) === JSON.stringify(after)) {
     return 'update'
+  }
+  const relaySuppliedOrChanged = (
+    (after.relay_listen_port !== '' && after.relay_listen_port !== before.relay_listen_port)
+    || (after.relay_public_host !== '' && after.relay_public_host !== before.relay_public_host)
+  )
+  if (relaySuppliedOrChanged) {
+    return 'correct'
   }
   const summary = String(current.summary || '').trim()
   const needsCorrection = summary === '失败' || summary === '待确认' || Boolean(current.last_error)

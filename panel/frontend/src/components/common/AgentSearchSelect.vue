@@ -331,22 +331,29 @@ function updateDropdownPosition() {
   const spaceAbove = rect.top - gap - margin
   const placeAbove = spaceBelow < Math.min(estimatedHeight, 260) && spaceAbove > spaceBelow
 
-  let top
-  let maxHeight
+  placedAbove.value = placeAbove
   if (placeAbove) {
-    maxHeight = Math.max(160, Math.min(380, spaceAbove))
-    const effectiveHeight = Math.min(estimatedHeight, maxHeight)
-    top = Math.max(margin, rect.top - gap - effectiveHeight)
-  } else {
-    maxHeight = Math.max(160, Math.min(380, spaceBelow))
-    const effectiveHeight = Math.min(estimatedHeight, maxHeight)
-    top = clamp(rect.bottom + gap, margin, Math.max(margin, viewportHeight - margin - effectiveHeight))
+    const maxHeight = Math.max(120, Math.min(380, spaceAbove))
+    const bottom = Math.max(margin, viewportHeight - rect.top + gap)
+    dropdownStyle.value = {
+      position: 'fixed',
+      top: 'auto',
+      bottom: `${Math.round(bottom)}px`,
+      left: `${Math.round(left)}px`,
+      width: `${Math.round(width)}px`,
+      maxHeight: `${Math.round(maxHeight)}px`,
+      zIndex: 'var(--z-popover, 600)',
+    }
+    return
   }
 
-  placedAbove.value = placeAbove
+  const maxHeight = Math.max(120, Math.min(380, spaceBelow))
+  const effectiveHeight = Math.min(estimatedHeight, maxHeight)
+  const top = clamp(rect.bottom + gap, margin, Math.max(margin, viewportHeight - margin - effectiveHeight))
   dropdownStyle.value = {
     position: 'fixed',
     top: `${Math.round(top)}px`,
+    bottom: 'auto',
     left: `${Math.round(left)}px`,
     width: `${Math.round(width)}px`,
     maxHeight: `${Math.round(maxHeight)}px`,
@@ -455,10 +462,18 @@ function onTriggerKeydown(event) {
     event.preventDefault()
     event.stopPropagation()
     close({ restoreFocus: true })
+    return
+  }
+  if (event.key === 'Tab' && open.value) {
+    close()
   }
 }
 
 function onDropdownKeydown(event) {
+  if (event.key === 'Tab') {
+    close()
+    return
+  }
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     moveHighlight(1)

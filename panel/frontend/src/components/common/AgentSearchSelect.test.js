@@ -270,9 +270,20 @@ describe('AgentSearchSelect', () => {
     expect(dropdown.style.position).toBe('fixed')
     expect(dropdown.style.zIndex).toBe('var(--z-popover, 600)')
     expect(dropdown.classList.contains('agent-search-select__dropdown--above')).toBe(true)
-    expect(Number.parseInt(dropdown.style.top, 10)).toBeLessThan(620)
+    // Anchored via bottom to trigger top (viewportHeight 700 - rect.top 620 + gap 6 = 86px)
+    expect(dropdown.style.top).toBe('auto')
+    expect(dropdown.style.bottom).toBe('86px')
     // Clamped inside right edge of viewport (1200 - 8 - 320 = 872)
     expect(Number.parseInt(dropdown.style.left, 10)).toBeLessThanOrEqual(872)
+
+    // Filtering options keeps bottom anchor intact without hovering gap
+    const input = getSearchInput()
+    input.value = 'edge-hk'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(getOptions()).toHaveLength(1)
+    expect(dropdown.style.top).toBe('auto')
+    expect(dropdown.style.bottom).toBe('86px')
 
     // Clicking inside teleported dropdown keeps it open
     dropdown.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
@@ -327,6 +338,16 @@ describe('AgentSearchSelect', () => {
     // Pressing Escape inside dropdown closes dropdown only, not BaseModal
     const input = getSearchInput()
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    expect(getDropdown()).toBeNull()
+    expect(onModalUpdate).not.toHaveBeenCalled()
+
+    // Reopen and press Tab inside dropdown: closes dropdown so it does not linger over modal
+    trigger.click()
+    await nextTick()
+    expect(getDropdown()).not.toBeNull()
+    const input2 = getSearchInput()
+    input2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
     await nextTick()
     expect(getDropdown()).toBeNull()
     expect(onModalUpdate).not.toHaveBeenCalled()
