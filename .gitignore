@@ -11,6 +11,7 @@ test-results/
 .ai/
 .superpowers/
 .worktrees/
+.cliora/
 .claude/settings.local.json
 scripts/relay-perf/docker-stats.csv
 /.codegraph/
