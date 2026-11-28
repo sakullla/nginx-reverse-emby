@@ -714,9 +714,6 @@ async function confirmDelete() {
 }
 
 @media (max-width: 640px) {
-  .btn-text {
-    display: none;
-  }
   .relay-grid {
     grid-template-columns: 1fr;
   }
