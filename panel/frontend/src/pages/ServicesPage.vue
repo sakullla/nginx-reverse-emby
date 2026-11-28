@@ -610,10 +610,11 @@ async function confirmDelete() {
   dropKey(operation)
   deleting.value = null
   if (!saved.id) {
-    forgetService(service.id)
     if (selectedId.value === service.id) {
-      router.replace({ query: {} })
+      lookedUpId.value = service.id
+      await router.replace({ query: {} })
     }
+    forgetService(service.id)
   }
 }
 

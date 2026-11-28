@@ -27,12 +27,14 @@ const api = vi.hoisted(() => ({
   abandonAccessService: vi.fn(),
 }))
 
+let routerReplaceImpl = (target) => {
+  route.query = { ...(target?.query || {}) }
+}
+
 vi.mock('vue-router', () => ({
   useRoute: () => route,
   useRouter: () => ({
-    replace: (target) => {
-      route.query = { ...(target?.query || {}) }
-    },
+    replace: (target) => routerReplaceImpl(target),
   }),
 }))
 
@@ -900,5 +902,47 @@ describe('service page', () => {
     await flushPromises()
     expect(api.fetchAccessServices).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[data-testid="service-card"]').text()).toContain('恢复后的站点')
+  })
+
+  it('does not trigger a redundant GET lookup when immediately deleting from detail view with async router.replace', async () => {
+    stored.push(view({ id: 'svc-imm', name: '立即删除站点', summary: '已就绪' }))
+    route.query = { id: 'svc-imm' }
+    api.deleteAccessService.mockResolvedValueOnce({ ok: true })
+
+    let resolveNav
+    const prevReplace = routerReplaceImpl
+    routerReplaceImpl = (target) => new Promise((resolve) => {
+      resolveNav = () => {
+        route.query = { ...(target?.query || {}) }
+        resolve()
+      }
+    })
+
+    try {
+      const wrapper = mountPage()
+      await flushPromises()
+      expect(wrapper.find('[data-testid="service-detail"]').exists()).toBe(true)
+
+      const deleteBtn = wrapper.get('[data-testid="service-detail"]')
+        .findAll('button')
+        .find((button) => button.text().includes('删除'))
+      await deleteBtn.trigger('click')
+      await flushPromises()
+
+      document.body.querySelector('[data-testid="service-delete-confirm"]').click()
+      await flushPromises()
+
+      expect(api.deleteAccessService).toHaveBeenCalledTimes(1)
+      expect(api.fetchAccessService).not.toHaveBeenCalled()
+
+      resolveNav()
+      await flushPromises()
+
+      expect(api.fetchAccessService).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-testid="service-detail"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-testid="service-card"]')).toHaveLength(0)
+    } finally {
+      routerReplaceImpl = prevReplace
+    }
   })
 })
