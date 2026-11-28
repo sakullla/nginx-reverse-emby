@@ -153,12 +153,28 @@
               <div class="agent-detail__info-ip-head">
                 <span class="agent-detail__info-label">IP</span>
               </div>
-              <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ displayIPv4 || '—' }}</span>
-              <span
-                v-if="displayIPv6"
-                class="agent-detail__info-ip-sub"
-                data-testid="detail-info-ipv6"
-              >{{ displayIPv6 }}</span>
+              <div class="agent-detail__info-ip-line">
+                <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4" :title="displayIPv4 || undefined">{{ displayIPv4 || '—' }}</span>
+                <CopyButton
+                  :value="displayIPv4"
+                  label="复制 IPv4"
+                  success-message="已复制 IPv4"
+                  data-testid="detail-copy-ipv4"
+                />
+              </div>
+              <div v-if="displayIPv6" class="agent-detail__info-ip-line">
+                <span
+                  class="agent-detail__info-ip-sub"
+                  data-testid="detail-info-ipv6"
+                  :title="displayIPv6"
+                >{{ displayIPv6 }}</span>
+                <CopyButton
+                  :value="displayIPv6"
+                  label="复制 IPv6"
+                  success-message="已复制 IPv6"
+                  data-testid="detail-copy-ipv6"
+                />
+              </div>
             </div>
           </div>
         </section>
@@ -380,8 +396,30 @@
               <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
                 <div class="info-grid">
                   <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv4"><span>IPv4</span><span>{{ displayIPv4 || agent.last_seen_ip || '—' }}</span></div>
-                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv6"><span>IPv6</span><span>{{ displayIPv6 || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv4">
+                    <span>IPv4</span>
+                    <span class="info-row__value-copy">
+                      <code class="info-row__value-code">{{ identityIPv4 || '—' }}</code>
+                      <CopyButton
+                        :value="identityIPv4"
+                        label="复制 IPv4"
+                        success-message="已复制 IPv4"
+                        data-testid="detail-identity-copy-ipv4"
+                      />
+                    </span>
+                  </div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv6">
+                    <span>IPv6</span>
+                    <span class="info-row__value-copy">
+                      <code class="info-row__value-code">{{ displayIPv6 || '—' }}</code>
+                      <CopyButton
+                        :value="displayIPv6"
+                        label="复制 IPv6"
+                        success-message="已复制 IPv6"
+                        data-testid="detail-identity-copy-ipv6"
+                      />
+                    </span>
+                  </div>
                   <div class="info-row info-row--clean" data-testid="detail-identity-domain"><span>域名</span><span>{{ agent.ddns_domain || '—' }}</span></div>
                   <div class="info-row info-row--clean" data-testid="detail-identity-ddns-status">
                     <span>解析状态</span>
@@ -647,6 +685,7 @@ import BaseBadge from '../components/base/BaseBadge.vue'
 import BaseIconButton from '../components/base/BaseIconButton.vue'
 import BaseActionMenu from '../components/base/BaseActionMenu.vue'
 import ErrorState from '../components/base/ErrorState.vue'
+import CopyButton from '../components/common/CopyButton.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
 import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
 import { useRules } from '../hooks/useRules'
@@ -892,6 +931,7 @@ const lastSeenText = computed(() => (agent.value?.last_seen_at
   ? `最后在线 ${timeAgoLong(agent.value.last_seen_at)}`
   : '从未上报'))
 const displayIPv4 = computed(() => agent.value?.last_seen_ipv4 || agent.value?.ddns_status?.last_resolved_ipv4 || '')
+const identityIPv4 = computed(() => displayIPv4.value || agent.value?.last_seen_ip || '')
 const displayIPv6 = computed(() => agent.value?.last_seen_ipv6 || agent.value?.ddns_status?.last_resolved_ipv6 || '')
 
 const STATUS_TONE = {
@@ -2003,9 +2043,15 @@ function packageStatusLabel(status) {
   align-items: center;
   min-height: 1rem;
 }
+.agent-detail__info-ip-line {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
 .agent-detail__info-ip-main {
   display: block;
-  margin-top: 0.125rem;
+  margin-top: 0;
   font-family: var(--font-mono);
   font-size: 0.9375rem;
   font-weight: 700;
@@ -2014,6 +2060,8 @@ function packageStatusLabel(status) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   line-height: 1.3;
 }
@@ -2023,7 +2071,7 @@ function packageStatusLabel(status) {
 }
 .agent-detail__info-ip-sub {
   display: block;
-  margin-top: 0.2rem;
+  margin-top: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
@@ -2031,6 +2079,8 @@ function packageStatusLabel(status) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   line-height: 1.3;
 }
@@ -2673,6 +2723,24 @@ function packageStatusLabel(status) {
   font-weight: 500;
   min-width: 0;
   text-align: right;
+}
+
+.info-row__value-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.info-row__value-code {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .agent-detail__loading {

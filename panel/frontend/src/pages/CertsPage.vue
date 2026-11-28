@@ -19,7 +19,6 @@
           </svg>
           <span class='btn-text'>查看文档</span>
         </a>
-        <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
         <button v-if='canCreate' class='btn btn-primary' title='新建证书' aria-label='新建证书' @click="startCreate">
           <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' aria-hidden='true'>
             <line x1='12' y1='5' x2='12' y2='19' />
@@ -43,7 +42,11 @@
       @update:agent-id="handleAgentSelect"
       @update:q="searchQuery = $event"
       @update:filter="onFilterUpdate"
-    />
+    >
+      <template v-if="showViewToggle" #trailing>
+        <ViewToggle v-model:view="view" />
+      </template>
+    </ResourceListFilterBar>
 
     <EmptyState
       v-if='!allAgents.length'
@@ -62,6 +65,46 @@
     </EmptyState>
 
     <SkeletonList v-else-if='isLoading' :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
+
+    <ErrorState
+      v-else-if="showListError"
+      title="证书列表加载失败"
+      :message="listErrorMessage"
+      :retrying="isListFetching"
+      @retry="retryList"
+    />
+
+    <EmptyState
+      v-else-if="showNoMatch"
+      title="没有匹配的证书"
+      :description="activeFilterDescription"
+    >
+      <template #icon>
+        <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+          <circle cx='11' cy='11' r='8' />
+          <line x1='21' y1='21' x2='16.65' y2='16.65' />
+        </svg>
+      </template>
+      <template #action>
+        <button type="button" class="btn btn-secondary" data-testid="certs-clear-filters" @click="clearAllFilters">清除筛选</button>
+      </template>
+    </EmptyState>
+
+    <EmptyState
+      v-else-if='hasAgentFilter && !certificates.length && !exactCertMatch && !_crossSearching'
+      title="暂无证书"
+      :description="!canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
+    >
+      <template #icon>
+        <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+          <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
+          <path d='M7 11V7a5 5 0 0 1 10 0v4' />
+        </svg>
+      </template>
+      <template v-if='canCreate' #action>
+        <button class='btn btn-primary' @click="startCreate">从模板创建第一个证书</button>
+      </template>
+    </EmptyState>
 
     <div v-show='hasAgentFilter && filteredCerts.length && view === "card"' class='cert-grid'>
       <CertCard
@@ -90,35 +133,6 @@
       :total="listTotal"
       @update:page="page = $event"
     />
-
-    <EmptyState
-      v-if='hasAgentFilter && certificates.length && !filteredCerts.length && !_crossSearching'
-      title='没有匹配的证书'
-      description=''
-    >
-      <template #icon>
-        <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
-          <circle cx='11' cy='11' r='8' />
-          <line x1='21' y1='21' x2='16.65' y2='16.65' />
-        </svg>
-      </template>
-    </EmptyState>
-
-    <EmptyState
-      v-if='hasAgentFilter && !isLoading && !certificates.length && !exactCertMatch && !_crossSearching'
-      :title="hasActiveFilters ? '没有匹配的证书' : '暂无证书'"
-      :description="!hasActiveFilters && !canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
-    >
-      <template #icon>
-        <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
-          <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
-          <path d='M7 11V7a5 5 0 0 1 10 0v4' />
-        </svg>
-      </template>
-      <template v-if='!hasActiveFilters && canCreate' #action>
-        <button class='btn btn-primary' @click="startCreate">从模板创建第一个证书</button>
-      </template>
-    </EmptyState>
 
     <BaseModal
       :model-value="showAddForm || !!editingCert"
@@ -177,6 +191,7 @@ import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
 import EmptyState from '../components/base/EmptyState.vue'
+import ErrorState from '../components/base/ErrorState.vue'
 import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { useListFilterUrl } from '../composables/useListFilterUrl'
@@ -361,7 +376,14 @@ const listFilters = computed(() => ({
   referenced: referencedFilter.value
 }))
 
-const { data: certsPage, isLoading } = useCertificatesList({
+const {
+  data: certsPage,
+  isLoading,
+  isError: isListErrorRef,
+  error: listErrorRef,
+  isFetching: isListFetchingRef,
+  refetch: refetchList
+} = useCertificatesList({
   agentFilter,
   page,
   pageSize,
@@ -504,6 +526,61 @@ watch([filteredCerts, isLoading, _crossSearching, allAgents, enabledFilter, list
 function handleCandidateSelect(candidate) {
   exactCertMatch.value = candidate
   router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
+}
+
+const isListError = computed(() => isListErrorRef?.value === true)
+const isListFetching = computed(() => isListFetchingRef?.value === true)
+const listErrorMessage = computed(() => {
+  const error = listErrorRef?.value
+  return String(error?.response?.data?.message || error?.message || '').trim() || '请检查网络或稍后重试'
+})
+const showListError = computed(() => (
+  hasAgentFilter.value
+  && isListError.value
+  && !certificates.value.length
+  && !isLoading.value
+))
+const showNoMatch = computed(() => (
+  hasAgentFilter.value
+  && hasActiveFilters.value
+  && !isLoading.value
+  && !_crossSearching.value
+  && (
+    (!certificates.value.length && !exactCertMatch.value)
+    || (certificates.value.length > 0 && !filteredCerts.value.length)
+  )
+))
+const showViewToggle = computed(() => (
+  hasAgentFilter.value && (listTotal.value > 0 || Boolean(listQ.value) || Boolean(searchQuery.value))
+))
+
+function retryList() {
+  refetchList?.()
+}
+
+watch(isListError, (failed) => {
+  if (failed && certificates.value.length) messageStore.error(listErrorRef?.value, '刷新证书列表失败')
+})
+
+const activeFilterDescription = computed(() => {
+  const parts = []
+  const search = String(searchQuery.value || '').trim()
+  if (search) parts.push(`搜索“${search}”`)
+  for (const field of filterFields.value) {
+    const value = filterValues.value[field.key]
+    if (Array.isArray(value) ? !value.length : value === '' || value == null) continue
+    const values = Array.isArray(value) ? value : [value]
+    const labels = values.map((item) => field.options?.find((option) => String(option.value) === String(item))?.label || item)
+    parts.push(`${field.label}：${labels.join('、')}`)
+  }
+  return parts.length ? `当前条件：${parts.join('；')}` : ''
+})
+
+function clearAllFilters() {
+  const keys = ['search', 'enabled', 'status', 'tags', 'referenced']
+  keys.forEach((key, index) => {
+    setUrlFilter(key, key === 'tags' ? [] : '', { immediate: index === keys.length - 1 })
+  })
 }
 
 const activeCount = computed(() => certificates.value.filter((cert) => cert.enabled && cert.status === 'active').length)

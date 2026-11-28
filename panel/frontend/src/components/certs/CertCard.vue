@@ -6,11 +6,19 @@
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ cert.id }}</BaseBadge>
-      <span
-        v-if="cert.domain"
-        class="cert-card__name"
-        :title="cert.domain"
-      ><template v-for="(part, index) in domainParts" :key="index">{{ part }}<wbr v-if="index < domainParts.length - 1" /></template></span>
+      <span v-if="cert.domain" class="cert-card__name-group">
+        <span
+          class="cert-card__name"
+          :title="cert.domain"
+        ><template v-for="(part, index) in domainParts" :key="index">{{ part }}<wbr v-if="index < domainParts.length - 1" /></template></span>
+        <CopyButton
+          class="cert-card__copy"
+          :value="cert.domain"
+          label="复制域名"
+          success-message="已复制域名"
+          data-testid="cert-copy-domain"
+        />
+      </span>
       <BaseBadge
         class="cert-card__scope"
         tone="neutral"
@@ -98,6 +106,7 @@ import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
+import CopyButton from '../common/CopyButton.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import {
   getCertificateSourceLabel,
@@ -311,6 +320,14 @@ const canDelete = computed(() => !isSystemRelayCA(props.cert))
 </script>
 
 <style scoped>
+.cert-card__name-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  min-width: 0;
+  max-width: min(20rem, 100%);
+}
+
 .cert-card__name {
   min-width: 0;
   max-width: min(18rem, 100%);

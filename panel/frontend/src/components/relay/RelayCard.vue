@@ -58,6 +58,13 @@
       <div class="relay-card__endpoint">
         <span class="relay-card__endpoint-label">{{ publicEndpointLabel }}</span>
         <code class="relay-card__addr" :title="publicEndpoint">{{ publicEndpoint }}</code>
+        <CopyButton
+          class="relay-card__copy"
+          :value="copyablePublicEndpoint"
+          label="复制公网入口"
+          success-message="已复制公网入口"
+          data-testid="relay-copy-endpoint"
+        />
       </div>
     </div>
 
@@ -96,6 +103,7 @@ import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
+import CopyButton from '../common/CopyButton.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import TrafficBar from '../traffic/TrafficBar.vue'
 import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
@@ -134,6 +142,15 @@ const publicEndpoint = computed(() => {
   const publicHost = String(props.listener?.public_host || '').trim()
   const bindHosts = resolveBindHosts(props.listener)
   const host = publicHost || bindHosts[0] || '-'
+  const port = normalizePort(props.listener?.public_port) ?? normalizePort(props.listener?.listen_port)
+  return port ? `${host}:${port}` : host
+})
+
+const copyablePublicEndpoint = computed(() => {
+  const publicHost = String(props.listener?.public_host || '').trim()
+  const bindHosts = resolveBindHosts(props.listener)
+  const host = publicHost || bindHosts[0] || ''
+  if (!host || host === '-' || host === '—') return ''
   const port = normalizePort(props.listener?.public_port) ?? normalizePort(props.listener?.listen_port)
   return port ? `${host}:${port}` : host
 })
@@ -318,8 +335,8 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
 
 .relay-card__endpoint {
   display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
+  align-items: center;
+  gap: 0.35rem;
   min-width: 0;
 }
 
@@ -332,7 +349,7 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  flex: 1;
+  flex: 0 1 auto;
   line-height: 1.35;
 }
 

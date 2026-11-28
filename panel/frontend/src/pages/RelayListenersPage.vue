@@ -20,7 +20,6 @@
           </svg>
           <span class='btn-text'>查看文档</span>
         </a>
-        <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
         <button v-if='canCreate' class='btn btn-primary' title='新建监听器' aria-label='新建监听器' @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -43,7 +42,11 @@
       @update:agent-id="handleAgentSelect"
       @update:q="searchQuery = $event"
       @update:filter="onFilterUpdate"
-    />
+    >
+      <template v-if="showViewToggle" #trailing>
+        <ViewToggle v-model:view="view" />
+      </template>
+    </ResourceListFilterBar>
 
     <!-- No agents available -->
     <EmptyState
@@ -61,31 +64,47 @@
       </template>
     </EmptyState>
 
-    <!-- Filter active, no listeners -->
+    <!-- Loading — skeleton mirrors the target layout so the swap feels seamless -->
+    <SkeletonList v-else-if='isLoading' :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
+
+    <!-- List failed to load and nothing to show -->
+    <ErrorState
+      v-else-if="showListError"
+      title="Relay 监听器加载失败"
+      :message="listErrorMessage"
+      :retrying="isListFetching"
+      @retry="retryList"
+    />
+
+    <!-- Filter active, nothing matches -->
     <EmptyState
-      v-else-if='hasAgentFilter && !listeners.length && !exactRelayMatch && !isLoading && !_crossSearching'
-      :title="hasActiveFilters ? '没有匹配的 Relay 监听器' : '暂无 Relay 监听器'"
-      :description="!hasActiveFilters && !canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
+      v-else-if="showNoMatch"
+      title="没有匹配的 Relay 监听器"
+      :description="activeFilterDescription"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </template>
+      <template #action>
+        <button type="button" class="btn btn-secondary" data-testid="relay-clear-filters" @click="clearAllFilters">清除筛选</button>
+      </template>
+    </EmptyState>
+
+    <!-- Truly empty -->
+    <EmptyState
+      v-else-if='hasAgentFilter && !listeners.length && !exactRelayMatch && !_crossSearching'
+      title="暂无 Relay 监听器"
+      :description="!canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
     >
       <template #icon>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
         </svg>
       </template>
-      <template v-if='!hasActiveFilters && canCreate' #action>
+      <template v-if='canCreate' #action>
         <button class='btn btn-primary' @click="startCreate">创建第一个监听器</button>
-      </template>
-    </EmptyState>
-
-    <EmptyState
-      v-else-if='hasAgentFilter && listeners.length && !displayListeners.length && !_crossSearching'
-      title='没有匹配的 Relay 监听器'
-      description=''
-    >
-      <template #icon>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
       </template>
     </EmptyState>
 
@@ -122,9 +141,6 @@
       :total="listTotal"
       @update:page="page = $event"
     />
-
-    <!-- Loading — skeleton mirrors the target layout so the swap feels seamless -->
-    <SkeletonList v-if='isLoading' :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
 
     <BaseModal
       :model-value="showAddForm || !!editingListener"
@@ -194,6 +210,7 @@ import RelayCard from '../components/relay/RelayCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
 import EmptyState from '../components/base/EmptyState.vue'
+import ErrorState from '../components/base/ErrorState.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
@@ -383,7 +400,14 @@ const listFilters = computed(() => ({
   certificateId: certificateIdValue.value || undefined
 }))
 
-const { data: listenersPage, isLoading } = useRelayListenersList({
+const {
+  data: listenersPage,
+  isLoading,
+  isError: isListErrorRef,
+  error: listErrorRef,
+  isFetching: isListFetchingRef,
+  refetch: refetchList
+} = useRelayListenersList({
   agentFilter,
   page,
   pageSize,
@@ -469,6 +493,61 @@ watch([displayListeners, isLoading, _crossSearching, allAgents, enabledFilter], 
 function handleCandidateSelect(candidate) {
   exactRelayMatch.value = candidate
   router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
+}
+
+const isListError = computed(() => isListErrorRef?.value === true)
+const isListFetching = computed(() => isListFetchingRef?.value === true)
+const listErrorMessage = computed(() => {
+  const error = listErrorRef?.value
+  return String(error?.response?.data?.message || error?.message || '').trim() || '请检查网络或稍后重试'
+})
+const showListError = computed(() => (
+  hasAgentFilter.value
+  && isListError.value
+  && !listeners.value.length
+  && !isLoading.value
+))
+const showNoMatch = computed(() => (
+  hasAgentFilter.value
+  && hasActiveFilters.value
+  && !isLoading.value
+  && !_crossSearching.value
+  && (
+    (!listeners.value.length && !exactRelayMatch.value)
+    || (listeners.value.length > 0 && !displayListeners.value.length)
+  )
+))
+const showViewToggle = computed(() => (
+  hasAgentFilter.value && (listTotal.value > 0 || Boolean(listQ.value) || Boolean(searchQuery.value))
+))
+
+function retryList() {
+  refetchList?.()
+}
+
+watch(isListError, (failed) => {
+  if (failed && listeners.value.length) messageStore.error(listErrorRef?.value, '刷新 Relay 监听器列表失败')
+})
+
+const activeFilterDescription = computed(() => {
+  const parts = []
+  const search = String(searchQuery.value || '').trim()
+  if (search) parts.push(`搜索“${search}”`)
+  for (const field of filterFields.value) {
+    const value = filterValues.value[field.key]
+    if (Array.isArray(value) ? !value.length : value === '' || value == null) continue
+    const values = Array.isArray(value) ? value : [value]
+    const labels = values.map((item) => field.options?.find((option) => String(option.value) === String(item))?.label || item)
+    parts.push(`${field.label}：${labels.join('、')}`)
+  }
+  return parts.length ? `当前条件：${parts.join('；')}` : ''
+})
+
+function clearAllFilters() {
+  const keys = ['search', 'enabled', 'sync', 'tags', 'certificate_id']
+  keys.forEach((key, index) => {
+    setUrlFilter(key, key === 'tags' ? [] : '', { immediate: index === keys.length - 1 })
+  })
 }
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)

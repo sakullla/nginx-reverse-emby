@@ -1013,4 +1013,51 @@ describe('AgentDetailPage', () => {
     expect(wrapper.text()).toContain('applied at revision 3')
   })
 
+  it('copies IPv4 and IPv6 addresses from overview and identity cards', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const successSpy = vi.spyOn(messageStore, 'success')
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true })
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
+    const wrapper = await mountPage()
+
+    await wrapper.get('[data-testid="detail-copy-ipv4"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenLastCalledWith('203.0.113.10')
+    expect(successSpy).toHaveBeenCalledWith('已复制 IPv4')
+
+    await wrapper.get('[data-testid="detail-copy-ipv6"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenLastCalledWith('2001:db8::10')
+    expect(successSpy).toHaveBeenCalledWith('已复制 IPv6')
+
+    await expandSection(wrapper, '系统信息')
+    await wrapper.get('[data-testid="detail-identity-copy-ipv4"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenLastCalledWith('203.0.113.10')
+
+    await wrapper.get('[data-testid="detail-identity-copy-ipv6"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenLastCalledWith('2001:db8::10')
+  })
+
+  it('hides IP copy buttons when IPv4/IPv6 are empty or placeholders', async () => {
+    agentRecord.last_seen_ipv4 = ''
+    agentRecord.last_seen_ipv6 = '—'
+    agentRecord.last_seen_ip = '-'
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('[data-testid="detail-copy-ipv4"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-copy-ipv6"]').exists()).toBe(false)
+
+    await expandSection(wrapper, '系统信息')
+    expect(wrapper.find('[data-testid="detail-identity-copy-ipv4"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-identity-copy-ipv6"]').exists()).toBe(false)
+  })
+
 })

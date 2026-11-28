@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import CertsPage from './CertsPage.vue'
+import CertCard from '../components/certs/CertCard.vue'
 import { messageStore } from '../stores/messages'
 
 let route
@@ -11,6 +12,7 @@ let selectedAgentId
 let agentsData
 let certsPageData
 let deleteMutateAsync
+let listState
 const mountedWrappers = []
 const queryClients = []
 
@@ -34,7 +36,11 @@ vi.mock('../hooks/useAgents', () => ({
 vi.mock('../hooks/useCertificates', () => ({
   useCertificatesList: () => ({
     data: { value: certsPageData },
-    isLoading: ref(false)
+    isLoading: listState.isLoading,
+    isError: listState.isError,
+    error: listState.error,
+    isFetching: listState.isFetching,
+    refetch: listState.refetch
   }),
   useDeleteCertificate: () => ({
     mutateAsync: deleteMutateAsync,
@@ -67,11 +73,19 @@ function mountPage() {
       plugins: [[VueQueryPlugin, { queryClient }]],
       stubs: {
         RouterLink: { props: ['to'], template: '<a><slot /></a>' },
-        CertificateCenterChrome: { template: '<header><slot name="actions" /></header>' },
+        CertificateCenterChrome: { template: '<header class="cert-chrome-stub"><slot name="actions" /></header>' },
         OperationStatusList: true,
-        ResourceListFilterBar: true,
+        ResourceListFilterBar: {
+          name: 'ResourceListFilterBar',
+          props: ['agentId', 'agentBaseline', 'agents', 'q', 'searchPlaceholder', 'filterFields', 'filterValues'],
+          template: '<div class="filter-bar-stub"><div class="filter-bar-stub__trailing"><slot name="trailing" /></div></div>'
+        },
         SkeletonList: true,
-        ViewToggle: true,
+        ViewToggle: {
+          name: 'ViewToggle',
+          props: ['view'],
+          template: '<div class="view-toggle-stub" />'
+        },
         ListPagination: true,
         IdCandidateModal: true,
         CreateAgentPicker: true,
@@ -104,6 +118,16 @@ function mountPage() {
   mountedWrappers.push(wrapper)
   return wrapper
 }
+
+beforeEach(() => {
+  listState = {
+    isLoading: ref(false),
+    isError: ref(false),
+    error: ref(null),
+    isFetching: ref(false),
+    refetch: vi.fn()
+  }
+})
 
 afterEach(() => {
   while (mountedWrappers.length) {
@@ -208,5 +232,127 @@ describe('CertsPage delete contract', () => {
     expect(messageStore.error).toHaveBeenCalledWith(expect.stringContaining('缺少节点归属'))
     expect(deleteMutateAsync).not.toHaveBeenCalled()
     expect(dialog.props('show')).toBe(true)
+  })
+})
+
+describe('CertsPage toolbar & boundary states', () => {
+  beforeEach(() => {
+    route = reactive({ query: { agentId: '1' } })
+    routerReplace = vi.fn((target) => {
+      if (target?.query) route.query = target.query
+    })
+    selectedAgentId = '1'
+    agentsData = [{ id: 1, name: 'master' }]
+    certsPageData = { items: [], total: 0, page: 1, page_size: 20 }
+    deleteMutateAsync = vi.fn()
+  })
+
+  it('places ViewToggle inside ResourceListFilterBar #trailing instead of header actions', async () => {
+    certsPageData = {
+      items: [{ id: 1, domain: 'a.example.com', agent_id: 1, enabled: true, status: 'active' }],
+      total: 1,
+      page: 1,
+      page_size: 20
+    }
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('.cert-chrome-stub .view-toggle-stub').exists()).toBe(false)
+    expect(wrapper.find('.filter-bar-stub__trailing .view-toggle-stub').exists()).toBe(true)
+  })
+
+  it('shows ErrorState when the list fails with no data and retries via refetch', async () => {
+    listState.isError.value = true
+    listState.error.value = new Error('证书接口超时')
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const error = wrapper.findComponent({ name: 'ErrorState' })
+    expect(error.exists()).toBe(true)
+    expect(error.text()).toContain('证书列表加载失败')
+    expect(error.text()).toContain('证书接口超时')
+    expect(wrapper.text()).not.toContain('暂无证书')
+
+    await error.get('button').trigger('click')
+    expect(listState.refetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps existing items and toasts when a background refresh fails', async () => {
+    certsPageData = {
+      items: [{ id: 1, domain: 'a.example.com', agent_id: 1, enabled: true, status: 'active' }],
+      total: 1,
+      page: 1,
+      page_size: 20
+    }
+    const wrapper = mountPage()
+    await flushPromises()
+
+    listState.error.value = new Error('网络波动')
+    listState.isError.value = true
+    await flushPromises()
+
+    expect(wrapper.findComponent({ name: 'ErrorState' }).exists()).toBe(false)
+    expect(wrapper.find('.cert-card-stub').exists()).toBe(true)
+    expect(messageStore.error).toHaveBeenCalledWith(expect.any(Error), '刷新证书列表失败')
+  })
+
+  it('distinguishes 0-match filters (with clear action) from a truly empty list', async () => {
+    const empty = mountPage()
+    await flushPromises()
+    expect(empty.text()).toContain('暂无证书')
+    expect(empty.find('[data-testid="certs-clear-filters"]').exists()).toBe(false)
+    empty.unmount()
+    mountedWrappers.pop()
+
+    route.query = { agentId: '1', status: 'error', search: 'missing.example.com' }
+    const filtered = mountPage()
+    await flushPromises()
+    expect(filtered.text()).toContain('没有匹配的证书')
+    expect(filtered.text()).toContain('搜索“missing.example.com”')
+    expect(filtered.text()).toContain('证书状态：签发失败')
+
+    await filtered.get('[data-testid="certs-clear-filters"]').trigger('click')
+    await flushPromises()
+    expect(routerReplace).toHaveBeenLastCalledWith({ query: { agentId: '1' } })
+  })
+})
+
+describe('CertCard domain copy', () => {
+  let writeText
+
+  beforeEach(() => {
+    writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true })
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+  })
+
+  it('copies the certificate domain without triggering card edit', async () => {
+    const cert = { id: 7, domain: 'media.example.com', enabled: true, status: 'active' }
+    const wrapper = mount(CertCard, {
+      props: { cert, agent: { id: 1, name: 'master' } }
+    })
+    mountedWrappers.push(wrapper)
+
+    const copyBtn = wrapper.get('[data-testid="cert-copy-domain"]')
+    await copyBtn.trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledWith('media.example.com')
+    expect(messageStore.success).toHaveBeenCalledWith('已复制域名')
+    expect(wrapper.emitted('edit')).toBeUndefined()
+  })
+
+  it.each(['', '-', '—'])('hides the copy button when domain is empty or placeholder (%s)', (domain) => {
+    const cert = { id: 8, domain, enabled: true, status: 'active' }
+    const wrapper = mount(CertCard, {
+      props: { cert, agent: { id: 1, name: 'master' } }
+    })
+    mountedWrappers.push(wrapper)
+
+    expect(wrapper.find('[data-testid="cert-copy-domain"]').exists()).toBe(false)
   })
 })
