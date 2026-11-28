@@ -12,7 +12,7 @@
           :class="[modalSizeClass, { 'modal--fit-mobile': fitContentOnMobile }]"
           tabindex="-1"
           ref="modalRef"
-          role="dialog"
+          :role="role"
           aria-modal="true"
           :aria-labelledby="titleId"
           @click.stop
@@ -60,6 +60,11 @@ const props = defineProps({
   showFooter: { type: Boolean, default: false },
   closeOnClickModal: { type: Boolean, default: true },
   fitContentOnMobile: { type: Boolean, default: false },
+  role: {
+    type: String,
+    default: 'dialog',
+    validator: (v) => ['dialog', 'alertdialog'].includes(v)
+  },
   dataTest: { type: String, default: '' },
 })
 

@@ -1,3 +1,5 @@
+import { isAllAgentsFilter, normalizeAgentFilter } from './agentFilter.js'
+
 export const ACCESS_SERVICE_TAG_PREFIX = 'nre-access-service:'
 
 const RETAINED_BEFORE_DELETE = [
@@ -312,4 +314,106 @@ export function draftFromService(service) {
     relay_listen_port: service?.relay_listen_port ?? '',
     relay_public_host: service?.relay_public_host || '',
   }
+}
+
+export function serviceSummaryTone(summary) {
+  const raw = summary && typeof summary === 'object' ? summary.summary : summary
+  const text = String(raw || '').trim()
+  if (text === '已就绪') return 'success'
+  if (text === '失败') return 'danger'
+  if (text && (text.includes('待') || text.includes('中'))) return 'warning'
+  return 'neutral'
+}
+
+export function certificateTone(certificate) {
+  const state = String(certificate?.state || 'none')
+  if (state === 'ready') return 'success'
+  if (state === 'error') return 'danger'
+  if (state === 'issuing') return 'primary'
+  if (state === 'none') return 'neutral'
+  return 'warning'
+}
+
+export function probeTone(probe) {
+  if (probe?.verification === 'expired') return 'warning'
+  if (probe?.error) return 'danger'
+  if (probe?.status === 'connected') return 'success'
+  if (probe?.status === 'http_status') return 'primary'
+  if (!probe?.status || probe.status === 'untested') return 'neutral'
+  return 'warning'
+}
+
+export function retainedResourceKindLabel(kind) {
+  if (kind === 'certificate') return '证书'
+  if (kind === 'relay_listener') return '监听器'
+  if (kind === 'agent') return '节点'
+  return kind || '资源'
+}
+
+export function serviceStatusBucket(service) {
+  const summary = String(service?.summary || '').trim()
+  if (summary === '已就绪') return 'ready'
+  if (summary === '失败') return 'failed'
+  return 'pending'
+}
+
+export function summarizeServices(services) {
+  const list = Array.isArray(services) ? services : []
+  const counts = { total: list.length, ready: 0, pending: 0, failed: 0 }
+  for (const service of list) {
+    counts[serviceStatusBucket(service)] += 1
+  }
+  return counts
+}
+
+export function filterAccessServices(services, filters = {}) {
+  const list = Array.isArray(services) ? services : []
+  const normalizedAgent = normalizeAgentFilter(filters?.agentId)
+  const filterByAgent = Boolean(normalizedAgent && !isAllAgentsFilter(normalizedAgent))
+  const keyword = String(filters?.q || '').trim().toLowerCase()
+  const status = String(filters?.status || '').trim()
+
+  return list.filter((service) => {
+    if (!service) return false
+    if (filterByAgent) {
+      const entryId = String(service.entry_agent_id || '').trim()
+      const serviceId = String(service.service_agent_id || '').trim()
+      if (entryId !== normalizedAgent && serviceId !== normalizedAgent) return false
+    }
+    if (status && status !== 'all') {
+      if (serviceStatusBucket(service) !== status) return false
+    }
+    if (keyword) {
+      const haystack = [
+        service.name,
+        service.entry_url,
+        service.backend_url,
+        service.id,
+      ]
+        .filter((item) => item != null && item !== '')
+        .map((item) => String(item).toLowerCase())
+      if (!haystack.some((text) => text.includes(keyword))) return false
+    }
+    return true
+  })
+}
+
+export function resolveServiceSubmitAction(current, payload) {
+  if (!current) return 'create'
+  if (current.advanced === true) {
+    return simplifiedForwardingChanged(current, payload) ? 'blocked_advanced' : 'update'
+  }
+  const hasRelayInput = Boolean(
+    (payload?.relay_listen_port != null && String(payload.relay_listen_port).trim() !== '')
+    || String(payload?.relay_public_host || '').trim() !== ''
+  )
+  if (errorRequestsRelayInput(current.last_error) && hasRelayInput) {
+    return 'correct'
+  }
+  if (!forwardingChanged(current, payload)) {
+    return 'update'
+  }
+  const summary = String(current.summary || '').trim()
+  const needsCorrection = summary === '失败' || summary === '待确认' || Boolean(current.last_error)
+  return needsCorrection ? 'correct' : 'update'
 }

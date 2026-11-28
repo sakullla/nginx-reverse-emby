@@ -3,17 +3,25 @@ import { formatBytes } from './trafficStats.js'
 import {
   advancedRuleHref,
   certificateText,
+  certificateTone,
   deletionImpact,
+  filterAccessServices,
   incompleteSteps,
   errorRequestsRelayInput,
   isNameOnlyChange,
   pathText,
   simplifiedForwardingChanged,
   probeText,
+  probeTone,
+  resolveServiceSubmitAction,
+  retainedResourceKindLabel,
   reuseIdempotencyKey,
   ruleBackendLabels,
   ruleServiceLink,
+  serviceStatusBucket,
+  serviceSummaryTone,
   serviceTrafficText,
+  summarizeServices,
   validateServiceDraft,
 } from './accessService.js'
 
@@ -172,5 +180,136 @@ describe('access service presentation', () => {
     const changed = reuseIdempotencyKey(same, 'create', { backend_url: 'http://10.9.0.3:8096' })
     expect(same.create.key).toBe(first.create.key)
     expect(changed.create.key).not.toBe(first.create.key)
+  })
+
+  it('maps summary, certificate, probe tones and retained resource kind labels consistently', () => {
+    expect(serviceSummaryTone('已就绪')).toBe('success')
+    expect(serviceSummaryTone('失败')).toBe('danger')
+    expect(serviceSummaryTone('待确认')).toBe('warning')
+    expect(serviceSummaryTone('已保存、待生效')).toBe('warning')
+    expect(serviceSummaryTone('切换中')).toBe('warning')
+    expect(serviceSummaryTone('')).toBe('neutral')
+    expect(serviceSummaryTone(null)).toBe('neutral')
+
+    expect(certificateTone({ state: 'ready' })).toBe('success')
+    expect(certificateTone({ state: 'error' })).toBe('danger')
+    expect(certificateTone({ state: 'issuing' })).toBe('primary')
+    expect(certificateTone({ state: 'none' })).toBe('neutral')
+    expect(certificateTone(undefined)).toBe('neutral')
+    expect(certificateTone({ state: 'pending' })).toBe('warning')
+
+    expect(probeTone({ status: 'connected', verification: 'expired' })).toBe('warning')
+    expect(probeTone({ status: 'failed', error: 'timeout' })).toBe('danger')
+    expect(probeTone({ status: 'connected' })).toBe('success')
+    expect(probeTone({ status: 'http_status', http_status_code: 401 })).toBe('primary')
+    expect(probeTone({ status: 'untested' })).toBe('neutral')
+    expect(probeTone(null)).toBe('neutral')
+    expect(probeTone({ status: 'dial_error' })).toBe('warning')
+
+    expect(retainedResourceKindLabel('certificate')).toBe('证书')
+    expect(retainedResourceKindLabel('relay_listener')).toBe('监听器')
+    expect(retainedResourceKindLabel('agent')).toBe('节点')
+    expect(retainedResourceKindLabel('custom_kind')).toBe('custom_kind')
+    expect(retainedResourceKindLabel('')).toBe('资源')
+  })
+
+  it('buckets, summarizes, and filters access services across agent, keyword, and status', () => {
+    const list = [
+      {
+        id: 'svc-ready',
+        name: '家庭影院',
+        entry_agent_id: 'edge',
+        service_agent_id: 'origin',
+        entry_url: 'https://emby.example.com',
+        backend_url: 'http://10.1.0.8:8096',
+        summary: '已就绪',
+      },
+      {
+        id: 'svc-pending',
+        name: '相册同步',
+        entry_agent_id: 'hk',
+        service_agent_id: 'edge',
+        entry_url: 'https://photos.example.com',
+        backend_url: 'http://10.1.0.9:2283',
+        summary: '待确认',
+      },
+      {
+        id: 'svc-verify',
+        name: '音乐站',
+        entry_agent_id: 'hk',
+        service_agent_id: 'nas',
+        entry_url: 'https://music.example.com',
+        backend_url: 'http://10.1.0.10:4533',
+        summary: '待验证',
+      },
+      {
+        id: 'svc-failed',
+        name: '失败站点',
+        entry_agent_id: 'jp',
+        service_agent_id: 'origin',
+        entry_url: 'https://broken.example.com',
+        backend_url: 'http://10.1.0.11:8080',
+        summary: '失败',
+      },
+    ]
+
+    expect(serviceStatusBucket(list[0])).toBe('ready')
+    expect(serviceStatusBucket(list[1])).toBe('pending')
+    expect(serviceStatusBucket(list[2])).toBe('pending')
+    expect(serviceStatusBucket(list[3])).toBe('failed')
+    expect(serviceStatusBucket(null)).toBe('pending')
+
+    expect(summarizeServices(list)).toEqual({ total: 4, ready: 1, pending: 2, failed: 1 })
+    expect(summarizeServices([])).toEqual({ total: 0, ready: 0, pending: 0, failed: 0 })
+
+    // All-agent sentinel returns full list
+    expect(filterAccessServices(list, { agentId: '__all__', q: '', status: '' })).toHaveLength(4)
+    // Agent matches either entry_agent_id or service_agent_id
+    expect(filterAccessServices(list, { agentId: 'edge' }).map((s) => s.id)).toEqual(['svc-ready', 'svc-pending'])
+    expect(filterAccessServices(list, { agentId: 'origin' }).map((s) => s.id)).toEqual(['svc-ready', 'svc-failed'])
+    // Status bucket filter
+    expect(filterAccessServices(list, { status: 'ready' }).map((s) => s.id)).toEqual(['svc-ready'])
+    expect(filterAccessServices(list, { status: 'pending' }).map((s) => s.id)).toEqual(['svc-pending', 'svc-verify'])
+    expect(filterAccessServices(list, { status: 'failed' }).map((s) => s.id)).toEqual(['svc-failed'])
+    // Keyword matches name, entry_url, backend_url, id (case-insensitive)
+    expect(filterAccessServices(list, { q: 'EMBY' }).map((s) => s.id)).toEqual(['svc-ready'])
+    expect(filterAccessServices(list, { q: '2283' }).map((s) => s.id)).toEqual(['svc-pending'])
+    expect(filterAccessServices(list, { q: '音乐' }).map((s) => s.id)).toEqual(['svc-verify'])
+    expect(filterAccessServices(list, { q: 'svc-failed' }).map((s) => s.id)).toEqual(['svc-failed'])
+    // Combined filters
+    expect(filterAccessServices(list, { agentId: 'edge', status: 'pending', q: 'photos' }).map((s) => s.id)).toEqual(['svc-pending'])
+    expect(filterAccessServices(list, { agentId: 'edge', status: 'failed' })).toEqual([])
+  })
+
+  it('resolves create, update, correct, and blocked_advanced submit actions automatically', () => {
+    const base = { id: 'svc-1', ...draft(), summary: '已就绪', advanced: false, last_error: '' }
+
+    // Create when no current service
+    expect(resolveServiceSubmitAction(null, draft())).toBe('create')
+    expect(resolveServiceSubmitAction(undefined, draft())).toBe('create')
+
+    // Normal ready service: name edit and forwarding edit both use update
+    expect(resolveServiceSubmitAction(base, draft({ name: '改名' }))).toBe('update')
+    expect(resolveServiceSubmitAction(base, draft({ backend_url: 'http://10.2.0.9:8096' }))).toBe('update')
+
+    // Failed / pending / errored service: name-only stays update; forwarding edit uses correct
+    const failed = { ...base, summary: '失败', last_error: '证书签发失败' }
+    expect(resolveServiceSubmitAction(failed, draft({ name: '仅改名' }))).toBe('update')
+    expect(resolveServiceSubmitAction(failed, draft({ entry_url: 'https://new.example.com' }))).toBe('correct')
+
+    const pendingConfirm = { ...base, summary: '待确认', last_error: '' }
+    expect(resolveServiceSubmitAction(pendingConfirm, draft({ entry_agent_id: 'origin' }))).toBe('correct')
+
+    // Supplying single-hop relay fields when last_error asks for relay input uses correct
+    const needRelay = { ...base, summary: '待确认', last_error: 'relay_public_host must be a concrete host' }
+    expect(resolveServiceSubmitAction(needRelay, draft({ name: '改名不补中继' }))).toBe('update')
+    expect(resolveServiceSubmitAction(needRelay, draft({ relay_public_host: '203.0.113.10' }))).toBe('correct')
+    expect(resolveServiceSubmitAction(needRelay, draft({ relay_listen_port: 19443 }))).toBe('correct')
+
+    // Advanced service: only name edit allowed (update); forwarding edit blocked; never correct
+    const advanced = { ...base, summary: '失败', advanced: true, last_error: 'relay_public_host missing' }
+    expect(resolveServiceSubmitAction(advanced, draft({ name: '高级改名' }))).toBe('update')
+    expect(resolveServiceSubmitAction(advanced, draft({ backend_url: 'http://10.9.0.1:8096' }))).toBe('blocked_advanced')
+    expect(resolveServiceSubmitAction(advanced, draft({ entry_agent_id: 'origin' }))).toBe('blocked_advanced')
   })
 })
